@@ -3,6 +3,7 @@ import {
   Contrast,
   Download,
   Focus,
+  FoldHorizontal,
   Image,
   Layers2,
   Minus,
@@ -10,7 +11,7 @@ import {
   Scan,
   SquareSplitHorizontal,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import {
   alignedRowToImageRow,
   type Capture,
@@ -30,7 +31,44 @@ const modes = [
 ] as const;
 type Mode = (typeof modes)[number][0];
 type Size = { width: number; height: number };
+type Fit = "width" | "area" | "manual";
+type View = { fit: Fit; scale: number };
 const fallback: Size = { width: 640, height: 400 };
+
+const zoomLevels = [
+  0.25,
+  1 / 3,
+  0.5,
+  2 / 3,
+  0.75,
+  0.8,
+  0.9,
+  1,
+  1.1,
+  1.25,
+  1.5,
+  1.75,
+  2,
+  2.5,
+  3,
+  4,
+  5,
+  6,
+  8,
+];
+
+export function nextZoom(current: number, increase: boolean): number {
+  return increase
+    ? (zoomLevels.find((value) => value > current + 0.001) ?? 8)
+    : (zoomLevels.findLast((value) => value < current - 0.001) ?? Math.min(current, 0.25));
+}
+
+export function imageFitScale(image: Size, viewport: Size, fit: Fit): number {
+  return Math.max(
+    0.001,
+    Math.min(1, viewport.width / image.width, fit === "area" ? viewport.height / image.height : 1),
+  );
+}
 
 function useImageSizes(capture: Capture) {
   const [sizes, setSizes] = useState<Record<string, Size>>({});
@@ -82,16 +120,32 @@ export function ComparisonViewer({
 }) {
   const { getSize, isLoaded } = useImageSizes(capture);
   const [blend, setBlend] = useState(50);
-  const [zoom, setZoom] = useState<{ mode: Mode; scale: number } | null>(null);
+  const [zoom, setZoom] = useState<{
+    capture: Capture;
+    views: Partial<Record<Mode, View>>;
+  } | null>(null);
   const [crosshair, setCrosshair] = useState<{
     capture: Capture;
     scale: number;
     x: number;
     y: number;
   } | null>(null);
-  const [viewerWidth, setViewerWidth] = useState(0);
+  const [viewport, setViewport] = useState<Size>({ width: 0, height: 0 });
+  const [panning, setPanning] = useState(false);
   const world = useRef<HTMLDivElement>(null);
   const viewer = useRef<HTMLElement>(null);
+  const canvas = useRef<HTMLElement>(null);
+  const toolbar = useRef<HTMLDivElement>(null);
+  const gestureScope = useRef({ capture, mode: requestedMode });
+  const anchor = useRef<{ x: number; y: number; imageX: number; imageY: number } | null>(null);
+  const pan = useRef<{
+    pointer: number;
+    x: number;
+    y: number;
+    left: number;
+    top: number;
+    moved: boolean;
+  } | null>(null);
   const [compact, setCompact] = useState(() => matchMedia("(max-width: 600px)").matches);
   useEffect(() => {
     const media = matchMedia("(max-width: 600px)");
@@ -149,13 +203,120 @@ export function ComparisonViewer({
   useEffect(() => {
     const element = viewer.current;
     if (!element) return;
-    const observer = new ResizeObserver(() => setViewerWidth(element.clientWidth));
+    const scroller = element.closest<HTMLElement>(".review-scroll");
+    const controls = toolbar.current;
+    const observer = new ResizeObserver(() =>
+      setViewport({
+        width: element.clientWidth,
+        height: Math.max(
+          1,
+          (scroller?.clientHeight ?? innerHeight) - (controls?.clientHeight ?? 0) - 24,
+        ),
+      }),
+    );
     observer.observe(element);
+    if (scroller) observer.observe(scroller);
+    if (controls) observer.observe(controls);
     return () => observer.disconnect();
   }, []);
-  const fitScale = Math.max(0.001, Math.min(1, (viewerWidth || size.width) / size.width));
-  const scale = zoom?.mode === mode ? zoom.scale : fitScale;
-  const setScale = (value: number) => setZoom({ mode, scale: Math.max(0.001, Math.min(8, value)) });
+  const view = zoom?.capture === capture ? zoom.views[mode] : undefined;
+  const fit = view?.fit ?? "width";
+  const scale =
+    fit === "manual" && view
+      ? view.scale
+      : imageFitScale(
+          size,
+          { width: viewport.width || size.width, height: viewport.height || size.height },
+          fit,
+        );
+  const scrollRoot = () => viewer.current?.closest<HTMLElement>(".review-scroll");
+  const cancelPan = () => {
+    const pointer = pan.current?.pointer;
+    pan.current = null;
+    setPanning(false);
+    if (pointer !== undefined && canvas.current?.hasPointerCapture(pointer)) {
+      canvas.current.releasePointerCapture(pointer);
+    }
+  };
+  const setView = (next: View) => {
+    cancelPan();
+    setCrosshair(null);
+    setZoom((current) => ({
+      capture,
+      views: { ...(current?.capture === capture ? current.views : {}), [mode]: next },
+    }));
+  };
+  const setScale = (value: number, point?: { x: number; y: number }) => {
+    const next = Math.max(0.001, Math.min(8, value));
+    if (!Number.isFinite(next) || (fit === "manual" && next === scale)) return;
+    const bounds = canvas.current?.getBoundingClientRect();
+    anchor.current = null;
+    if (bounds && point) {
+      anchor.current = {
+        ...point,
+        imageX: (point.x - bounds.left) / scale,
+        imageY: (point.y - bounds.top) / scale,
+      };
+    }
+    setView({ fit: "manual", scale: next });
+  };
+  const setFit = (next: "width" | "area") => {
+    anchor.current = null;
+    setView({ fit: next, scale: 1 });
+    const scroll = scrollRoot();
+    const element = viewer.current;
+    if (scroll && element) {
+      scroll.scrollTo({
+        left: 0,
+        top:
+          scroll.scrollTop +
+          element.getBoundingClientRect().top -
+          scroll.getBoundingClientRect().top,
+      });
+    }
+  };
+  useLayoutEffect(() => {
+    const pending = anchor.current;
+    anchor.current = null;
+    const bounds = canvas.current?.getBoundingClientRect();
+    const scroll = viewer.current?.closest<HTMLElement>(".review-scroll");
+    if (pending && bounds && scroll) {
+      scroll.scrollLeft += bounds.left + pending.imageX * scale - pending.x;
+      scroll.scrollTop += bounds.top + pending.imageY * scale - pending.y;
+    }
+  }, [scale]);
+  const wheelZoom = useEffectEvent((event: WheelEvent) => {
+    if ((!event.ctrlKey && !event.metaKey) || !Number.isFinite(event.deltaY) || event.deltaY === 0)
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    setScale(nextZoom(scale, event.deltaY < 0), { x: event.clientX, y: event.clientY });
+  });
+  const clearGesture = useEffectEvent(() => {
+    cancelPan();
+    setCrosshair(null);
+    anchor.current = null;
+  });
+  useEffect(() => {
+    const element = canvas.current;
+    if (!element) return;
+    element.addEventListener("wheel", wheelZoom, { passive: false });
+    return () => element.removeEventListener("wheel", wheelZoom);
+  }, []);
+  useEffect(() => {
+    if (gestureScope.current.capture !== capture || gestureScope.current.mode !== mode) {
+      clearGesture();
+      gestureScope.current = { capture, mode };
+    }
+  }, [capture, mode]);
+  useEffect(() => {
+    const clear = () => clearGesture();
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("blur", clear);
+      clear();
+    };
+  }, []);
   useEffect(() => {
     const clear = () => setCrosshair(null);
     setCrosshair((current) =>
@@ -170,7 +331,7 @@ export function ComparisonViewer({
   }, [capture, mode, scale]);
   return (
     <section ref={viewer} className="comparison-viewer" aria-label="Image comparison">
-      <div className="comparison-modes">
+      <div ref={toolbar} className="comparison-modes">
         <fieldset className="segmented mode-segments" aria-label="Comparison mode">
           {modes.map(([value, label, Icon]) => (
             <button
@@ -198,19 +359,45 @@ export function ComparisonViewer({
           ))}
         </select>
         <div className="zoom-controls">
-          <IconButton label="Zoom out" onClick={() => setScale(scale / 1.2)}>
+          <IconButton
+            label="Zoom out"
+            disabled={scale <= 0.25}
+            onClick={() => setScale(nextZoom(scale, false))}
+          >
             <Minus size={16} />
           </IconButton>
           <output className="mono zoom-value" aria-label="Zoom level">
             {Math.round(scale * 1000) / 10}%
           </output>
-          <IconButton label="Zoom in" onClick={() => setScale(scale * 1.2)}>
+          <IconButton
+            label="Zoom in"
+            disabled={scale >= 8}
+            onClick={() => setScale(nextZoom(scale, true))}
+          >
             <Plus size={16} />
           </IconButton>
-          <IconButton label="Fit images" onClick={() => setZoom(null)}>
+          <IconButton
+            label="Fit images"
+            title="Fit width (W)"
+            aria-pressed={fit === "width"}
+            onClick={() => setFit("width")}
+          >
+            <FoldHorizontal size={17} />
+          </IconButton>
+          <IconButton
+            label="Fit to window"
+            title="Fit to window (0)"
+            aria-pressed={fit === "area"}
+            onClick={() => setFit("area")}
+          >
             <Scan size={17} />
           </IconButton>
-          <IconButton label="Actual size" onClick={() => setScale(1)}>
+          <IconButton
+            label="Actual size"
+            title="Actual size (1)"
+            aria-pressed={fit === "manual" && scale === 1}
+            onClick={() => setScale(1)}
+          >
             <Focus size={17} />
           </IconButton>
         </div>
@@ -265,10 +452,47 @@ export function ComparisonViewer({
         )}
       </div>
       <section
-        className="zoom-canvas"
+        ref={canvas}
+        className={`zoom-canvas${panning ? " is-panning" : ""}`}
         aria-label="Zoomable comparison images"
+        aria-keyshortcuts="+ - 0 1 W"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: This image region owns scoped zoom and pan keys while retaining native scrolling.
+        tabIndex={0}
         style={{ width: size.width * scale, height: size.height * scale }}
+        onPointerDown={(event) => {
+          setCrosshair(null);
+          if (event.button !== 0 || event.pointerType === "touch") return;
+          const scroll = scrollRoot();
+          if (!scroll) return;
+          event.preventDefault();
+          event.currentTarget.focus({ preventScroll: true });
+          pan.current = {
+            pointer: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            left: scroll.scrollLeft,
+            top: scroll.scrollTop,
+            moved: false,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
         onPointerMove={(event) => {
+          const drag = pan.current;
+          if (drag && drag.pointer === event.pointerId) {
+            if (!(event.buttons & 1)) {
+              cancelPan();
+              return;
+            }
+            const deltaX = event.clientX - drag.x;
+            const deltaY = event.clientY - drag.y;
+            if (!drag.moved && Math.max(Math.abs(deltaX), Math.abs(deltaY)) < 4) return;
+            drag.moved = true;
+            setPanning(true);
+            setCrosshair(null);
+            const scroll = scrollRoot();
+            if (scroll) scroll.scrollTo({ left: drag.left - deltaX, top: drag.top - deltaY });
+            return;
+          }
           if (mode !== "wipe" || event.pointerType === "touch" || event.buttons !== 0) return;
           const bounds = world.current?.getBoundingClientRect();
           if (bounds && bounds.width > 0) {
@@ -278,6 +502,40 @@ export function ComparisonViewer({
               ),
             );
           }
+        }}
+        onPointerUp={cancelPan}
+        onPointerCancel={cancelPan}
+        onLostPointerCapture={cancelPan}
+        onContextMenu={cancelPan}
+        onDoubleClick={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          if (fit === "manual" && scale === 1) setFit("area");
+          else setScale(1, { x: event.clientX, y: event.clientY });
+        }}
+        onKeyDown={(event) => {
+          if (
+            event.target !== event.currentTarget ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.altKey
+          )
+            return;
+          if (event.key === "+" || event.key === "=") setScale(nextZoom(scale, true));
+          else if (event.key === "-") setScale(nextZoom(scale, false));
+          else if (event.key === "0") setFit("area");
+          else if (event.key === "1") setScale(1);
+          else if (event.key.toLowerCase() === "w") setFit("width");
+          else if (event.key === "Escape") cancelPan();
+          else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+            const step = event.shiftKey ? 160 : 40;
+            scrollRoot()?.scrollBy({
+              left: event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0,
+              top: event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0,
+            });
+          } else return;
+          event.preventDefault();
+          event.stopPropagation();
         }}
       >
         <div

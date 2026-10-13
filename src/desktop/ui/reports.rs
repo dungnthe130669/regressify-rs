@@ -14,10 +14,11 @@ use crate::desktop::results::{
 };
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::slider::{Slider, SliderState};
 
 mod log;
 
-const ZOOM_LEVELS: [f32; 17] = [
+const ZOOM_LEVELS: [f32; 19] = [
     0.25,
     1. / 3.,
     0.5,
@@ -35,6 +36,8 @@ const ZOOM_LEVELS: [f32; 17] = [
     3.,
     4.,
     5.,
+    6.,
+    8.,
 ];
 
 fn next_zoom(current: f32, increase: bool) -> f32 {
@@ -380,19 +383,23 @@ pub(super) struct ResultsPanel {
     filter: usize,
     capture_list: Entity<CaptureListState>,
     image_mode: usize,
-    preview_views: [PreviewView; 4],
+    preview_views: [PreviewView; 6],
     preview_scenario: Option<(PathBuf, String)>,
     visible: bool,
     search: Entity<InputState>,
     _subscription: Subscription,
     focus: FocusHandle,
     capture_focus: FocusHandle,
+    preview_focus: FocusHandle,
+    blend_focus: FocusHandle,
+    blend: Entity<SliderState>,
+    _blend_subscription: Subscription,
     previews: Vec<Preview>,
     image_menu_epoch: u64,
     preview_textures: [PreviewTexture; 3],
     image_task: Option<gpui_kit::Task<()>>,
     image_load_gate: Arc<futures::lock::Mutex<()>>,
-    preview_scrolls: [ScrollHandle; 3],
+    preview_scrolls: [ScrollHandle; 6],
     comparison_scroll: ScrollHandle,
     pointer_guides: Rc<PointerGuides>,
     pointer_layers: [Entity<PointerLayer>; 3],
@@ -455,6 +462,9 @@ impl ResultsPanel {
     }
 
     fn select_image_mode(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.preview_views.len() || (index >= 4 && !self.can_blend()) {
+            return;
+        }
         self.image_menu_epoch = self.image_menu_epoch.wrapping_add(1);
         self.image_mode = index;
         self.pointer_guides.pan.borrow_mut().take();
@@ -469,14 +479,65 @@ impl ResultsPanel {
         }
         view.mode = mode;
         view.padding = None;
-        let scroll = if self.image_mode == 3 {
-            &self.comparison_scroll
-        } else {
-            &self.preview_scrolls[self.image_mode]
-        };
-        scroll.set_offset(point(px(0.), px(0.)));
+        self.image_scroll().set_offset(point(px(0.), px(0.)));
         self.pointer_guides.pan.borrow_mut().take();
+        self.pointer_guides.active.set(None);
         cx.notify();
+    }
+
+    fn actual_size(&mut self, cx: &mut Context<Self>) {
+        self.preview_views[self.image_mode] = PreviewView {
+            mode: ZoomMode::Manual,
+            ..Default::default()
+        };
+        self.pointer_guides.pan.borrow_mut().take();
+        self.pointer_guides.active.set(None);
+        cx.notify();
+    }
+
+    fn image_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let modifiers = event.keystroke.modifiers;
+        if !self.preview_focus.is_focused(window)
+            || self.capture.is_none()
+            || modifiers.control
+            || modifiers.platform
+            || modifiers.alt
+            || gpui_kit::base::GlobalState::is_in_deferred_context(cx)
+        {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "+" | "=" => self.step_zoom(true, cx),
+            "-" => self.step_zoom(false, cx),
+            "0" => self.set_zoom_mode(ZoomMode::FitArea, cx),
+            "1" => self.actual_size(cx),
+            "w" => self.set_zoom_mode(ZoomMode::FitWidth, cx),
+            "escape" => {
+                self.pointer_guides.pan.borrow_mut().take();
+                cx.notify();
+            }
+            key @ ("left" | "right" | "up" | "down") => {
+                let scroll = self.image_scroll();
+                let step = px(if modifiers.shift { 160. } else { 40. });
+                let movement = match key {
+                    "left" => point(step, px(0.)),
+                    "right" => point(-step, px(0.)),
+                    "up" => point(px(0.), step),
+                    _ => point(px(0.), -step),
+                };
+                let offset = scroll.offset() + movement;
+                let maximum = scroll.max_offset();
+                scroll.set_offset(point(
+                    offset.x.clamp(-maximum.x, px(0.)),
+                    offset.y.clamp(-maximum.y, px(0.)),
+                ));
+                self.pointer_guides.active.set(None);
+                cx.notify();
+            }
+            _ => return,
+        }
+        window.prevent_default();
+        cx.stop_propagation();
     }
 
     pub(super) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
@@ -663,6 +724,14 @@ impl ResultsPanel {
                 }
             });
         let pointer_guides = Rc::<PointerGuides>::default();
+        let blend = cx.new(|_| {
+            SliderState::new()
+                .min(0.)
+                .max(100.)
+                .step(1.)
+                .default_value(50.)
+        });
+        let blend_subscription = cx.observe(&blend, |_, _, cx| cx.notify());
         let pointer_layers = std::array::from_fn(|index| {
             cx.new(|_| PointerLayer {
                 index,
@@ -699,6 +768,10 @@ impl ResultsPanel {
             _subscription: subscription,
             focus: cx.focus_handle(),
             capture_focus: cx.focus_handle().tab_index(0),
+            preview_focus: cx.focus_handle().tab_index(0),
+            blend_focus: cx.focus_handle().tab_index(0),
+            blend,
+            _blend_subscription: blend_subscription,
             previews: Vec::new(),
             image_menu_epoch: 0,
             preview_textures: Default::default(),
@@ -1020,6 +1093,9 @@ impl ResultsPanel {
             let _ = view.update_in(cx, |this, _, cx| {
                 if this.generation == generation {
                     this.previews = previews;
+                    if this.image_mode >= 4 && !this.can_blend() {
+                        this.select_image_mode(3, cx);
+                    }
                     this.pointer_guides.alignment.set(alignment);
                     this.image_loading = false;
                     cx.notify();
@@ -1440,9 +1516,29 @@ impl ResultsPanel {
         }
     }
 
+    fn can_blend(&self) -> bool {
+        self.previews.len() >= 2
+            && self.previews[..2].iter().all(|preview| {
+                preview
+                    .result
+                    .as_ref()
+                    .is_ok_and(|image| image.path.is_some())
+            })
+    }
+
+    fn image_scroll(&self) -> &ScrollHandle {
+        if self.image_mode == 3 {
+            &self.comparison_scroll
+        } else {
+            &self.preview_scrolls[self.image_mode]
+        }
+    }
+
     fn preview_canvas_size(&self, index: usize) -> (usize, usize) {
         let images = if self.image_mode == 3 {
             &self.previews[..self.previews.len().min(self.comparison_preview_count())]
+        } else if self.image_mode >= 4 {
+            &self.previews[..self.previews.len().min(2)]
         } else {
             self.previews
                 .get(index)
@@ -1458,7 +1554,7 @@ impl ResultsPanel {
     }
 
     fn zoom_preview_index(&self) -> usize {
-        if self.image_mode == 3 {
+        if self.image_mode >= 3 {
             self.previews
                 .iter()
                 .take(self.comparison_preview_count())
@@ -1547,7 +1643,7 @@ impl ResultsPanel {
         event: &gpui_kit::ScrollWheelEvent,
         cx: &mut Context<Self>,
     ) {
-        if !event.modifiers.control {
+        if !event.modifiers.control && !event.modifiers.platform {
             return;
         }
         cx.stop_propagation();
@@ -1573,11 +1669,7 @@ impl ResultsPanel {
             return;
         }
         let next_size = size(px(width as f32 * zoom), px(height as f32 * zoom));
-        let scroll = if self.image_mode == 3 {
-            &self.comparison_scroll
-        } else {
-            &self.preview_scrolls[index]
-        };
+        let scroll = self.image_scroll().clone();
         let viewport = scroll.bounds().size;
         let padding = view
             .padding
@@ -1662,11 +1754,75 @@ impl ResultsPanel {
                         gap,
                     },
                 ));
-                let scroll = if self.image_mode == 3 {
-                    &self.comparison_scroll
-                } else {
-                    &self.preview_scrolls[index]
-                };
+                let scroll = self.image_scroll();
+                let blend = self.blend.read(cx).value().end() / 100.;
+                let mut layers = div().absolute().top_0().left_0().size_full().child(
+                    img(self.preview_textures[index].source(image.image.clone()))
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(relative(image.width as f32 / canvas_width as f32))
+                        .h(relative(image.height as f32 / canvas_height as f32))
+                        .object_fit(ObjectFit::Contain),
+                );
+                if self.image_mode >= 4
+                    && let Some(current) = self
+                        .previews
+                        .get(1)
+                        .and_then(|preview| preview.result.as_ref().ok())
+                {
+                    let visible = if self.image_mode == 4 { 1. - blend } else { 1. };
+                    if visible > 0. {
+                        // Clip the container, keeping both images at the same pixel scale and origin.
+                        layers = layers.child(
+                            div()
+                                .id("comparison-test-layer")
+                                .test_support()
+                                .absolute()
+                                .top_0()
+                                .right_0()
+                                .h_full()
+                                .w(relative(visible))
+                                .overflow_hidden()
+                                .opacity(if self.image_mode == 5 { blend } else { 1. })
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .right_0()
+                                        .h_full()
+                                        .w(relative(1. / visible))
+                                        .child(
+                                            img(self.preview_textures[1]
+                                                .source(current.image.clone()))
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .w(relative(current.width as f32 / canvas_width as f32))
+                                            .h(relative(
+                                                current.height as f32 / canvas_height as f32,
+                                            ))
+                                            .object_fit(ObjectFit::Contain),
+                                        ),
+                                ),
+                        );
+                    }
+                    if self.image_mode == 4 {
+                        layers = layers.child(
+                            div()
+                                .id("comparison-wipe-divider")
+                                .test_support()
+                                .absolute()
+                                .top_0()
+                                .left(relative(blend))
+                                .h_full()
+                                .w(px(1.))
+                                .bg(rgba(0xffffffff))
+                                .border_l_1()
+                                .border_color(rgba(0x000000b3)),
+                        );
+                    }
+                }
                 let display = div()
                     .id(("image-content", index))
                     .role(if self.image_mode == 3 {
@@ -1677,15 +1833,7 @@ impl ResultsPanel {
                     .aria_label(format!("{} image canvas", preview.label))
                     .test_support()
                     .relative()
-                    .child(
-                        img(self.preview_textures[index].source(image.image.clone()))
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .w(relative(image.width as f32 / canvas_width as f32))
-                            .h(relative(image.height as f32 / canvas_height as f32))
-                            .object_fit(ObjectFit::Contain),
-                    )
+                    .child(layers)
                     .cursor(
                         if self
                             .pointer_guides
@@ -1713,6 +1861,7 @@ impl ResultsPanel {
                     .on_mouse_down(MouseButton::Left, {
                         let guides = self.pointer_guides.clone();
                         let scroll = scroll.clone();
+                        let focus = self.preview_focus.clone();
                         move |event, window, cx| {
                             let Some(bounds) = guides.bounds[index].get() else {
                                 return;
@@ -1728,6 +1877,8 @@ impl ResultsPanel {
                                 vertical,
                                 dragged: false,
                             });
+                            guides.active.set(None);
+                            window.focus(&focus, cx);
                             window.refresh();
                             window.prevent_default();
                             cx.stop_propagation();
@@ -1741,27 +1892,36 @@ impl ResultsPanel {
                         }
                         if this.image_mode == 3 {
                             this.select_image_mode(index, cx);
-                        }
-                    }))
-                    .on_mouse_move({
-                        let guides = self.pointer_guides.clone();
-                        let layers = self.pointer_layers.clone();
-                        move |_, _, cx| {
-                            guides.active.set(Some(index));
-                            for layer in &layers {
-                                layer.update(cx, |_, cx| cx.notify());
+                        } else if matches!(event, gpui_kit::ClickEvent::Mouse(click) if click.up.click_count == 2) {
+                            let view = this.preview_views[this.image_mode];
+                            if view.mode == ZoomMode::Manual && view.zoom == 1. {
+                                this.set_zoom_mode(ZoomMode::FitArea, cx);
+                            } else {
+                                this.actual_size(cx);
                             }
                         }
-                    })
+                    }))
+                    .on_mouse_move(cx.listener(move |this, event: &gpui_kit::MouseMoveEvent, window, cx| {
+                            if this.image_mode == 4 && event.pressed_button.is_none()
+                                && let Some(bounds) = this.pointer_guides.bounds[index].get()
+                                && bounds.size.width > px(0.)
+                            {
+                                let value = (((event.position.x - bounds.left()) / bounds.size.width) * 100.).round().clamp(0., 100.);
+                                if this.blend.read(cx).value().end() != value {
+                                    this.blend.update(cx, |state, cx| state.set_value(value, window, cx));
+                                }
+                            }
+                            this.pointer_guides.active.set((this.image_mode == 3
+                                && this.pointer_guides.pan.borrow().is_none()).then_some(index));
+                            for layer in &this.pointer_layers {
+                                layer.update(cx, |_, cx| cx.notify());
+                            }
+                    }))
                     .on_hover({
                         let guides = self.pointer_guides.clone();
                         let layers = self.pointer_layers.clone();
                         move |hovered, _, cx| {
-                            let active = if *hovered {
-                                Some(index)
-                            } else {
-                                guides.active.get().filter(|active| *active != index)
-                            };
+                            let active = guides.active.get().filter(|active| *hovered || *active != index);
                             if guides.active.replace(active) != active {
                                 for layer in &layers {
                                     layer.update(cx, |_, cx| cx.notify());
@@ -2209,7 +2369,7 @@ impl ResultsPanel {
                     .into_any_element()
             }
         } else {
-            self.render_preview(self.image_mode, cx)
+            self.render_preview(self.zoom_preview_index(), cx)
         };
         let mismatch = test
             .and_then(|test| test.pair.diff.as_ref())
@@ -2230,6 +2390,7 @@ impl ResultsPanel {
         div()
             .id("comparison-view")
             .test_support()
+            .on_key_down(cx.listener(|this, event, window, cx| this.image_key(event, window, cx)))
             .flex()
             .flex_col()
             .size_full()
@@ -2424,7 +2585,9 @@ impl ResultsPanel {
                             .child(Tab::new().label("Reference"))
                             .child(Tab::new().label("Test"))
                             .child(Tab::new().label("Diff"))
-                            .child(Tab::new().label("Side by side")),
+                            .child(Tab::new().label("Side by side"))
+                            .child(Tab::new().label("Wipe").disabled(!self.can_blend()))
+                            .child(Tab::new().label("Overlay").disabled(!self.can_blend())),
                     )
                     .child(div().flex_1())
                     .child(
@@ -2432,7 +2595,9 @@ impl ResultsPanel {
                             .disabled(self.capture.is_none())
                             .child(
                                 Button::new("fit-image")
-                                    .label("Fit area")
+                                    .icon(gpui_kit::assets::IconName::Maximize)
+                                    .tooltip("Fit to window (0)")
+                                    .accessibility_label("Fit area")
                                     .selected(view.mode == ZoomMode::FitArea)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_zoom_mode(ZoomMode::FitArea, cx);
@@ -2440,7 +2605,9 @@ impl ResultsPanel {
                             )
                             .child(
                                 Button::new("fit-width")
-                                    .label("Fit width")
+                                    .icon(gpui_kit::assets::IconName::ArrowLeftRight)
+                                    .tooltip("Fit width (W)")
+                                    .accessibility_label("Fit width")
                                     .selected(view.mode == ZoomMode::FitWidth)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_zoom_mode(ZoomMode::FitWidth, cx);
@@ -2482,16 +2649,45 @@ impl ResultsPanel {
                             .accessibility_label("Actual size (100%)")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.preview_views[this.image_mode] = PreviewView {
-                                    mode: ZoomMode::Manual,
-                                    ..Default::default()
-                                };
-                                this.pointer_guides.pan.borrow_mut().take();
-                                cx.notify();
+                                this.actual_size(cx);
                             })),
                             ),
                     ),
             )
+            .when(self.image_mode >= 4 && self.can_blend(), |content| {
+                let label = if self.image_mode == 4 { "Wipe position" } else { "Test image opacity" };
+                content.child(div().id("comparison-blend-controls").role(Role::Group)
+                    .aria_label(label).test_support().flex().items_center().gap_3().px_3().py_1()
+                    .flex_shrink_0().child(div().text_sm().child(if self.image_mode == 4 { "Wipe" } else { "Opacity" }))
+                    .child(div().id("comparison-blend-slider").role(Role::Group)
+                        .aria_label(format!("Adjust {label}")).test_support().track_focus(&self.blend_focus)
+                        .w(px(180.)).max_w_full()
+                        .capture_any_mouse_down(cx.listener(|this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                            if event.button == MouseButton::Left {
+                                window.focus(&this.blend_focus, cx);
+                            }
+                        }))
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            if !this.blend_focus.is_focused(window)
+                                || event.keystroke.modifiers != Modifiers::default()
+                                || gpui_kit::base::GlobalState::is_in_deferred_context(cx) { return; }
+                            let value = this.blend.read(cx).value().end();
+                            let next = match event.keystroke.key.as_str() {
+                                "left" | "down" => value - 1.,
+                                "right" | "up" => value + 1.,
+                                "home" => 0.,
+                                "end" => 100.,
+                                _ => return,
+                            }.clamp(0., 100.);
+                            this.blend.update(cx, |state, cx| state.set_value(next, window, cx));
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }))
+                        .child(Slider::new(&self.blend)))
+                    .child(div().id("comparison-blend-value").role(Role::Status)
+                        .aria_label(format!("{:.0}%", self.blend.read(cx).value().end())).test_support()
+                        .w(px(40.)).text_sm().child(format!("{:.0}%", self.blend.read(cx).value().end()))))
+            })
             .children(
                 test.and_then(|test| test.pair.engine_error_msg.as_ref())
                     .map(|error| {
@@ -2512,7 +2708,7 @@ impl ResultsPanel {
                             )
                     }),
             )
-            .child(div().flex_1().min_h_0().child(previews))
+            .child(div().id("image-viewer-surface").track_focus(&self.preview_focus).flex_1().min_h_0().child(previews))
             .into_any_element()
     }
 }
@@ -2594,6 +2790,7 @@ impl Render for ResultsPanel {
                         Button::new("refresh-results")
                             .ghost()
                             .icon(gpui_kit::assets::IconName::RefreshCw)
+                            .accessibility_label("Refresh reports")
                             .tooltip(format!("Refresh reports\n{counts}"))
                             .disabled(self.loading || self.root.is_none())
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -2807,11 +3004,122 @@ mod pointer_tests {
             assert_eq!(next_zoom(current, true), larger);
         }
         assert_eq!(next_zoom(0.25, false), 0.25);
-        assert_eq!(next_zoom(5., true), 5.);
+        assert_eq!(next_zoom(5., true), 6.);
+        assert_eq!(next_zoom(6., true), 8.);
+        assert_eq!(next_zoom(8., true), 8.);
         assert_eq!(next_zoom(0.1, true), 0.25);
         assert_eq!(next_zoom(0.1, false), 0.1);
         assert_eq!(next_zoom(1.0005, true), 1.1);
         assert_eq!(next_zoom(0.9995, false), 0.9);
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn image_previews_blend_controls_and_keyboard_are_scoped(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
+        use gpui_kit::{AppContext as _, InputEvent as _};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        for (name, width, height, color) in [
+            ("reference", 1200, 1800, [200_u8, 40, 60, 255]),
+            ("current", 1000, 1600, [40_u8, 160, 200, 255]),
+        ] {
+            lodepng::encode32_file(
+                run.join(format!("{name}.png")),
+                &color.repeat(width * height),
+                width,
+                height,
+            )
+            .unwrap();
+        }
+        std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
+            "id": "ui-test", "tests": [
+                {"status": "fail", "pair": {"label": "Blend", "reference": "../bitmaps_test/run-1/reference.png", "test": "../bitmaps_test/run-1/current.png"}},
+                {"status": "fail", "pair": {"label": "Missing", "test": "../bitmaps_test/run-1/current.png"}}
+            ]
+        })).unwrap()).unwrap();
+        let (handle, editor) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let results = cx.update(|cx| editor.read(cx).results.clone());
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            for mode in [4_usize, 5] {
+                window.within("image-modes").click(mode, cx);
+                window.click("comparison-blend-slider", cx);
+                window.press("home", cx);
+                assert_eq!(window.find("comparison-blend-value").label(), Some("0%"));
+                window.press("end", cx);
+                assert_eq!(window.find("comparison-blend-value").label(), Some("100%"));
+                window.press("left", cx);
+                assert_eq!(window.find("comparison-blend-value").label(), Some("99%"));
+                assert_eq!(window.find("fit-image").checked(), Some(true));
+                if mode == 4 {
+                    window.press("home", cx);
+                    let full = window.find(("image-content", 0_usize)).bounds();
+                    assert_eq!(
+                        window.find("comparison-test-layer").bounds().size,
+                        full.size
+                    );
+                    window.press("end", cx);
+                    assert!(window.try_find("comparison-test-layer").is_none());
+                    let pointer =
+                        full.origin + point(full.size.width * 0.25, full.size.height * 0.5);
+                    window.dispatch_event(
+                        gpui_kit::MouseMoveEvent {
+                            position: pointer,
+                            ..Default::default()
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(window.find("comparison-blend-value").label(), Some("25%"));
+                    let divider = window.find("comparison-wipe-divider").bounds();
+                    assert!((divider.left() - pointer.x).abs() <= px(1.));
+                }
+                window.click(("image-content", 0_usize), cx);
+                window.press("1", cx);
+                assert_eq!(window.find("zoom-value").label(), Some("100.0%"));
+                window.press("=", cx);
+                assert_eq!(window.find("zoom-value").label(), Some("110.0%"));
+                window.press("right", cx);
+                assert!(results.read(cx).image_scroll().offset().x < px(0.));
+                window.press("0", cx);
+                assert_eq!(window.find("fit-image").checked(), Some(true));
+                window.press("w", cx);
+                assert_eq!(window.find("fit-width").checked(), Some(true));
+            }
+            window.within("image-modes").click(4_usize, cx);
+            assert_eq!(window.find("fit-width").checked(), Some(true));
+            window.click(("capture", 1_usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            for mode in [4_usize, 5] {
+                window.within("image-modes").click(mode, cx);
+                assert_eq!(results.read(cx).image_mode, 3);
+                assert!(window.try_find("comparison-blend-slider").is_none());
+            }
+        })
+        .unwrap();
     }
 
     #[test]

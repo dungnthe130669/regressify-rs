@@ -2,6 +2,32 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Image Viewer Parity (2026-10-13)
+
+- Resolved in source: desktop lacked wipe/overlay; the web viewer lacked drag-pan,
+  fit-to-window, pointer-anchored zoom, and scoped image keyboard controls. Both
+  now offer six comparison modes, no-upscale fits, actual size, 25-800% zoom steps,
+  pan, modifier-wheel zoom, and double-click. Ordinary scrolling remains native.
+- [Native tests](src/desktop/ui/reports.rs) cover blend controls and unavailable
+  sources; [six-mode checks](src/desktop/ui/tests.rs) cover fit, pan, and anchoring.
+  Native Comparison smoke verifies rendered wipe/overlay source pixels, both
+  themes/window sizes, menus, crosshairs, and preference restoration.
+- [Web tests](frontend/tests/report.spec.ts) cover fits, exact drag offsets,
+  anchored wheel zoom, keyboard isolation, per-mode state, and gesture cleanup.
+  Existing published snapshots need regeneration and redeployment, not recapture.
+
+## Snapshot Overview Mobile Layout (2026-10-13)
+
+- Resolved in source: the overview table required horizontal scrolling on phones,
+  and engine-error labels took a separate line below suite names. Suites now use
+  stacked, labeled metrics at narrow widths, with all sorting options retained.
+  Inline numeric error badges expose their full labels on hover, focus, and tap.
+- [Browser regressions](frontend/tests/report.spec.ts) failed before the fix and
+  pass afterward, covering 320px through the table breakpoint, accessibility,
+  themes, filters, the dated heading, and preserved review breadcrumbs/footers.
+- Existing hosted snapshots need regeneration and redeployment; no recapture is
+  required.
+
 ## Deferred Capture Resources (2026-10-13)
 
 - Resolved in source: fast lazy-load scrolling could leave a decoded placeholder

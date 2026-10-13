@@ -12655,7 +12655,7 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
             })
             .await;
             cx.update_window(handle.into(), |_, window, cx| {
-                for mode in 0..4 {
+                for mode in 0..6 {
                     window.within("image-modes").click(mode, cx);
                     assert_eq!(window.find("fit-image").checked(), Some(true));
                     let (canvas_width, canvas_height) = match mode {
@@ -12667,6 +12667,8 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                     let canvas_height = canvas_height as f32;
                     let panes = if mode == 3 {
                         vec![0_usize, 1, 2]
+                    } else if mode >= 4 {
+                        vec![0_usize]
                     } else {
                         vec![mode]
                     };
@@ -13026,9 +13028,9 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        for mode in 0..4 {
+        for mode in 0..6 {
             window.within("image-modes").click(mode, cx);
-            let panes = if mode == 3 { vec![0_usize, 1, 2] } else { vec![mode] };
+            let panes = if mode == 3 { vec![0_usize, 1, 2] } else if mode >= 4 { vec![0_usize] } else { vec![mode] };
             for index in panes {
                 for fitted in [true, false] {
                     if window.find("fit-image").checked() != Some(true) {

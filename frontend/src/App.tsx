@@ -156,6 +156,7 @@ function SettingsControl() {
 function Shell() {
   const manifest = useManifest();
   const location = useLocation();
+  const isOverview = location.pathname === "/" || location.pathname === "/index.html";
   const match = useMatch("/suites/:suiteId/*");
   const imageMatch = useMatch("/suites/:suiteId/images/:imageId");
   const suiteId = match?.params.suiteId;
@@ -309,41 +310,43 @@ function Shell() {
           </aside>
         )}
         <div className="workspace">
-          <section className="breadcrumb-bar" aria-label="Snapshot navigation">
-            {match && (
-              <IconButton
-                label="Toggle suite index"
-                aria-expanded={compact ? drawerOpen : panelOpen}
-                aria-controls={
-                  compact ? "review-navigation-drawer" : panelOpen ? "suite-panel" : undefined
-                }
-                onClick={togglePanel}
-              >
-                {panelOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-              </IconButton>
-            )}
-            <nav aria-label="Breadcrumb">
-              <Link to="/">Overview</Link>
+          {!isOverview && (
+            <section className="breadcrumb-bar" aria-label="Snapshot navigation">
               {match && (
-                <>
-                  <ChevronRight size={14} />
-                  <Link to={suitePath(match.params.suiteId || "")}>{suiteName}</Link>
-                  {location.pathname.includes("/images/") && (
-                    <>
-                      <ChevronRight size={14} />
-                      <span>Comparison</span>
-                    </>
-                  )}
-                </>
+                <IconButton
+                  label="Toggle suite index"
+                  aria-expanded={compact ? drawerOpen : panelOpen}
+                  aria-controls={
+                    compact ? "review-navigation-drawer" : panelOpen ? "suite-panel" : undefined
+                  }
+                  onClick={togglePanel}
+                >
+                  {panelOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+                </IconButton>
               )}
-            </nav>
-            <span className="snapshot-date mono">
-              {new Date(manifest.generatedAt).toLocaleString(undefined, {
-                dateStyle: "medium",
-                timeStyle: "short",
-              })}
-            </span>
-          </section>
+              <nav aria-label="Breadcrumb">
+                <Link to="/">Overview</Link>
+                {match && (
+                  <>
+                    <ChevronRight size={14} />
+                    <Link to={suitePath(match.params.suiteId || "")}>{suiteName}</Link>
+                    {location.pathname.includes("/images/") && (
+                      <>
+                        <ChevronRight size={14} />
+                        <span>Comparison</span>
+                      </>
+                    )}
+                  </>
+                )}
+              </nav>
+              <span className="snapshot-date mono">
+                {new Date(manifest.generatedAt).toLocaleString(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </span>
+            </section>
+          )}
           <div ref={content} className={`workspace-content${match ? " review-scroll" : ""}`}>
             <main id="main" ref={main} tabIndex={-1}>
               <Routes>

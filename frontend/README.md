@@ -92,6 +92,10 @@ alignment directions, and absent target pixels inside the gap.
 Delayed-image checks verify explicit dimensions, unchanged fit zoom, and stable
 comparison geometry in every mode, including failed loads. They disable entrance
 animations so measurements isolate image loading.
+The `image viewer` browser checks cover fit-to-window, anchored Ctrl+wheel zoom,
+exact drag offsets, keyboard scoping, per-mode zoom, double-click, and touch/blur
+cleanup on desktop and mobile. Run these and the existing image-mode/crosshair
+checks against both Vite and the generated report.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Footer checks cover short, filtered, and not-found pages, plus long content in
@@ -330,8 +334,11 @@ Returning to the overview restores the configured report title.
 The shared top bar places the configured report heading and safe Markdown
 subheading on separate lines beside the logo. On phones, the wordmark is hidden
 to leave room for report text; long text wraps without overlapping the controls.
-The overview uses the page heading `Snapshot Overview` with compact summary
-spacing. Review panes fill the remaining viewport below the actual header height.
+The overview uses the page heading `Snapshot Overview`, with the generated date
+and time directly below it in the browser's locale. Its content is centered within
+a 1080px maximum width and has no breadcrumb row. Suite and image pages retain
+their navigation. Review panes fill the remaining viewport below the actual header
+height.
 
 The overview summarizes Total tests, Passed, Failed, and Pass rate across all
 suites. Test totals count captures, and filters do not change the summary. The
@@ -343,8 +350,14 @@ Passed counts highlight green only for nonempty, fully passing suites; nonzero
 failed counts highlight red, including engine errors. Pass-rate bars are green
 for fully passing suites and neutral for failing suites. Bar lengths and displayed
 percentages still represent passing captures: 0% remains empty, and a rate that
-rounds to 100% does not change the suite's status. On phones, the table scrolls
-horizontally so all five columns and sort controls remain available.
+rounds to 100% does not change the suite's status. Engine errors appear as a numeric
+badge beside the suite name; hover, keyboard focus, or tap reveals the full count
+label in a tooltip. Escape or an outside press dismisses it.
+
+At widths up to 760px, each suite becomes a stacked group with its name above
+labeled Total tests, Passed, Failed, and Pass rate rows. No horizontal scrolling
+is needed. A Sort by selector and direction button retain all five sort options;
+larger screens use the sortable table headings.
 
 Markdown subheadings allow text, emphasis, lists, code, and safe HTTP(S) links.
 Raw HTML and embedded images are not rendered. Page links reject credentials and
@@ -380,8 +393,17 @@ Overview and suite footers stay at the bottom of short pages and follow longer
 content without covering it. Image review remains footer-free.
 
 Images occupy their full scaled height inside the right page, with no inner
-scrollbar or wheel/pan interception. Mouse-wheel, trackpad, and touch scrolling
-move the page; zoom buttons, Fit, and Actual size change the rendered image size.
+scrollbar. Unmodified mouse-wheel, trackpad, and touch scrolling move the page.
+Left-drag pans the same page using pointer capture, without changing zoom or wipe
+position; release, cancellation, lost capture, blur, or a view change clears the
+gesture. Ctrl/Cmd+wheel selects the next zoom preset around the pointer; zoom
+buttons use the same 25-800% presets as desktop. Fit width (the web default) and
+Fit to window remain responsive and never upscale. Actual size selects 100%.
+Each mode retains its zoom for the current capture; selecting another capture
+resets it. Double-click toggles actual size and fit-to-window. The focused image
+surface accepts `+`/`-`, `0` (window), `1` (actual), `W` (width), arrow keys to pan,
+Shift+arrows for larger steps, and Escape to cancel a drag. Inputs and sliders
+keep their own keyboard behavior.
 Side-by-side review shows aligned Reference/Test/Diff lanes when a diff exists.
 Hover any image to show synchronized crosshairs at the same image-pixel coordinates
 in all three lanes. White guides with dark outlines stay one screen pixel wide at

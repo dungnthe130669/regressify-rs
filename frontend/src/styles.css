@@ -370,7 +370,7 @@ body:has(.settings-dialog[open]) {
   margin: 0 auto;
 }
 .page.overview-page {
-  max-width: 1340px;
+  max-width: 1080px;
   padding-top: 16px;
 }
 .page-heading {
@@ -395,6 +395,12 @@ body:has(.settings-dialog[open]) {
 }
 .page-heading .overview-title {
   font-size: 20px;
+}
+.overview-date {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
 }
 .eyebrow {
   font-family: var(--font-mono);
@@ -674,6 +680,10 @@ body:has(.settings-dialog[open]) {
   border-top: 1px solid var(--border);
   overflow-x: auto;
 }
+.overview-sort,
+.mobile-column-label {
+  display: none;
+}
 .results-table {
   --suite-cell-padding: 16px;
   --suite-name-gap: 12px;
@@ -723,12 +733,22 @@ body:has(.settings-dialog[open]) {
 .results-table tr:hover td {
   background: var(--subtle);
 }
+.suite-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .suite-name {
   display: inline-flex;
   align-items: center;
   gap: var(--suite-name-gap);
+  min-width: 0;
   font-size: 15px;
   font-weight: 500;
+}
+.suite-label {
+  min-width: 0;
 }
 .suite-name:hover {
   color: var(--accent);
@@ -745,10 +765,111 @@ body:has(.settings-dialog[open]) {
   background: var(--fail);
 }
 .table-error {
-  display: block;
-  margin: 4px 0 0 19px;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--error) 30%, var(--border));
+  border-radius: 4px;
+  background: var(--error-soft);
+  font-size: 12px;
   color: var(--error);
+}
+.error-tooltip {
+  z-index: 40;
+  max-width: calc(100vw - 24px);
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--text);
+  color: var(--surface);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .overview-sort {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .overview-sort select {
+    flex: 1;
+    min-width: 0;
+    height: 34px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+  }
+  .overview-sort .icon-button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .results-table {
+    --suite-cell-padding: 12px;
+    --suite-name-gap: 8px;
+    display: block;
+    min-width: 0;
+  }
+  .results-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .results-table :where(th) button {
+    display: none;
+  }
+  .mobile-column-label {
+    display: inline;
+  }
+  .results-table tbody {
+    display: block;
+  }
+  .results-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    margin-bottom: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .results-table tbody tr:last-child {
+    margin-bottom: 0;
+  }
+  .results-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+  .results-table td:first-child {
+    display: block;
+    background: var(--subtle);
+    padding-block: 12px;
+  }
+  .results-table td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-family: var(--font-sans);
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  .results-table .rate {
+    width: 144px;
+    max-width: 60%;
+  }
 }
 .status-badge {
   display: inline-flex;
@@ -1353,6 +1474,8 @@ body:has(.settings-dialog[open]) {
   position: relative;
   margin-inline: auto;
   overflow: clip;
+  cursor: grab;
+  user-select: none;
   outline: 1px solid var(--border);
   background-color: var(--canvas);
   background-image:
@@ -1398,6 +1521,10 @@ body:has(.settings-dialog[open]) {
 }
 .comparison-image:has(.comparison-crosshair) {
   cursor: crosshair;
+}
+.comparison-viewer .zoom-canvas.is-panning,
+.zoom-canvas.is-panning .comparison-image {
+  cursor: grabbing;
 }
 .comparison-crosshair {
   position: absolute;
@@ -1453,7 +1580,8 @@ body:has(.settings-dialog[open]) {
   gap: 4px;
 }
 .zoom-value {
-  width: 46px;
+  width: 56px;
+  flex-shrink: 0;
   text-align: center;
   font-size: 13px;
 }
@@ -1787,18 +1915,6 @@ figcaption {
   }
   .status-filters > button > span {
     font-size: 11px;
-  }
-  .results-table {
-    --suite-cell-padding: 8px;
-    --suite-name-gap: 8px;
-    min-width: 560px;
-  }
-  .results-table th {
-    font-size: 12px;
-    padding: 12px 6px;
-  }
-  .results-table td {
-    padding: 17px 6px;
   }
   .suite-name {
     font-size: 14px;

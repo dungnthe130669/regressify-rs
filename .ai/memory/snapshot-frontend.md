@@ -67,22 +67,21 @@ Verified: 2026-10-13
   left/right scroll areas and pointer-captured divider resizing; preferred desktop
   width survives narrow/mobile viewports. Tailwind resets native `hr` height to zero,
   so the vertical divider explicitly needs `height: 100%`.
-- [Overview](../../frontend/src/pages/OverviewPage.tsx) sorts all five columns,
-  using raw counts/ratios instead of formatted percentages. `overview sorts every
-  column` covers direction changes, filter preservation, and refresh. Fully passing
-  nonempty suites highlight passed counts green; failures highlight failed counts
-  red but use neutral bar fills. `pass-rate bars distinguish` checks actual PNG
-  pixels in both themes, including empty bars and rounded 100% failures. Phones
-  retain every column in a horizontally scrollable table. Mocked suite IDs must
-  be explicit: search includes IDs, and Vite/production manifest orders differ.
-- [Shell](../../frontend/src/App.tsx) uses growing flex columns and review panes
-  below the actual compact header height. It stacks report heading/subheading;
-  the overview page heading is `Snapshot Overview`.
-  `bun run test:e2e --grep footer` covers short/filtered/missing pages and long
-  document/review scrolling on desktop and mobile.
-- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) reserves full height in the right page; only explicit zoom controls change scale, not native scrolling.
-  Optional `imageSizes` provides pre-load sizing; `dimensions` holds deltas. Legacy reports discover sizes on load.
-  Delayed-load tests emulate reduced motion to exclude the page entrance animation.
+- [Overview](../../frontend/src/pages/OverviewPage.tsx) sorts by raw counts/ratios.
+  `overview sorts every column` tests directions, filters, and refresh. Nonempty
+  fully passing suites highlight passed counts green; failures highlight failed
+  counts red with neutral bars. `pass-rate bars distinguish` checks pixels in both
+  themes, empty bars, and rounded 100% failures. At up to 760px, labeled metrics
+  stack with sort controls; tables resume at 761px. Inline numeric error tooltips
+  support hover/focus/tap and Escape. Mock suite IDs explicitly: search includes
+  IDs, and Vite/production manifest orders differ.
+- [Shell](../../frontend/src/App.tsx) sizes growing flex columns below the actual
+  compact header. The 1080px overview omits breadcrumbs and shows local date/time
+  below `Snapshot Overview`; review breadcrumbs stay unchanged. `--grep footer`
+  covers short/filtered/missing pages and long document/review scrolling.
+- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) keeps native page scrolling and drag-pan; Ctrl/Cmd+wheel anchors zoom, while toolbar zoom retains scroll behavior. Canvas-scoped keys and per-mode zoom reset on capture change; fits never upscale. The `image viewer` browser tests cover gestures and cleanup.
+  Optional `imageSizes` reserves decoded dimensions before load; `dimensions` holds deltas. Legacy reports discover sizes on load.
+  Delayed-load tests use reduced motion to exclude entrance animation.
 - Side-by-side crosshairs map image pixels through optional comparer `alignment`,
   excluding band holes and unavailable/out-of-bounds pixels; strokes stay one screen pixel wide.
   The `side by side crosshairs|scrolling over images` browser checks cover

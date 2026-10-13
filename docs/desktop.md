@@ -1916,7 +1916,7 @@ rejected. Ordinary browsing reads only the newest valid report per suite;
 explicit run requests exclude unrelated reports before applying the discovery
 limit of 1,000 report reads, limited to 16 MiB each.
 
-Reference, Test, Diff, and Side by side display background-loaded PNGs.
+Reference, Test, Diff, Side by side, Wipe, and Overlay display background-loaded PNGs.
 Side by side is selected by default and whenever a different scenario is selected.
 Switching between captures of the same scenario or refreshing its report preserves
 the selected tab. Legacy reports without scenario IDs return to Side by side for
@@ -1929,20 +1929,29 @@ scrolling for tall images. The two fit modes are mutually exclusive.
 The zoom readout shows the actual displayed scale, rounded to one decimal place,
 and updates when the fit mode, image tab, capture, or available preview size changes.
 Preview canvases are horizontally centered when narrower than their viewport.
-These defaults apply to Reference, Test, Diff, and Side by side.
+These defaults apply to all six image modes.
 Each tab independently remembers its fit mode and manual zoom value while viewing
 the same scenario, including across report refreshes and viewport captures of that
 scenario. Selecting a different scenario, leaving Results, or restarting the app
 resets every tab to Fit area. Legacy reports without scenario IDs reset on each
 different capture.
-Zoom buttons and Ctrl+mouse wheel use [Chrome's zoom presets](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/common/page/page_zoom.cc):
+Zoom buttons and Ctrl/Cmd+mouse wheel use Chrome-style zoom presets, extended to 800%:
 25%, 33.3%, 50%, 66.7%, 75%, 80%, 90%, 100%, 110%, 125%, 150%, 175%, 200%, 250%,
-300%, 400%, and 500%. Each action selects the nearest preset in the requested
+300%, 400%, 500%, 600%, and 800%. Each action selects the nearest preset in the requested
 direction, starting from the displayed scale. Fit area remains exact and can
 shrink below 25%; zooming out at that size leaves the image fitted.
-Ctrl+mouse wheel keeps the image point under the pointer fixed. Left-button
+Ctrl/Cmd+mouse wheel keeps the image point under the pointer fixed. Left-button
 dragging pans images that exceed the viewport; ordinary wheel scrolling,
 scrollbars, and actual-size reset remain available.
+With the image surface focused, `+`/`-` step zoom, `0` fits the window, `1` selects
+actual size, and `W` fits width. Arrow keys pan, Shift+arrows move farther, and
+Escape cancels a drag. Shortcuts do not intercept editor, filter, slider, or menu
+input. Double-click a single-image, wipe, or overlay view to toggle actual size
+and fit-to-window.
+Wipe reveals Reference on the left and Test on the right, following the pointer
+when no button is held. Overlay adjusts the Test image's opacity. Both use a
+0-100% slider with arrow keys and Home/End, share the original images' scale and
+origin, and are disabled for missing images or capture-error placeholders.
 Side by side shows Reference and Test, followed by Diff on the right when a
 diff image can be loaded. Clicking an image opens its corresponding tab and
 restores that tab's own fit/zoom choice; dragging does not switch tabs.

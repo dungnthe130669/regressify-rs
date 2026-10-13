@@ -157,6 +157,68 @@ public static class RegressifySmokeZoomKeys {
         } finally { [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
         Assert-ComparisonPixels "$Name-zoom-pan" $Pane
     }
+    function Test-BlendPixels {
+        $referenceColor = [System.Drawing.Color]::FromArgb(200, 40, 60)
+        $testColor = [System.Drawing.Color]::FromArgb(40, 160, 200)
+        foreach ($image in @(@('blend-reference.png', $referenceColor), @('blend-test.png', $testColor))) {
+            $bitmap = [System.Drawing.Bitmap]::new(960, 720)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+                $graphics.Clear($image[1])
+                $bitmap.Save((Join-Path $output ('bitmaps_test/smoke-run/' + $image[0])), [System.Drawing.Imaging.ImageFormat]::Png)
+            } finally { $graphics.Dispose(); $bitmap.Dispose() }
+        }
+        Write-JsonFixture $reportPath @{
+            id = 'smoke'
+            tests = @(@{ status = 'fail'; pair = @{
+                label = 'Blend parity'; fileName = 'blend.png'
+                reference = '../bitmaps_test/smoke-run/blend-reference.png'
+                test = '../bitmaps_test/smoke-run/blend-test.png'
+            } })
+        }
+        Invoke-Control 'smoke.tests.json'
+        Invoke-Control 'Results'
+        Invoke-Control 'Refresh reports'
+        Wait-Control 'Mismatch Blend parity' | Out-Null
+        Wait-Control 'Test 960 x 720' | Out-Null
+        foreach ($blendDimensions in @(@(1000, 640), @(1600, 1000))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $blendDimensions[0], $blendDimensions[1], 0x0040) | Out-Null
+            foreach ($theme in @('Light', 'Dark')) {
+                Select-Theme $theme
+                foreach ($mode in @('Wipe', 'Overlay')) {
+                    Invoke-Control $mode
+                    Invoke-Control 'Fit area'
+                    $label = if ($mode -eq 'Wipe') { 'Wipe position' } else { 'Test image opacity' }
+                    Invoke-Control ('Adjust ' + $label) -Pointer
+                    foreach ($endpoint in @(0, 100)) {
+                        if ($endpoint -eq 0) { Send-FixtureKeys Home } else { Send-FixtureKeys End }
+                        Wait-Control "$endpoint%" $label | Out-Null
+                        $canvas = (Wait-Control 'Reference image canvas').Current.BoundingRectangle
+                        $preview = (Wait-Control 'Reference image preview').Current.BoundingRectangle
+                        if ($canvas.Right -gt $preview.Right + 1 -or $canvas.Bottom -gt $preview.Bottom + 1) {
+                            throw "$mode does not fit the preview at $($blendDimensions[0])px."
+                        }
+                        $name = 'comparison-blend-' + $theme.ToLowerInvariant() + '-' + $blendDimensions[0] + '-' + $mode.ToLowerInvariant() + '-' + $endpoint
+                        Capture-Window $name
+                        $native = [RegressifySmokeNative+Rect]::new()
+                        if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$native)) { throw 'Cannot read blend window bounds.' }
+                        $bitmap = [System.Drawing.Bitmap]::FromFile((Join-Path $artifacts "$name.png"))
+                        try {
+                            $expected = if (($mode -eq 'Wipe' -and $endpoint -eq 0) -or ($mode -eq 'Overlay' -and $endpoint -eq 100)) { $testColor } else { $referenceColor }
+                            foreach ($fraction in @(0.25, 0.75)) {
+                                $actual = $bitmap.GetPixel([int]($canvas.Left - $native.Left + $canvas.Width * $fraction), [int]($canvas.Top - $native.Top + $canvas.Height * 0.5))
+                                if ([Math]::Abs($actual.R - $expected.R) -gt 3 -or [Math]::Abs($actual.G - $expected.G) -gt 3 -or [Math]::Abs($actual.B - $expected.B) -gt 3) {
+                                    throw "$mode $endpoint% rendered the wrong source pixels in '$name'."
+                                }
+                            }
+                        } finally { $bitmap.Dispose() }
+                    }
+                    Send-FixtureKeys LeftArrow
+                    Wait-Control '99%' $label | Out-Null
+                }
+            }
+        }
+    }
     Write-ComparisonImage (Join-Path $output 'bitmaps_reference/checkout.png') 1600 2200
     Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout.png') 1280 1800
     Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout_diff.png') 1600 2400
@@ -268,5 +330,6 @@ public static class RegressifySmokeZoomKeys {
     Wait-Control 'Test 1280 x 1800' | Out-Null
     Test-ReportApproval
     Test-ErrorImageFlows
-    Write-Output 'Three-pane Results, fit modes, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, and crosshairs passed native checks in light/dark desktop and compact windows.'
+    Test-BlendPixels
+    Write-Output 'Six-mode Results, fit modes, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, crosshairs, and wipe/overlay pixels passed native checks in light/dark desktop and compact windows.'
 }

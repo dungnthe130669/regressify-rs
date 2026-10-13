@@ -220,11 +220,12 @@ const overviewSuites = [
   { displayName: "Empty suite", passed: 0, failed: 0, errors: 0 },
 ].map((suite) => ({ ...suite, total: suite.passed + suite.failed }));
 
-async function mockOverview(page: Page) {
+async function mockOverview(page: Page, suites = overviewSuites) {
   await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
     const response = await route.fetch();
     const manifest = await response.json();
-    manifest.suites = overviewSuites.map((suite, index) => ({
+    manifest.generatedAt = "2026-10-13T09:42:00Z";
+    manifest.suites = suites.map((suite, index) => ({
       ...manifest.suites[index],
       ...suite,
       id: `summary-${index}`,
@@ -257,9 +258,132 @@ async function chooseTheme(page: Page, theme: "Light" | "Dark" | "System") {
   await popup.getByRole("button", { name: "Close settings" }).click();
 }
 
+async function sortOverview(page: Page, key: string, label: string) {
+  const select = page.getByRole("combobox", { name: "Sort suites by" });
+  if (await select.isVisible()) {
+    if ((await select.inputValue()) !== key) await select.selectOption(key);
+    else await page.getByRole("button", { name: /^Sort (ascending|descending)$/ }).click();
+  } else {
+    await page.getByRole("columnheader", { name: label, exact: true }).getByRole("button").click();
+  }
+}
+
+test("overview puts the timestamp below its heading without a breadcrumb", async ({ page }) => {
+  await mockOverview(page);
+  const heading = page.getByRole("heading", { name: "Snapshot Overview", exact: true });
+  await expect(heading).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toHaveCount(0);
+  await expect(page.locator(".breadcrumb-bar")).toHaveCount(0);
+  const date = page.locator(".overview-page .page-heading time");
+  await expect(date).toHaveAttribute("datetime", "2026-10-13T09:42:00Z");
+  await expect(date).toHaveText(
+    await page.evaluate(() =>
+      new Date("2026-10-13T09:42:00Z").toLocaleString(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }),
+    ),
+  );
+  const headingBounds = await heading.boundingBox();
+  const dateBounds = await date.boundingBox();
+  if (!headingBounds || !dateBounds) throw new Error("Overview heading is not visible");
+  expect(dateBounds.y).toBeGreaterThanOrEqual(headingBounds.y + headingBounds.height);
+  expect(
+    await page
+      .locator(".overview-page")
+      .evaluate((element) => element.getBoundingClientRect().width),
+  ).toBeLessThanOrEqual(1080);
+});
+
+test("overview shows engine error counts inline with hover and focus details", async ({
+  page,
+}, info) => {
+  await mockOverview(page, [
+    ...overviewSuites,
+    { displayName: "Multiple errors", total: 3, passed: 0, failed: 3, errors: 3 },
+  ]);
+  for (const [name, count] of [
+    ["Engine error", 1],
+    ["Multiple errors", 3],
+  ] as const) {
+    const row = page.locator(".results-table tbody tr").filter({
+      has: page.getByRole("link", { name, exact: true }),
+    });
+    const label = `${count} engine ${count === 1 ? "error" : "errors"}`;
+    const badge = row.getByRole("button", { name: label, exact: true });
+    await expect(badge).toHaveText(String(count));
+    const linkBounds = await row.getByRole("link", { name, exact: true }).boundingBox();
+    const badgeBounds = await badge.boundingBox();
+    if (!linkBounds || !badgeBounds) throw new Error("Engine error badge is not visible");
+    expect(badgeBounds.x).toBeGreaterThanOrEqual(linkBounds.x + linkBounds.width);
+    expect(
+      Math.abs(badgeBounds.y + badgeBounds.height / 2 - linkBounds.y - linkBounds.height / 2),
+    ).toBeLessThanOrEqual(1);
+    if (info.project.name === "mobile") await badge.tap();
+    else await badge.hover();
+    const tooltip = page.getByRole("tooltip");
+    await expect(tooltip).toHaveText(label);
+    await page.keyboard.press("Escape");
+    await expect(tooltip).toHaveCount(0);
+    await page.mouse.move(0, 0);
+    await badge.blur();
+    await badge.focus();
+    await expect(tooltip).toHaveText(label);
+    await page.keyboard.press("Escape");
+    await expect(tooltip).toHaveCount(0);
+    await badge.blur();
+  }
+  await expect(
+    page
+      .locator(".results-table tbody tr")
+      .filter({
+        has: page.getByRole("link", { name: "All passing", exact: true }),
+      })
+      .locator(".table-error"),
+  ).toHaveCount(0);
+});
+
+test("overview stacks all suite metrics on narrow screens", async ({ page }, info) => {
+  const suites = overviewSuites.map((suite) =>
+    suite.errors ? { ...suite, displayName: `Long suite ${"unbroken".repeat(16)}` } : suite,
+  );
+  await mockOverview(page, suites);
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(suites.length);
+  for (const width of [320, 390, 600, 760]) {
+    await page.setViewportSize({ width, height: 844 });
+    await assertLayout(page);
+    const table = page.locator(".results-table-wrap");
+    expect(await table.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+      true,
+    );
+    const row = page.locator(".results-table tbody tr").first();
+    await expect(row.locator("td")).toHaveCount(5);
+    const cells = await row
+      .locator("td")
+      .evaluateAll((elements) =>
+        elements.map((element) => element.getBoundingClientRect().toJSON()),
+      );
+    for (const [index, cell] of cells.entries()) {
+      expect(cell.right).toBeLessThanOrEqual(width);
+      if (index) expect(cell.top).toBeGreaterThanOrEqual(cells[index - 1]?.bottom ?? 0);
+    }
+    await expect(page.getByRole("combobox", { name: "Sort suites by" })).toBeVisible();
+  }
+  await page.setViewportSize({ width: 761, height: 844 });
+  await expect(page.getByRole("combobox", { name: "Sort suites by" })).toBeHidden();
+  expect(
+    await page
+      .locator(".results-table-wrap")
+      .evaluate((element) => element.scrollWidth <= element.clientWidth),
+  ).toBe(true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await screenshot(page, info.project.name, "overview-stacked");
+});
+
 test("report header keeps the configured heading and subheading above each page", async ({
   page,
-}) => {
+}, info) => {
   await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
     const response = await route.fetch();
     const manifest = await response.json();
@@ -290,7 +414,7 @@ test("report header keeps the configured heading and subheading above each page"
     await page
       .locator(".page-heading")
       .evaluate((element) => element.getBoundingClientRect().height),
-  ).toBeLessThanOrEqual(32);
+  ).toBeLessThanOrEqual(info.project.name === "mobile" ? 92 : 52);
   expect(
     await page
       .locator(".overview-page")
@@ -305,10 +429,15 @@ test("report header keeps the configured heading and subheading above each page"
       .evaluate((element) => element.getBoundingClientRect().top),
   ).toBeGreaterThanOrEqual(titleBottom);
   await page.getByRole("link", { name: "workspace-overview", exact: true }).click();
+  await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toContainText(
+    "workspace-overview",
+  );
+  await expect(page.locator(".breadcrumb-bar .snapshot-date")).toHaveCount(1);
   await expect(header.locator(".report-title")).toHaveText("Release <summary>");
   await expect(header.locator(".report-subheading strong")).toHaveText("Staging");
   await header.getByRole("link", { name: "Regressify overview" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Snapshot Overview");
+  await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toHaveCount(0);
   await assertLayout(page);
 });
 
@@ -530,17 +659,10 @@ test("overview is responsive, accessible, sortable, and theme-aware", async ({ p
     "PASS RATE",
   ]);
   await expect(page.locator(".metrics svg")).toHaveCount(0);
-  await expect(page.getByRole("columnheader")).toHaveText([
-    "Test suite",
-    "Total tests",
-    "Passed",
-    "Failed",
-    "Pass rate",
-  ]);
-  await page
-    .getByRole("columnheader", { name: "Test suite", exact: true })
-    .getByRole("button")
-    .click();
+  for (const label of ["Test suite", "Total tests", "Passed", "Failed", "Pass rate"]) {
+    await expect(page.getByRole("columnheader", { name: label, exact: true })).toHaveCount(1);
+  }
+  await sortOverview(page, "name", "Test suite");
   await expect(page.locator(".results-table th").first()).toHaveAttribute(
     "aria-sort",
     "descending",
@@ -611,7 +733,9 @@ test("pass-rate bars distinguish failing suites in light and dark themes", async
   }
 });
 
-test("overview sorts every column in both directions and preserves filters", async ({ page }) => {
+test("overview sorts every column in both directions and preserves filters", async ({
+  page,
+}, info) => {
   await mockOverview(page);
   const links = page.locator(".results-table .suite-name");
   for (const { key, label } of [
@@ -623,7 +747,7 @@ test("overview sorts every column in both directions and preserves filters", asy
   ] as const) {
     const header = page.getByRole("columnheader", { name: label, exact: true });
     for (const direction of ["ascending", "descending"] as const) {
-      if (key !== "name" || direction !== "ascending") await header.getByRole("button").click();
+      if (key !== "name" || direction !== "ascending") await sortOverview(page, key, label);
       await expect(header).toHaveAttribute("aria-sort", direction);
       await expect(page.locator('.results-table th:not([aria-sort="none"])')).toHaveCount(1);
       const expected = [...overviewSuites].sort((first, second) => {
@@ -644,10 +768,14 @@ test("overview sorts every column in both directions and preserves filters", asy
     .getByRole("button", { name: /^Failed/ })
     .click();
   const passedHeader = page.getByRole("columnheader", { name: "Passed", exact: true });
-  await passedHeader.getByRole("button").click();
+  await sortOverview(page, "passed", "Passed");
   await expect(passedHeader).toHaveAttribute("aria-sort", "ascending");
   await expect(links).toHaveText(["Engine error", "Mixed results", "Rounded pass rate"]);
-  await passedHeader.getByRole("button").press("Enter");
+  const directionControl =
+    info.project.name === "mobile"
+      ? page.getByRole("button", { name: /^Sort (ascending|descending)$/ })
+      : passedHeader.getByRole("button");
+  await directionControl.press("Enter");
   await expect(passedHeader).toHaveAttribute("aria-sort", "descending");
   await page.reload();
   await expect(links).toHaveText(["Rounded pass rate", "Mixed results", "Engine error"]);
@@ -657,7 +785,7 @@ test("overview sorts every column in both directions and preserves filters", asy
   expect(params.get("sort")).toBe("passed");
   expect(params.get("direction")).toBe("desc");
   await expect(page.locator(".metrics strong")).toHaveText(["10030", "10023", "7", "99.9%"]);
-  await passedHeader.getByRole("button").press("Enter");
+  await directionControl.press("Enter");
   await expect(passedHeader).toHaveAttribute("aria-sort", "ascending");
   await expect(links).toHaveText(["Engine error", "Mixed results", "Rounded pass rate"]);
   await assertLayout(page);
@@ -830,36 +958,39 @@ test("overview centers metrics and result columns with aligned suite labels", as
   await page.evaluate(() => document.fonts.ready);
   const offsets = await page.evaluate(() => {
     const center = (bounds: DOMRect) => bounds.left + bounds.width / 2;
+    const stacked = window.matchMedia("(max-width: 760px)").matches;
     const metrics = Array.from(document.querySelectorAll(".metrics > div")).flatMap((column) =>
       Array.from(column.children).map((content) =>
         Math.abs(center(content.getBoundingClientRect()) - center(column.getBoundingClientRect())),
       ),
     );
-    const cells = Array.from(document.querySelectorAll(".results-table tr")).flatMap((row) =>
+    const cells = Array.from(
+      document.querySelectorAll(stacked ? ".results-table tbody tr" : ".results-table tr"),
+    ).flatMap((row) =>
       Array.from(row.children)
         .slice(1, 4)
         .filter((cell) => cell.getBoundingClientRect().width > 0)
         .map((cell) => {
-          const content = cell.querySelector("button, .status-badge");
+          const content = cell.querySelector("button, .result-count");
           const range = document.createRange();
           range.selectNodeContents(cell);
-          return Math.abs(
-            center(content?.getBoundingClientRect() || range.getBoundingClientRect()) -
-              center(cell.getBoundingClientRect()),
-          );
+          const bounds = content?.getBoundingClientRect() || range.getBoundingClientRect();
+          if (stacked) {
+            return Math.abs(
+              bounds.right -
+                cell.getBoundingClientRect().right +
+                parseFloat(getComputedStyle(cell).paddingRight),
+            );
+          }
+          return Math.abs(center(bounds) - center(cell.getBoundingClientRect()));
         }),
     );
-    const heading = document.querySelector(".results-table th:first-child button");
-    const names = Array.from(document.querySelectorAll(".suite-name")).map((name) => {
-      const text = Array.from(name.childNodes).find(
-        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim(),
-      );
-      if (!text || !heading) throw new Error("Suite label is missing");
-      const range = document.createRange();
-      range.selectNodeContents(text);
-      return Math.abs(
-        (range.getClientRects()[0]?.left || 0) - heading.getBoundingClientRect().left,
-      );
+    const heading = document.querySelector(
+      stacked ? ".suite-label" : ".results-table th:first-child button",
+    );
+    const names = Array.from(document.querySelectorAll(".suite-label")).map((name) => {
+      if (!heading) throw new Error("Suite label is missing");
+      return Math.abs(name.getBoundingClientRect().left - heading.getBoundingClientRect().left);
     });
     return { metrics, cells, names };
   });
@@ -1806,6 +1937,154 @@ test("image modes, zoom, downloads, and previous/next work", async ({ page, isMo
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
+test("image viewer fit, anchored zoom, drag and keyboard controls stay scoped", async ({
+  page,
+}, info) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=reference");
+  const canvas = page.getByRole("region", { name: "Zoomable comparison images" });
+  const content = page.locator(".review-scroll");
+  await expect
+    .poll(() => canvas.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Fit to window", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Fit to window", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect
+    .poll(() =>
+      canvas.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const scroll = element.closest(".review-scroll")?.getBoundingClientRect();
+        return !!scroll && bounds.width <= scroll.width && bounds.bottom <= scroll.bottom + 1;
+      }),
+    )
+    .toBe(true);
+  await screenshot(page, info.project.name, "comparison-fit-window");
+
+  await canvas.focus();
+  await canvas.press("1");
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  await canvas.press("+");
+  await expect(page.getByLabel("Zoom level")).toHaveText("110%");
+  await content.evaluate((element) => {
+    element.scrollLeft = 200;
+    element.scrollTop = 200;
+  });
+  const viewport = await content.boundingBox();
+  if (!viewport) throw new Error("Review viewport is unavailable");
+  const pointer = {
+    x: viewport.x + Math.min(viewport.width - 30, 180),
+    y: viewport.y + viewport.height - 100,
+  };
+  const before = await canvas.boundingBox();
+  if (!before) throw new Error("Comparison image is unavailable");
+  await page.mouse.move(pointer.x, pointer.y);
+  await page.keyboard.down("Control");
+  try {
+    await page.mouse.wheel(0, -40);
+  } finally {
+    await page.keyboard.up("Control");
+  }
+  await expect(page.getByLabel("Zoom level")).toHaveText("125%");
+  const after = await canvas.boundingBox();
+  if (!after) throw new Error("Zoomed comparison image is unavailable");
+  expect(Math.abs((pointer.x - before.x) / 1.1 - (pointer.x - after.x) / 1.25)).toBeLessThan(2);
+  expect(Math.abs((pointer.y - before.y) / 1.1 - (pointer.y - after.y) / 1.25)).toBeLessThan(2);
+
+  await content.evaluate((element) => {
+    element.scrollLeft = 100;
+    element.scrollTop = 0;
+  });
+  const start = await content.evaluate((element) => ({
+    left: element.scrollLeft,
+    top: element.scrollTop,
+  }));
+  await page.mouse.down();
+  await page.mouse.move(pointer.x - 70, pointer.y - 60, { steps: 6 });
+  await expect(canvas).toHaveClass(/is-panning/);
+  await page.mouse.up();
+  await expect(canvas).not.toHaveClass(/is-panning/);
+  const dragged = await content.evaluate((element) => ({
+    left: element.scrollLeft,
+    top: element.scrollTop,
+  }));
+  expect(dragged.left - start.left).toBeCloseTo(70, 0);
+  expect(dragged.top - start.top).toBeCloseTo(60, 0);
+  await canvas.press("ArrowRight");
+  await expect
+    .poll(() => content.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(dragged.left);
+  await canvas.press("0");
+  await expect(page.getByRole("button", { name: "Fit to window", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await canvas.dblclick();
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  await canvas.press("w");
+  await expect(page.getByRole("button", { name: "Fit images", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test("image viewer keeps per-mode zoom and cancels interrupted drags", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=reference");
+  const canvas = page.getByRole("region", { name: "Zoomable comparison images" });
+  const mode = async (value: string, label: string) => {
+    if (isMobile) await page.getByRole("combobox", { name: "Comparison mode" }).selectOption(value);
+    else await page.getByRole("button", { name: label, exact: true }).click();
+  };
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await mode("test", "Test");
+  await page.getByRole("button", { name: "Fit to window", exact: true }).click();
+  await mode("reference", "Reference");
+  await expect(page.getByLabel("Zoom level")).toHaveText("110%");
+  await page.locator(".review-scroll").evaluate((element) => {
+    element.scrollLeft = 0;
+    element.scrollTop = 0;
+  });
+  await canvas.hover({ position: { x: 100, y: 100 } });
+  await page.mouse.down();
+  await page.mouse.move(90, 90);
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await page.mouse.up();
+  await expect(canvas).not.toHaveClass(/is-panning/);
+  const scroll = await page.locator(".review-scroll").evaluate((element) => element.scrollTop);
+  await canvas.dispatchEvent("pointerdown", {
+    pointerId: 8,
+    pointerType: "touch",
+    button: 0,
+    buttons: 1,
+    clientX: 100,
+    clientY: 100,
+  });
+  await canvas.dispatchEvent("pointermove", {
+    pointerId: 8,
+    pointerType: "touch",
+    buttons: 1,
+    clientX: 50,
+    clientY: 50,
+  });
+  await canvas.dispatchEvent("pointercancel", { pointerId: 8, pointerType: "touch" });
+  expect(await page.locator(".review-scroll").evaluate((element) => element.scrollTop)).toBe(
+    scroll,
+  );
+  await mode("overlay", "Overlay");
+  const slider = page.getByRole("slider", { name: "Test image opacity" });
+  await slider.focus();
+  await slider.press("ArrowRight");
+  await expect(slider).toHaveValue("51");
+  await page.getByRole("link", { name: "Next image", exact: true }).click();
+  await expect(page.getByLabel("Zoom level")).not.toHaveText("110%");
+});
+
 test("scrolling over images moves only the review page without changing zoom", async ({ page }) => {
   await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
   await expect(page.locator(".comparison-lane img")).toHaveCount(3);
@@ -2188,7 +2467,15 @@ test("comparison images are centered without labels and oversized images stay re
     if (isMobile)
       await page.getByRole("combobox", { name: "Comparison mode" }).selectOption(mode || "side");
     else await page.getByRole("button", { name: label, exact: true }).click();
-    await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+    await expect(page.locator(`.image-world.mode-${mode}`)).toBeVisible();
+    const zoomOut = page.getByRole("button", { name: "Zoom out", exact: true });
+    if (await zoomOut.isEnabled()) await zoomOut.click();
+    else {
+      await expect(zoomOut).toBeDisabled();
+      expect(
+        Number.parseFloat((await page.getByLabel("Zoom level").textContent()) || "NaN"),
+      ).toBeLessThanOrEqual(25);
+    }
     await expect(page.locator(".canvas-labels")).toHaveCount(0);
     await expect
       .poll(() =>
@@ -2301,9 +2588,10 @@ test("empty snapshots and very long report text fit narrow and wide screens", as
     await assertLayout(page);
     const header = page.locator(".app-header");
     const headerBottom = await header.evaluate((element) => element.getBoundingClientRect().bottom);
+    await expect(page.locator(".breadcrumb-bar")).toHaveCount(0);
     expect(
       await page
-        .locator(".breadcrumb-bar")
+        .locator(".overview-page")
         .evaluate((element) => element.getBoundingClientRect().top),
     ).toBeGreaterThanOrEqual(headerBottom);
     expect(

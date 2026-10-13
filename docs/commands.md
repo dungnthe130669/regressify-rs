@@ -349,6 +349,10 @@ Suite list view shows Reference and Test previews side by side, plus Diff when
 available. Images fit without cropping, and missing images keep their labeled lanes.
 Grid view keeps a single preview per capture. The site logo and favicon use the
 same artwork as the desktop app.
+The overview uses a compact, centered layout. Engine-error counts appear beside
+suite names, with their full labels available on hover, keyboard focus, or tap.
+On phones, suite metrics stack into labeled rows instead of requiring horizontal
+scrolling; the Sort by selector and direction button preserve every sort option.
 Suite browsing uses generated PNG previews instead of downloading full-resolution
 captures: list previews fit within 640 x 480 pixels, and top-cropped grid thumbnails
 within 640 x 400. Only previews near the review viewport keep active image sources.
@@ -357,8 +361,14 @@ byte-identical previews from identical input. Full-resolution captures remain
 unchanged for comparison and download. Regenerate and redeploy existing reports
 to get these previews; no new capture run is required.
 The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
-button-controlled zoom, downloads, and safe links to captured pages. Images scroll
-with the right page, not an inner image canvas; wheel/touch scrolling never zooms.
+stepped zoom through 800%, fit-width, fit-to-window, actual size, downloads, and
+safe links to captured pages. Images scroll with the right page, not an inner
+image canvas. Unmodified wheel/trackpad and touch scrolling keep their native
+behavior. Left-drag pans that page; Ctrl/Cmd+wheel zooms around the pointer.
+Double-click toggles actual size and fit-to-window. With the image surface focused,
+`+`/`-` zoom, `0` fits the window, `1` selects actual size, `W` fits width, and arrow
+keys pan (Shift moves farther). Escape cancels a drag. Mode changes retain their
+own zoom; capture changes reset it. Fit modes never upscale small images.
 Side-by-side includes three aligned lanes when a diff exists. Hovering any image
 shows synchronized crosshairs at matching pixel coordinates in Reference, Test,
 and Diff, with high-contrast guides that stay thin at every zoom level. Missing
@@ -369,7 +379,8 @@ pixel and shows no crosshair. Alignment comes from the saved comparison, not an
 estimate based on image height or colors. Rerun Compare on an existing run, then
 regenerate and redeploy its snapshot to add alignment to older reports; no new
 capture is needed. Wipe follows mouse
-movement; keyboard and touch users can also use its slider. Hover, focus, or pin
+movement while no button is held; its slider and the overlay-opacity slider also
+support keyboard and touch input. Hover, focus, or pin
 the Info icon for selectable/copyable diff statistics, capture details, URLs, and
 comparison or engine errors. Previous/next failure arrows on suite pages scroll to visible failed
 cards while keeping the current filters. The header's Settings icon opens a compact
@@ -446,7 +457,8 @@ and `Snapshot regression test results`, respectively.
 `snapshotTitle` controls the overview's HTML page title; suite and image pages
 prepend the suite name as `suite name | snapshotTitle`. `snapshotHeading` is the
 report heading in the compact top bar on every page, with `snapshotSubheading`
-on its own line below it. The overview's page heading is `Snapshot Overview`.
+on its own line below it. The overview's page heading is `Snapshot Overview`, with
+the generated date and time beneath it and no breadcrumb row.
 The title and heading are plain text. The subheading supports safe Markdown text,
 emphasis, lists, code, and HTTP(S) links; raw HTML and embedded images are omitted.
 An empty string is an explicit value, while `null` falls back to the built-in default.
