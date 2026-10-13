@@ -1,6 +1,6 @@
 # MCP Authoring Export
 
-Verified: 2026-10-12
+Verified: 2026-10-13
 
 - [The CLI exporter](../../src/mcp/mod.rs) embeds its guides and Worker template;
   it does not scan the current workspace or need a source checkout. Output is a
@@ -33,8 +33,15 @@ Verified: 2026-10-12
   `Condition`, and stage records. Identity fields are unsalted `sha256:` of the
   exact text, so local candidates can be hashed to confirm a match.
 - New guide topics are discovered through the overview served by the same Worker
-  version. The CLI-managed `AGENTS.md` section was left unchanged so a newer CLI
-  cannot name a topic that an older hosted Worker rejects.
+  version. Keep CLI-managed `AGENTS.md` tool/topic references compatible with
+  older hosted Workers; the consumer memory policy adds no tools or guide topics.
+- [Startup instructions](../../src/mcp/catalog.rs) and the
+  [overview](../../src/mcp/guides/overview.md) teach agents to read and maintain the
+  consumer project's `.ai/memory/` with client tools. Notes are at most 60 lines,
+  one behavior or issue on one site per file, with a compact linked index. Record
+  verified lessons, failed approaches, fixes, and evidence; split/update notes and
+  exclude private data. The server never reads or stores memory. Catalog and
+  Worker regressions cover startup, tool/resource, and non-overview prompt delivery.
 - Hook examples and a companion suite use classic browser scripts at `.js` target
   paths. [Worker tests](../../src/mcp/worker/tests/worker.test.mjs.template) evaluate
   the exported scripts with DOM stubs; this is not browser coverage or a capture

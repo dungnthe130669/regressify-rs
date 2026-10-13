@@ -1,7 +1,14 @@
 # Desktop Git
 
-Verified: 2026-10-09
+Verified: 2026-10-13
 
+- [External editor launching](../../src/desktop/vscode.rs) uses the installed
+  executable with `--new-window -- <workspace> [file]`, not the URI handler.
+  VS Code checks existing folder windows before creating one; passing the root
+  with Git files preserves that routing. Windows verbatim drive/UNC paths are
+  normalized without lossy text conversion. `desktop::vscode::tests` covers
+  arguments, discovery and failures; `workspace_external_menus_` covers the
+  menu contract without launching another application or changing drafts.
 - [Change trees](../../src/desktop/ui/git/view.rs) retain two Kit TreeState
   entities, using group/repository-path IDs. Refresh restores by ID after
   `set_items` clears the cursor; TreeEvent retains collapsed-folder preference.

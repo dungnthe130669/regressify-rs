@@ -35,7 +35,7 @@ type Fit = "width" | "area" | "manual";
 type View = {
   fit: Fit;
   scale: number;
-  padding?: { left: number; top: number; right: number; bottom: number };
+  padding?: { left: number; top: number; right: number; bottom: number }[];
 };
 const fallback: Size = { width: 640, height: 400 };
 
@@ -139,16 +139,19 @@ export function ComparisonViewer({
   const world = useRef<HTMLDivElement>(null);
   const viewer = useRef<HTMLElement>(null);
   const canvas = useRef<HTMLElement>(null);
-  const stage = useRef<HTMLDivElement>(null);
+  const activePane = useRef<HTMLElement | null>(null);
   const toolbar = useRef<HTMLDivElement>(null);
   const gestureScope = useRef({ capture, mode: requestedMode });
-  const anchor = useRef<{
-    x: number;
-    y: number;
-    imageX: number;
-    imageY: number;
-    element: HTMLElement;
-  } | null>(null);
+  const anchors = useRef<
+    {
+      x: number;
+      y: number;
+      imageX: number;
+      imageY: number;
+      element: HTMLElement;
+      scroll: HTMLElement;
+    }[]
+  >([]);
   const pan = useRef<{
     pointer: number;
     x: number;
@@ -156,6 +159,7 @@ export function ComparisonViewer({
     left: number;
     top: number;
     moved: boolean;
+    scroll: HTMLElement;
   } | null>(null);
   const [compact, setCompact] = useState(() => matchMedia("(max-width: 600px)").matches);
   useEffect(() => {
@@ -202,7 +206,7 @@ export function ComparisonViewer({
   const size =
     mode === "side"
       ? {
-          width: laneWidth * lanes.length + 24 * (lanes.length - 1),
+          width: laneWidth,
           height: Math.max(...lanes.map((lane) => lane.size.height)),
         }
       : mode === "wipe" || mode === "overlay"
@@ -211,25 +215,23 @@ export function ComparisonViewer({
             height: Math.max(referenceSize.height, testSize.height),
           }
         : getSize(single) || fallback;
+  const panes = mode === "side" ? lanes : [{ label: "Comparison", path: single, size, gap: null }];
+  const paneCount = panes.length;
   useEffect(() => {
-    const element = viewer.current;
+    const element = canvas.current;
     if (!element) return;
-    const scroller = element.closest<HTMLElement>(".review-scroll");
-    const controls = toolbar.current;
+    const elements = Array.from(element.querySelectorAll<HTMLElement>(".image-pane"));
+    if (elements.length !== paneCount) return;
     const observer = new ResizeObserver(() =>
       setViewport({
-        width: element.clientWidth,
-        height: Math.max(
-          1,
-          (scroller?.clientHeight ?? innerHeight) - (controls?.clientHeight ?? 0) - 24,
-        ),
+        width: Math.max(1, Math.min(...elements.map((pane) => pane.clientWidth))),
+        height: Math.max(1, Math.min(...elements.map((pane) => pane.clientHeight))),
       }),
     );
     observer.observe(element);
-    if (scroller) observer.observe(scroller);
-    if (controls) observer.observe(controls);
+    for (const pane of elements) observer.observe(pane);
     return () => observer.disconnect();
-  }, []);
+  }, [paneCount]);
   const view = zoom?.capture === capture ? zoom.views[mode] : undefined;
   const fit = view?.fit ?? "width";
   const scale =
@@ -240,11 +242,13 @@ export function ComparisonViewer({
           { width: viewport.width || size.width, height: viewport.height || size.height },
           fit,
         );
-  const canvasWidth =
-    mode === "side" ? Math.max(size.width * scale, viewport.width) : size.width * scale;
-  const renderedLaneWidth = (canvasWidth - 24 * scale * (lanes.length - 1)) / lanes.length;
-  const padding = view?.padding;
-  const scrollRoot = () => viewer.current?.closest<HTMLElement>(".review-scroll");
+  const scrollRoot = (target?: EventTarget | null) => {
+    const pane = target instanceof Element ? target.closest<HTMLElement>(".image-pane") : null;
+    if (pane && canvas.current?.contains(pane)) activePane.current = pane;
+    return activePane.current?.isConnected
+      ? activePane.current
+      : canvas.current?.querySelector<HTMLElement>(".image-pane");
+  };
   const cancelPan = () => {
     const pointer = pan.current?.pointer;
     pan.current = null;
@@ -264,81 +268,66 @@ export function ComparisonViewer({
   const setScale = (value: number, point?: { x: number; y: number }) => {
     const next = Math.max(0.001, Math.min(8, value));
     if (!Number.isFinite(next) || (fit === "manual" && next === scale)) return;
-    const bounds = canvas.current?.getBoundingClientRect();
-    const surface = stage.current?.getBoundingClientRect();
-    const scroll = scrollRoot();
     let padding: View["padding"];
-    anchor.current = null;
-    if (bounds && surface && scroll && point) {
-      const laneIndex =
-        mode === "side"
-          ? Math.max(
+    anchors.current = [];
+    const selected = point && scrollRoot(document.elementFromPoint(point.x, point.y));
+    if (point && selected) {
+      const selectedBounds = selected.getBoundingClientRect();
+      padding = Array.from(
+        canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? [],
+        (scroll, index) => {
+          const source = scroll.querySelector<HTMLElement>(".image-surface");
+          const stage = scroll.querySelector<HTMLElement>(".comparison-stage");
+          if (!source || !stage) return { left: 0, top: 0, right: 0, bottom: 0 };
+          const bounds = scroll.getBoundingClientRect();
+          const surface = stage.getBoundingClientRect();
+          const image = source.getBoundingClientRect();
+          const position = {
+            x: bounds.left + point.x - selectedBounds.left,
+            y: bounds.top + point.y - selectedBounds.top,
+          };
+          const imageX = (position.x - image.left) / scale;
+          const imageY = (position.y - image.top) / scale;
+          const dimensions = panes[index]?.size ?? size;
+          const originX = surface.left + scroll.scrollLeft;
+          const originY = surface.top + scroll.scrollTop;
+          const left = position.x - originX - imageX * next;
+          const top = position.y - originY - imageY * next;
+          anchors.current.push({ ...position, imageX, imageY, element: source, scroll });
+          // Full inner bounds retain anchor space as scrollbars appear or disappear.
+          return {
+            left: Math.max(0, left),
+            top: Math.max(0, top),
+            right: Math.max(
               0,
-              Math.min(
-                lanes.length - 1,
-                Math.floor((point.x - bounds.left) / (renderedLaneWidth + 24 * scale)),
-              ),
-            )
-          : null;
-      const source =
-        laneIndex === null
-          ? canvas.current
-          : canvas.current?.querySelectorAll<HTMLElement>(".comparison-image")[laneIndex];
-      if (source) {
-        const image = source.getBoundingClientRect();
-        const imageX = (point.x - image.left) / scale;
-        const imageY = (point.y - image.top) / scale;
-        const nextWidth =
-          mode === "side" ? Math.max(size.width * next, viewport.width) : size.width * next;
-        const nextLaneWidth = (nextWidth - 24 * next * (lanes.length - 1)) / lanes.length;
-        const sourceOffset =
-          laneIndex === null
-            ? 0
-            : laneIndex * (nextLaneWidth + 24 * next) +
-              (nextLaneWidth - (lanes[laneIndex]?.size.width ?? laneWidth) * next) / 2;
-        const originX = surface.left + scroll.scrollLeft;
-        const originY = surface.top + scroll.scrollTop;
-        const left = point.x - originX - imageX * next - sourceOffset;
-        const top = point.y - originY - imageY * next;
-        const scrollBounds = scroll.getBoundingClientRect();
-        // Padding preserves the pixel anchor when native scroll offsets would clamp.
-        padding = {
-          left: Math.max(0, left),
-          top: Math.max(0, top),
-          right: Math.max(0, scrollBounds.left + scroll.clientWidth - originX - left - nextWidth),
-          bottom: Math.max(
-            0,
-            scrollBounds.top + scroll.clientHeight - originY - top - size.height * next,
-          ),
-        };
-        anchor.current = { ...point, imageX, imageY, element: source };
-      }
+              bounds.right - scroll.clientLeft - originX - left - dimensions.width * next,
+            ),
+            bottom: Math.max(
+              0,
+              bounds.bottom - scroll.clientTop - originY - top - dimensions.height * next,
+            ),
+          };
+        },
+      );
     }
     setView({ fit: "manual", scale: next, padding });
   };
   const setFit = (next: "width" | "area") => {
-    anchor.current = null;
+    anchors.current = [];
     setView({ fit: next, scale: 1 });
-    const scroll = scrollRoot();
-    const element = viewer.current;
-    if (scroll && element) {
-      scroll.scrollTo({
-        left: 0,
-        top:
-          scroll.scrollTop +
-          element.getBoundingClientRect().top -
-          scroll.getBoundingClientRect().top,
-      });
+    for (const pane of canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []) {
+      pane.scrollTo(0, 0);
     }
   };
   useLayoutEffect(() => {
-    const pending = anchor.current;
-    anchor.current = null;
-    const bounds = pending?.element.isConnected ? pending.element.getBoundingClientRect() : null;
-    const scroll = viewer.current?.closest<HTMLElement>(".review-scroll");
-    if (pending && bounds && scroll) {
-      scroll.scrollLeft += bounds.left + pending.imageX * scale - pending.x;
-      scroll.scrollTop += bounds.top + pending.imageY * scale - pending.y;
+    const pending = anchors.current;
+    anchors.current = [];
+    for (const anchor of pending) {
+      if (!anchor.element.isConnected) continue;
+      const bounds = anchor.element.getBoundingClientRect();
+      const scroll = anchor.scroll;
+      scroll.scrollLeft += bounds.left + anchor.imageX * scale - anchor.x;
+      scroll.scrollTop += bounds.top + anchor.imageY * scale - anchor.y;
     }
   }, [scale]);
   const wheelZoom = useEffectEvent((event: WheelEvent) => {
@@ -351,7 +340,8 @@ export function ComparisonViewer({
   const clearGesture = useEffectEvent(() => {
     cancelPan();
     setCrosshair(null);
-    anchor.current = null;
+    anchors.current = [];
+    activePane.current = null;
   });
   useEffect(() => {
     const element = viewer.current?.closest<HTMLElement>(".review-scroll");
@@ -507,241 +497,262 @@ export function ComparisonViewer({
           </label>
         )}
       </div>
-      <div
-        ref={stage}
-        className="comparison-stage"
-        style={{
-          width: padding ? canvasWidth + padding.left + padding.right : undefined,
-          paddingLeft: padding?.left,
-          paddingTop: padding?.top,
-          paddingRight: padding?.right,
-          paddingBottom: padding?.bottom,
+      <section
+        ref={canvas}
+        className={`zoom-canvas mode-${mode}${panning ? " is-panning" : ""}`}
+        aria-label="Zoomable comparison images"
+        aria-keyshortcuts="+ - 0 1 W"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: This image region owns scoped zoom and pan keys while retaining native scrolling.
+        tabIndex={0}
+        style={{ gridTemplateColumns: `repeat(${panes.length}, minmax(0, 1fr))` }}
+        onFocusCapture={(event) => {
+          scrollRoot(event.target);
+        }}
+        onPointerDown={(event) => {
+          setCrosshair(null);
+          if (event.button !== 0 || event.pointerType === "touch") return;
+          const scroll = scrollRoot(event.target);
+          if (!scroll) return;
+          const bounds = scroll.getBoundingClientRect();
+          if (
+            event.clientX >= bounds.left + scroll.clientLeft + scroll.clientWidth ||
+            event.clientY >= bounds.top + scroll.clientTop + scroll.clientHeight
+          )
+            return;
+          event.preventDefault();
+          scroll.focus({ preventScroll: true });
+          pan.current = {
+            pointer: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            left: scroll.scrollLeft,
+            top: scroll.scrollTop,
+            moved: false,
+            scroll,
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const drag = pan.current;
+          if (drag && drag.pointer === event.pointerId) {
+            if (!(event.buttons & 1)) {
+              cancelPan();
+              return;
+            }
+            const deltaX = event.clientX - drag.x;
+            const deltaY = event.clientY - drag.y;
+            if (!drag.moved && Math.max(Math.abs(deltaX), Math.abs(deltaY)) < 4) return;
+            drag.moved = true;
+            setPanning(true);
+            setCrosshair(null);
+            drag.scroll.scrollTo({ left: drag.left - deltaX, top: drag.top - deltaY });
+            return;
+          }
+          if (mode !== "wipe" || event.pointerType === "touch" || event.buttons !== 0) return;
+          const bounds = world.current?.getBoundingClientRect();
+          if (bounds && bounds.width > 0) {
+            setBlend(
+              Math.round(
+                Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100)),
+              ),
+            );
+          }
+        }}
+        onPointerUp={cancelPan}
+        onPointerCancel={cancelPan}
+        onLostPointerCapture={cancelPan}
+        onContextMenu={cancelPan}
+        onDoubleClick={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          if (fit === "manual" && scale === 1) setFit("area");
+          else setScale(1, { x: event.clientX, y: event.clientY });
+        }}
+        onKeyDown={(event) => {
+          if (
+            (event.target !== event.currentTarget &&
+              !(event.target instanceof HTMLElement && event.target.matches(".image-pane"))) ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.altKey
+          )
+            return;
+          if (event.key === "+" || event.key === "=") setScale(nextZoom(scale, true));
+          else if (event.key === "-") setScale(nextZoom(scale, false));
+          else if (event.key === "0") setFit("area");
+          else if (event.key === "1") setScale(1);
+          else if (event.key.toLowerCase() === "w") setFit("width");
+          else if (event.key === "Escape") cancelPan();
+          else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+            const step = event.shiftKey ? 160 : 40;
+            scrollRoot()?.scrollBy({
+              left: event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0,
+              top: event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0,
+            });
+          } else return;
+          event.preventDefault();
+          event.stopPropagation();
         }}
       >
-        <section
-          ref={canvas}
-          className={`zoom-canvas${panning ? " is-panning" : ""}`}
-          aria-label="Zoomable comparison images"
-          aria-keyshortcuts="+ - 0 1 W"
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: This image region owns scoped zoom and pan keys while retaining native scrolling.
-          tabIndex={0}
-          style={{ width: canvasWidth, height: size.height * scale }}
-          onPointerDown={(event) => {
-            setCrosshair(null);
-            if (event.button !== 0 || event.pointerType === "touch") return;
-            const scroll = scrollRoot();
-            if (!scroll) return;
-            event.preventDefault();
-            event.currentTarget.focus({ preventScroll: true });
-            pan.current = {
-              pointer: event.pointerId,
-              x: event.clientX,
-              y: event.clientY,
-              left: scroll.scrollLeft,
-              top: scroll.scrollTop,
-              moved: false,
-            };
-            event.currentTarget.setPointerCapture(event.pointerId);
-          }}
-          onPointerMove={(event) => {
-            const drag = pan.current;
-            if (drag && drag.pointer === event.pointerId) {
-              if (!(event.buttons & 1)) {
-                cancelPan();
-                return;
-              }
-              const deltaX = event.clientX - drag.x;
-              const deltaY = event.clientY - drag.y;
-              if (!drag.moved && Math.max(Math.abs(deltaX), Math.abs(deltaY)) < 4) return;
-              drag.moved = true;
-              setPanning(true);
-              setCrosshair(null);
-              const scroll = scrollRoot();
-              if (scroll) scroll.scrollTo({ left: drag.left - deltaX, top: drag.top - deltaY });
-              return;
-            }
-            if (mode !== "wipe" || event.pointerType === "touch" || event.buttons !== 0) return;
-            const bounds = world.current?.getBoundingClientRect();
-            if (bounds && bounds.width > 0) {
-              setBlend(
-                Math.round(
-                  Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100)),
-                ),
-              );
-            }
-          }}
-          onPointerUp={cancelPan}
-          onPointerCancel={cancelPan}
-          onLostPointerCapture={cancelPan}
-          onContextMenu={cancelPan}
-          onDoubleClick={(event) => {
-            if (event.button !== 0) return;
-            event.preventDefault();
-            if (fit === "manual" && scale === 1) setFit("area");
-            else setScale(1, { x: event.clientX, y: event.clientY });
-          }}
-          onKeyDown={(event) => {
-            if (
-              event.target !== event.currentTarget ||
-              event.ctrlKey ||
-              event.metaKey ||
-              event.altKey
-            )
-              return;
-            if (event.key === "+" || event.key === "=") setScale(nextZoom(scale, true));
-            else if (event.key === "-") setScale(nextZoom(scale, false));
-            else if (event.key === "0") setFit("area");
-            else if (event.key === "1") setScale(1);
-            else if (event.key.toLowerCase() === "w") setFit("width");
-            else if (event.key === "Escape") cancelPan();
-            else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
-              const step = event.shiftKey ? 160 : 40;
-              scrollRoot()?.scrollBy({
-                left: event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0,
-                top: event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0,
-              });
-            } else return;
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          <div
-            ref={world}
-            className={`image-world mode-${mode}`}
-            style={{
-              width: canvasWidth / scale,
-              height: size.height,
-              transform: `scale(${scale})`,
-              transformOrigin: "top left",
-            }}
-          >
-            {mode === "side" ? (
-              lanes.map((lane) => {
-                const crosshairY = crosshair ? alignedRowToImageRow(crosshair.y, lane.gap) : null;
-                return (
+        {panes.map((lane, index) => {
+          const padding = view?.padding?.[index];
+          const crosshairY = crosshair ? alignedRowToImageRow(crosshair.y, lane.gap) : null;
+          return (
+            <section
+              key={lane.label}
+              className={`image-pane${mode === "side" ? " comparison-lane" : ""}`}
+              aria-label={`${lane.label} image viewport`}
+              // biome-ignore lint/a11y/noNoninteractiveTabindex: Native scroll panes support scoped keyboard zoom and pan.
+              tabIndex={0}
+            >
+              <div
+                className="comparison-stage"
+                style={{
+                  width: padding
+                    ? lane.size.width * scale + padding.left + padding.right
+                    : undefined,
+                  paddingLeft: padding?.left,
+                  paddingTop: padding?.top,
+                  paddingRight: padding?.right,
+                  paddingBottom: padding?.bottom,
+                }}
+              >
+                <div
+                  className="image-surface"
+                  style={{ width: lane.size.width * scale, height: lane.size.height * scale }}
+                >
                   <div
-                    className="comparison-lane"
-                    key={lane.label}
-                    style={{ width: renderedLaneWidth / scale, height: size.height }}
+                    ref={index === 0 ? world : undefined}
+                    className="image-world"
+                    style={{
+                      width: lane.size.width,
+                      height: lane.size.height,
+                      transform: `scale(${scale})`,
+                      transformOrigin: "top left",
+                    }}
                   >
-                    <div
-                      className="comparison-image"
-                      style={lane.size}
-                      onPointerMove={(event) => {
-                        const image = event.currentTarget.querySelector("img");
-                        if (
-                          capture.error !== null ||
-                          event.pointerType === "touch" ||
-                          event.buttons !== 0 ||
-                          !image?.naturalWidth ||
-                          !image.naturalHeight
-                        ) {
-                          setCrosshair(null);
-                          return;
-                        }
-                        const bounds = image.getBoundingClientRect();
-                        const imageX =
-                          ((event.clientX - bounds.left) / bounds.width) * image.naturalWidth;
-                        const imageY =
-                          ((event.clientY - bounds.top) / bounds.height) * image.naturalHeight;
-                        setCrosshair(
-                          imageX >= 0 &&
-                            imageX < image.naturalWidth &&
-                            imageY >= 0 &&
-                            imageY < image.naturalHeight
-                            ? {
-                                capture,
-                                scale,
-                                x: imageX,
-                                y: imageRowToAlignedRow(imageY, lane.gap),
-                              }
-                            : null,
-                        );
-                      }}
-                      onPointerLeave={() => setCrosshair(null)}
-                      onPointerCancel={() => setCrosshair(null)}
-                      onPointerDown={() => setCrosshair(null)}
-                    >
+                    {mode === "side" ? (
+                      <div
+                        className="comparison-image"
+                        style={lane.size}
+                        onPointerMove={(event) => {
+                          const image = event.currentTarget.querySelector("img");
+                          if (
+                            capture.error !== null ||
+                            event.pointerType === "touch" ||
+                            event.buttons !== 0 ||
+                            !image?.naturalWidth ||
+                            !image.naturalHeight
+                          ) {
+                            setCrosshair(null);
+                            return;
+                          }
+                          const bounds = image.getBoundingClientRect();
+                          const imageX =
+                            ((event.clientX - bounds.left) / bounds.width) * image.naturalWidth;
+                          const imageY =
+                            ((event.clientY - bounds.top) / bounds.height) * image.naturalHeight;
+                          setCrosshair(
+                            imageX >= 0 &&
+                              imageX < image.naturalWidth &&
+                              imageY >= 0 &&
+                              imageY < image.naturalHeight
+                              ? {
+                                  capture,
+                                  scale,
+                                  x: imageX,
+                                  y: imageRowToAlignedRow(imageY, lane.gap),
+                                }
+                              : null,
+                          );
+                        }}
+                        onPointerLeave={() => setCrosshair(null)}
+                        onPointerCancel={() => setCrosshair(null)}
+                        onPointerDown={() => setCrosshair(null)}
+                      >
+                        <ReportImage
+                          path={lane.path}
+                          alt={`${lane.label}: ${capture.label}`}
+                          width={lane.size.width}
+                          height={lane.size.height}
+                          eager
+                        />
+                        {isLoaded(lane.path) &&
+                          crosshair &&
+                          crosshair.capture === capture &&
+                          crosshair.scale === scale &&
+                          crosshair.x < lane.size.width &&
+                          crosshairY !== null &&
+                          crosshairY < lane.size.height && (
+                            <span
+                              className="comparison-crosshair"
+                              aria-hidden="true"
+                              style={{
+                                width: lane.size.width * scale,
+                                height: lane.size.height * scale,
+                                transform: `scale(${1 / scale})`,
+                              }}
+                            >
+                              <span
+                                className="crosshair-horizontal"
+                                style={{ top: crosshairY * scale }}
+                              />
+                              <span
+                                className="crosshair-vertical"
+                                style={{ left: crosshair.x * scale }}
+                              />
+                            </span>
+                          )}
+                      </div>
+                    ) : mode === "wipe" || mode === "overlay" ? (
+                      <>
+                        <div className="image-layer" style={referenceSize}>
+                          <ReportImage
+                            path={capture.reference}
+                            alt={`Reference: ${capture.label}`}
+                            width={referenceSize.width}
+                            height={referenceSize.height}
+                            eager
+                          />
+                        </div>
+                        <div
+                          className="image-layer"
+                          style={{
+                            ...size,
+                            opacity: mode === "overlay" ? blend / 100 : 1,
+                            clipPath: mode === "wipe" ? `inset(0 0 0 ${blend}%)` : undefined,
+                          }}
+                        >
+                          <div style={testSize}>
+                            <ReportImage
+                              path={capture.test}
+                              alt={`Test: ${capture.label}`}
+                              width={testSize.width}
+                              height={testSize.height}
+                              eager
+                            />
+                          </div>
+                        </div>
+                        {mode === "wipe" && (
+                          <div className="wipe-divider" style={{ left: `${blend}%` }} />
+                        )}
+                      </>
+                    ) : (
                       <ReportImage
-                        path={lane.path}
-                        alt={`${lane.label}: ${capture.label}`}
-                        width={lane.size.width}
-                        height={lane.size.height}
+                        path={single}
+                        alt={`${mode}: ${capture.label}`}
+                        width={size.width}
+                        height={size.height}
                         eager
                       />
-                      {isLoaded(lane.path) &&
-                        crosshair &&
-                        crosshair.capture === capture &&
-                        crosshair.scale === scale &&
-                        crosshair.x < lane.size.width &&
-                        crosshairY !== null &&
-                        crosshairY < lane.size.height && (
-                          <span
-                            className="comparison-crosshair"
-                            aria-hidden="true"
-                            style={{
-                              width: lane.size.width * scale,
-                              height: lane.size.height * scale,
-                              transform: `scale(${1 / scale})`,
-                            }}
-                          >
-                            <span
-                              className="crosshair-horizontal"
-                              style={{ top: crosshairY * scale }}
-                            />
-                            <span
-                              className="crosshair-vertical"
-                              style={{ left: crosshair.x * scale }}
-                            />
-                          </span>
-                        )}
-                    </div>
-                  </div>
-                );
-              })
-            ) : mode === "wipe" || mode === "overlay" ? (
-              <>
-                <div className="image-layer" style={referenceSize}>
-                  <ReportImage
-                    path={capture.reference}
-                    alt={`Reference: ${capture.label}`}
-                    width={referenceSize.width}
-                    height={referenceSize.height}
-                    eager
-                  />
-                </div>
-                <div
-                  className="image-layer"
-                  style={{
-                    ...size,
-                    opacity: mode === "overlay" ? blend / 100 : 1,
-                    clipPath: mode === "wipe" ? `inset(0 0 0 ${blend}%)` : undefined,
-                  }}
-                >
-                  <div style={testSize}>
-                    <ReportImage
-                      path={capture.test}
-                      alt={`Test: ${capture.label}`}
-                      width={testSize.width}
-                      height={testSize.height}
-                      eager
-                    />
+                    )}
                   </div>
                 </div>
-                {mode === "wipe" && <div className="wipe-divider" style={{ left: `${blend}%` }} />}
-              </>
-            ) : (
-              <ReportImage
-                path={single}
-                alt={`${mode}: ${capture.label}`}
-                width={size.width}
-                height={size.height}
-                eager
-              />
-            )}
-          </div>
-        </section>
-      </div>
+              </div>
+            </section>
+          );
+        })}
+      </section>
     </section>
   );
 }

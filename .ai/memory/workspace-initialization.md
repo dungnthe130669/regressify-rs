@@ -1,6 +1,6 @@
 # Workspace Initialization
 
-Verified: 2026-10-06
+Verified: 2026-10-13
 
 - [Initialization](../../src/init.rs) shares runtime defaults between CLI `init`
   and desktop setup: `regressify.yaml`, five `common/` files, and `visual_tests/`.
@@ -38,6 +38,12 @@ Verified: 2026-10-06
   unchanged. Duplicate managed sections collapse to one; unfinished blocks that
   would swallow a new heading fail without rewriting the file. `init::tests`
   covers these boundaries alongside read-only, non-UTF-8, and concurrent creation.
+- The [generated agent section](../../src/init.rs) teaches agents to read consumer
+  `.ai/memory/` before work and record site lessons, failed approaches, verified
+  fixes, and evidence before finishing. Each consumer topic note is at most 60
+  lines for one behavior or issue on one site, with a compact linked index.
+  Agents split/update notes and exclude private data; initialization does not
+  create or rewrite memory files. The starter-file regression checks this policy.
 - Local tag `v0.79.0` wired MCP setup only into explicit CLI init, not desktop
   folder opening. The desktop wiring fix also includes managed agent guidance;
   installed older binaries require a new build. Session tests cover create,

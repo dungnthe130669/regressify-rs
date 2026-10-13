@@ -2,6 +2,35 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## VS Code Workspace Launch (2026-10-13)
+
+- Resolved in source: opening VS Code through its URI handler prompted for
+  external access and could replace an unrelated workspace, interrupting its
+  session. The [shared launcher](src/desktop/vscode.rs) now starts the installed
+  editor directly with an explicit folder and `--new-window`.
+- VS Code focuses a window already open on that folder; otherwise it opens a
+  dedicated window. Git file actions include their repository root, and Windows
+  verbatim paths normalize to the same folder identity. Regressify drafts and
+  normal VS Code workspace-trust protection remain unchanged.
+- Launcher unit tests cover discovery, literal arguments, path identity, missing
+  installations and spawn errors. The existing native external-menu regression
+  checks the launch contract and draft preservation without opening VS Code.
+
+## Consumer Site Memory (2026-10-13)
+
+- Resolved in source: generated agent guidance and MCP instructions did not tell
+  agents to retain hard-won site knowledge, allowing repeated investigation and
+  mistakes. They now require reading relevant consumer `.ai/memory/` notes before
+  work and recording reusable lessons, failed approaches, verified fixes, and evidence.
+- Each note covers one specific behavior or issue on one site and is at most 60
+  lines, with a compact linked index. Agents split/update notes and exclude private
+  data; initialization and the public MCP server do not manage the memory files.
+- [Initialization](src/init.rs) and [catalog regressions](src/mcp/catalog.rs) check
+  the policy; [Worker tests](src/mcp/worker/tests/worker.test.mjs.template) exercise
+  startup instructions, tools, resources, and prompts. Existing projects need
+  initialization with an updated CLI or desktop build; hosted MCP content needs
+  regeneration and redeployment.
+
 ## Image Viewer Parity (2026-10-13)
 
 - Resolved in source: desktop lacked wipe/overlay; the web viewer lacked drag-pan,
@@ -20,6 +49,11 @@ Issues identified during adversarial review that remain after the September 2026
   limits to the browser. Side-by-side uses full-span equal-width lanes and retains
   crosshairs without a Diff image. Browser regressions cover each lane, no-diff
   comparisons, source-size differences, and listener cleanup.
+- Resolved oversized-image overflow: the name and controls no longer share the
+  images' scroll surface. Side-by-side keeps two/three fixed-width lanes with
+  independent native scrollbars, bounded height, and reachable image edges.
+  Geometry and gesture regressions retain pixel anchoring through scrollbar
+  transitions and verify stationary controls on desktop/mobile.
 
 ## Snapshot Overview Mobile Layout (2026-10-13)
 
@@ -216,6 +250,11 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Compact Desktop Header (2026-10-08)
 
+- Follow-up confirmed 2026-10-13: the [native header regression](src/desktop/ui/tests.rs)
+  still requires `workspace-path` at 1000px, while the
+  [current title bar](src/desktop/ui/overview.rs) mounts it only from 1400px.
+  This is the sole failing library test in the current full Windows GUI gate;
+  the fixture needs a separate update to match the responsive behavior.
 - Resolved in the task 019 candidate: the application header is bounded by
   viewport width minus the pinned toolkit's native caption slots. A long
   workspace-name regression failed before that bound and now passes, preserving

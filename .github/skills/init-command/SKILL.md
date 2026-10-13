@@ -27,6 +27,11 @@ description: 'Use when changing regressify init, starter files, legacy migration
    outdated content, including subsections, and consolidate duplicate managed
    sections. Ignore code/quote/list/comment examples when locating headings.
    Refuse writes when an unfinished block would swallow an appended heading.
+   Instruct agents to read consumer `.ai/memory/` before work and record reusable
+   site lessons, failed approaches, verified fixes, and evidence before finishing.
+   Limit each topic note to 60 lines and one behavior or issue on one site, with
+   a compact linked index; split broad notes, update stale advice, and exclude
+   secrets/private logs. Initialization manages guidance, not the memory files.
 1. Migrate legacy files only when the new destination is absent. Do not replace project-specific content with defaults or erase old data on a failed write.
 1. Validate each workspace path and reject symlinked directories/unsafe entries before creating files, including dangling links at the destination. Existence is not proof an entry is a regular file. Publish complete starter files using same-directory temporary files and no-clobber persistence.
    For MCP and agent-guidance updates, recheck the path and original content before
@@ -48,6 +53,8 @@ line endings, invalid drafts, retained server settings, and concurrent creation.
 Cover agent-section creation/append/refresh, parsed freshness, H2 versus other
 heading levels, ATX/Setext headings, EOF boundaries, misleading examples,
 duplicate sections, CRLF/UTF-8 preservation, read-only files, and blocked drafts.
+Assert the consumer memory workflow, single-site/topic scope, and 60-line limit
+in generated guidance. Keep it aligned with the MCP overview and instructions.
 Exercise both managed files through desktop `Session::connect`, including
 reopening after deletion, refresh/no-op behavior, and preserving the current
 workspace and source files when setup fails.

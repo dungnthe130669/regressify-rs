@@ -234,6 +234,17 @@ when absent, or replace outdated section content. The instructions direct agents
 use `regressify-mcp`, starting with `get_authoring_guide` and consulting
 `get_schema` and `get_example` before authoring tests or configuration.
 
+The generated instructions and MCP overview also require agents to read relevant
+notes in the consumer project's `.ai/memory/` before authoring or troubleshooting,
+then record reusable lessons from corrections, failed approaches, and work that
+took time to get right. Each topic file covers one specific behavior or issue on
+one site and is at most 60 lines; split larger or broader notes and keep
+`.ai/memory/README.md` a compact linked index. Notes include verified fixes,
+scope, verification dates, and project-relative evidence links. Update existing
+notes and remove stale advice; never store secrets, browser state, personal data,
+raw logs, or transcripts. These are local client edits, not MCP uploads.
+Initialization does not create memory files or rewrite existing notes.
+
 The managed section includes everything through the next top-level H2 heading,
 or the end of the file. Other heading levels do not end that range. Headings in
 code examples, quotes, lists, or HTML comments are not section markers.
@@ -322,6 +333,11 @@ selections and the documented zero-timeout fallbacks. Guides/schemas are also MC
 require explicit selection of resources or prompts rather than loading them
 automatically.
 
+Startup instructions, the overview guide/resource, and the authoring prompt carry
+the same [small site-memory policy](#workspace-initialization) as generated agent
+guidance. The agent maintains notes locally with its authorized tools; the Worker
+does not read, collect, or store consumer memory.
+
 The Worker is public and unauthenticated by default. It provides only bounded,
 read-only knowledge lookups; it cannot access a user's workspace, execute tests,
 or approve baselines. It needs no database, Durable Objects, or LLM API key. Do
@@ -362,9 +378,11 @@ unchanged for comparison and download. Regenerate and redeploy existing reports
 to get these previews; no new capture run is required.
 The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
 stepped zoom through 800%, fit-width, fit-to-window, actual size, downloads, and
-safe links to captured pages. Images scroll with the right page, not an inner
-image canvas. Unmodified wheel/trackpad and touch scrolling keep their native
-behavior. Left-drag pans that page; Ctrl/Cmd+wheel zooms around the pointer.
+safe links to captured pages. The name, navigation buttons, and viewer controls
+stay outside image overflow. Each image has a bounded viewport with native
+scrollbars when needed. Unmodified wheel/trackpad and touch scroll the hovered
+lane; left-drag and arrow keys pan the active lane without moving its neighbors.
+Ctrl/Cmd+wheel zooms around the pointer.
 The pixel under the pointer stays fixed even when the image fits inside the
 viewport. Modifier-wheel gestures over empty viewer space or at the zoom limit
 remain image gestures and do not zoom the browser page.
@@ -372,8 +390,9 @@ Double-click toggles actual size and fit-to-window. With the image surface focus
 `+`/`-` zoom, `0` fits the window, `1` selects actual size, `W` fits width, and arrow
 keys pan (Shift moves farther). Escape cancels a drag. Mode changes retain their
 own zoom; capture changes reset it. Fit modes never upscale small images.
-Side-by-side uses equal-width lanes spanning at least the available viewer width,
-with each image centered in its own lane. Reference and Test remain separate even
+Side-by-side divides the visible viewer width into two equal lanes, or three when
+a Diff image exists. Lanes never grow with zoom: oversized images scroll inside
+their lanes, while smaller images stay centered. Reference and Test remain separate even
 at small zoom levels; Diff adds a third lane when available. Hovering any loaded
 image shows synchronized crosshairs at matching pixel coordinates in the other
 images, whether or not a diff exists. High-contrast guides stay thin at every zoom

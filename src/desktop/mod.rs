@@ -13,6 +13,10 @@ pub mod schema;
 pub mod session;
 pub mod updates;
 pub mod validation;
+
+#[cfg(any(feature = "gui", test))]
+pub(crate) mod vscode;
+
 pub mod worker;
 pub mod workspace;
 

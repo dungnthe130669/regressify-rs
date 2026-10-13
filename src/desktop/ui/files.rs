@@ -504,17 +504,24 @@ impl Workbench {
             Operation::Viewports => self.create_config(true, window, cx),
             Operation::Browse => self.browse_document(window, cx),
             Operation::Refresh => self.refresh_files(window, cx),
-            Operation::OpenVSCode | Operation::OpenFolder => {
+            Operation::OpenVSCode => {
                 let Some(workspace) = &self.session.workspace else {
                     return;
                 };
-                let result = if command.operation == Operation::OpenVSCode {
-                    vscode_workspace_url(&workspace.root)
-                        .and_then(|url| open::that_detached(url.as_str()).map_err(Into::into))
-                } else {
-                    open::that_detached(&workspace.root).map_err(Into::into)
+                let root = workspace.root.clone();
+                self.task(
+                    "Opening VS Code...",
+                    move || crate::desktop::vscode::open(&root, None),
+                    |this, (), _, _| this.status = "Opened workspace in VS Code".into(),
+                    window,
+                    cx,
+                );
+            }
+            Operation::OpenFolder => {
+                let Some(workspace) = &self.session.workspace else {
+                    return;
                 };
-                if let Err(error) = result {
+                if let Err(error) = open::that_detached(&workspace.root) {
                     self.status = format!("Cannot open workspace externally: {error:#}");
                     cx.notify();
                 }
@@ -1208,12 +1215,6 @@ impl Workbench {
             cx,
         );
     }
-}
-
-pub(super) fn vscode_workspace_url(root: &std::path::Path) -> Result<reqwest::Url> {
-    let mut url = reqwest::Url::parse("vscode://file/")?;
-    url.set_path(&display_path(root));
-    Ok(url)
 }
 
 pub(super) fn folder_viewer_label() -> &'static str {

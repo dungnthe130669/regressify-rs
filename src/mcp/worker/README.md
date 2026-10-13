@@ -16,6 +16,16 @@ scripts, and `troubleshooting` for local reports, logs, configuration/capture
 failures, and MCP connection problems.
 Diagnostic lookups never upload workspace contents or private logs.
 
+The startup instructions, overview, and authoring prompt tell agents to read and
+maintain the consumer project's `.ai/memory/` using their authorized local tools.
+Each topic note covers one specific behavior or issue on one site and is at most
+60 lines; `.ai/memory/README.md` stays a compact linked index. Notes capture verified
+lessons, failed approaches, fixes, and evidence so later work avoids repeating
+mistakes. Agents update or split notes instead of accumulating a site-wide diary.
+Memory stays in the project that owns the suites, never in this Worker. Do not
+store secrets, persisted browser state, personal data, raw logs, or transcripts,
+or send project memory to the public service.
+
 ## Local Verification
 
 Use Node.js 22.12 or newer and npm. The lockfile pins dependencies. Commands below

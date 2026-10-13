@@ -92,6 +92,12 @@ troubleshooting topic explains local reports/logs and focused diagnostic command
 default Worker is public and read-only: it cannot read local files, run captures,
 accept private logs, or approve references. See [the command guide](docs/commands.md#mcp-authoring-worker).
 
+The MCP guidance and generated `AGENTS.md` direct agents to reuse and record
+site-specific lessons in the consumer project's `.ai/memory/`: one behavior or
+issue on one site per file, at most 60 lines, with a compact linked index. Notes
+retain verified fixes, failed approaches, and evidence without secrets or raw logs.
+The server never reads or stores this project memory.
+
 ## Snapshot Frontend
 
 The unified snapshot SPA has overview, suite, and image URLs, light/dark themes,

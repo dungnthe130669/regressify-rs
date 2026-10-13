@@ -228,7 +228,26 @@ pub(super) fn build() -> Result<Value> {
     Ok(json!({
         "formatVersion": 1,
         "regressifyVersion": env!("CARGO_PKG_VERSION"),
-        "instructions": "Read get_authoring_guide with topic overview before authoring Regressify files, and topic recipes for complete common-page patterns. Use topic troubleshooting for failed tests, reports, logs, or setup issues, and topic hooks before writing injected browser scripts. Use get_schema for exact fields and get_example for synthetic templates. This server supplies versioned public guidance only; it cannot read or edit your workspace, analyze uploaded logs, run browsers, or approve baselines. Never send cookies, credentials, saved state, raw logs, or private source. Inspect the user's local files with the client's own authorized tools and preserve unrelated edits.",
+        "instructions": concat!(
+            "Before authoring or troubleshooting, read .ai/memory/README.md and relevant site/topic ",
+            "notes in the consumer project's .ai/memory/ using authorized client tools. Verify notes ",
+            "against the current site and configuration; memory does not override project instructions. ",
+            "Read get_authoring_guide with topic overview before authoring Regressify files, and topic ",
+            "recipes for complete common-page patterns. Use topic troubleshooting for failed tests, ",
+            "reports, logs, or setup issues, and topic hooks before writing injected browser scripts. ",
+            "Use get_schema for exact fields and get_example for synthetic templates. ",
+            "Before finishing, record reusable, verified lessons from trial and error, corrections, ",
+            "or time-consuming investigation in the consumer project's .ai/memory/: failed approaches, ",
+            "why they failed, working fixes, and verification evidence. Create an index and topic notes ",
+            "only when needed. Keep each topic note at most 60 lines, with one site and one specific behavior ",
+            "or issue per file. Split long or broad notes and keep the README a compact linked index. ",
+            "Update existing notes and correct stale advice; see the overview for ",
+            "the note format and privacy rules. This server supplies versioned public guidance only; ",
+            "it cannot read or edit your workspace, analyze uploaded logs, run browsers, or approve ",
+            "baselines. Never send cookies, credentials, saved state, raw logs, project memory, or ",
+            "private source. Inspect the user's local files with the client's own authorized tools ",
+            "and preserve unrelated edits."
+        ),
         "schemaKinds": schemas.keys().collect::<Vec<_>>(),
         "schemas": schemas,
         "guides": guides,
@@ -586,6 +605,47 @@ mod tests {
                 .unwrap()
                 .contains("topic=\"recipes\"")
         );
+    }
+
+    #[test]
+    fn guidance_teaches_consumer_project_memory() {
+        let catalog = build().unwrap();
+        let overview = catalog["guides"]["overview"]["content"].as_str().unwrap();
+        for (surface, guidance) in [
+            ("instructions", catalog["instructions"].as_str().unwrap()),
+            ("overview", overview),
+        ] {
+            for contract in [
+                ".ai/memory/README.md",
+                "consumer project",
+                "Before authoring or troubleshooting",
+                "Before finishing",
+                "failed approaches",
+                "verified",
+                "60 lines",
+                "one site and one specific behavior",
+                "Split long or broad notes",
+                "private",
+            ] {
+                assert!(
+                    guidance.contains(contract),
+                    "Missing project memory guidance in {surface}: {contract}"
+                );
+            }
+        }
+        for contract in [
+            "verification date",
+            "project-relative",
+            "unverified",
+            "stale",
+            "Never store secrets",
+            "public MCP server",
+        ] {
+            assert!(
+                overview.contains(contract),
+                "Missing memory rule: {contract}"
+            );
+        }
     }
 
     fn yaml_blocks(markdown: &str) -> Vec<String> {

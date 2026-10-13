@@ -9465,7 +9465,7 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
     cx: &mut TestAppContext,
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1399.), px(720.)));
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1079.), px(720.)));
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("duplicate-item", cx);
@@ -9503,12 +9503,14 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
             assert!(view.read(cx).file_operation_enabled(operation, cx));
         }
         let root = &view.read(cx).session.workspace.as_ref().unwrap().root;
-        let url = super::files::vscode_workspace_url(root).unwrap();
-        assert_eq!(url.scheme(), "vscode");
-        assert_eq!(url.host_str(), Some("file"));
+        let command = crate::desktop::vscode::command(std::path::Path::new("code"), root, None);
+        let args = command.get_args().collect::<Vec<_>>();
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "--new-window");
+        assert_eq!(args[1], "--");
         assert_eq!(
-            url.path().trim_start_matches('/'),
-            super::workspace::display_path(root).trim_start_matches('/')
+            super::workspace::display_path(std::path::Path::new(args[2])),
+            super::workspace::display_path(root)
         );
         window.press("escape", cx);
     })

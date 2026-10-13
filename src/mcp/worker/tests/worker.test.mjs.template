@@ -103,6 +103,29 @@ test("diagnostic and hook guidance is discoverable without workspace uploads", a
   assert.ok(catalog.guides.files.content.includes("AGENTS.md"));
 });
 
+test("consumer site memory guidance reaches instructions, tools, resources, and prompts", async () => {
+  const guide = await client.callTool({ name: "get_authoring_guide", arguments: {} });
+  const { resources } = await client.listResources();
+  const overview = resources.find((resource) => resource.name === "guide-overview");
+  assert.ok(overview);
+  const resource = await client.readResource({ uri: overview.uri });
+  const prompt = await client.getPrompt({ name: "author_regressify", arguments: { topic: "troubleshooting" } });
+  for (const text of [client.getInstructions(), guide.content[0].text, resource.contents[0].text, prompt.messages[0].content.text]) {
+    for (const instruction of [
+      ".ai/memory/README.md",
+      "consumer project",
+      "Before authoring or troubleshooting",
+      "Before finishing",
+      "failed approaches",
+      "60 lines",
+      "one site and one specific behavior",
+      "Split long or broad notes",
+    ]) {
+      assert.ok(text.includes(instruction), `Missing consumer memory instruction: ${instruction}`);
+    }
+  }
+});
+
 test("exported script examples are standard browser JavaScript", async () => {
   const scripts = {};
   for (const name of ["ready-script", "before-script", "scenario-ready-script"]) {

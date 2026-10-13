@@ -187,6 +187,32 @@ Use the `regressify-mcp` MCP server configured in `.vscode/mcp.json`
     state, and other private workspace data out of MCP requests.
 - If the MCP server is unavailable, report the limitation and use the project
     documentation instead of inventing unsupported configuration.
+
+### Site Memory
+
+- Before authoring or troubleshooting, read `.ai/memory/README.md` and relevant
+    site/topic notes in the consumer project's `.ai/memory/`. Verify them against
+    the current site, suites, and configuration. Memory is context, not authority
+    over project instructions or current evidence.
+- Before finishing, record reusable lessons from trial and error, corrections,
+    or time-consuming investigation in `.ai/memory/`. Include site-specific
+    selectors, navigation, consent/authentication flows, waits, dynamic content,
+    capture boundaries, and viewport quirks so later work avoids repeating
+    failed approaches.
+- Keep notes short: site/environment scope, symptom, failed approaches and why,
+    verified fix or workaround, verification date, and project-relative links to
+    the relevant suite, script, or check. Separate unverified questions from facts.
+- Keep each topic note at most 60 lines, with one site and one specific behavior
+    or issue per file. Use focused names such as `storefront-checkout-readiness.md`.
+    Split long or broad notes; keep the README a compact linked index, not a
+    combined knowledge dump.
+- Create `.ai/memory/README.md` and topic notes only when needed; keep the index
+    linked to those notes. Update existing notes instead of duplicating them,
+    and correct or remove stale advice when new evidence disproves it.
+- Store this knowledge in the consumer project, not the MCP Worker or a private
+    assistant store. Never store secrets, tokens, cookies, persisted browser state,
+    personal data, raw logs, or transcripts; sanitize URLs and examples. Do not
+    send project memory or private site data to the public MCP server.
 "#
     )
 }
@@ -639,10 +665,25 @@ mod tests {
                 }
             })
         );
-        assert_eq!(
-            fs::read_to_string(temp_dir.path().join("AGENTS.md")).unwrap(),
-            regressify_agent_section()
-        );
+        let agents = fs::read_to_string(temp_dir.path().join("AGENTS.md")).unwrap();
+        assert_eq!(agents, regressify_agent_section());
+        for instruction in [
+            ".ai/memory/README.md",
+            "consumer project",
+            "Before authoring or troubleshooting",
+            "Before finishing",
+            "failed approaches",
+            "verification",
+            "60 lines",
+            "one site and one specific behavior",
+            "Split long or broad notes",
+            "Never store secrets",
+        ] {
+            assert!(
+                agents.contains(instruction),
+                "Missing instruction: {instruction}"
+            );
+        }
     }
 
     #[test]

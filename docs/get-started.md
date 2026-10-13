@@ -88,6 +88,11 @@ If this is your first time working with **Regressify**, follow these steps (only
    outdated instructions through the next H2 or the end of the file. Other
    sections and already-current instructions are preserved.
 
+   Agents also read and maintain site lessons in your project's `.ai/memory/`:
+   one specific behavior or issue on one site per file, at most 60 lines, with a
+   compact linked index. Notes retain verified fixes, failed approaches, and
+   evidence without secrets or raw logs. Initialization leaves memory files alone.
+
    In the [desktop app](desktop.md#workspace-and-files), opening the folder
    automatically creates missing runtime files, including `regressify.yaml`,
    and performs the same MCP and `AGENTS.md` maintenance. No separate

@@ -324,8 +324,9 @@ Push establishes upstream tracking and never force-pushes.
 Pull requires a clean working tree and uses fast-forward-only
 semantics. Diverged branches and existing conflicts show Open in VS Code for
 merge/rebase resolution; refresh afterward. This avoids embedding a second merge
-editor or silently resolving conflicts. VS Code must be installed and registered
-for its `vscode://` URL handler.
+editor or silently resolving conflicts. These actions open the repository in its
+own VS Code window, or focus the window already open on that folder. Opening a
+selected file includes the repository folder so it uses that same window.
 
 Commit, discard, pull, push, initialization, and remote changes use explicit
 confirmation and the editor's unsaved-draft guard. Mutating operations block
@@ -1161,7 +1162,15 @@ data files, including custom viewport definitions.
 
 File supports new/duplicate/rename/delete suite, Save As, reload, configuration
 and viewport-file creation, file browsing, refresh, and light/dark appearance.
-Open in VS Code opens the current workspace in an external VS Code window.
+Open in VS Code focuses the VS Code window already open on the current workspace
+folder, or opens a dedicated window when that folder is not already open. Other
+VS Code workspaces and their sessions remain unchanged. Regressify launches the
+installed editor directly instead of using a `vscode://` link, avoiding the
+external-URI permission prompt. Normal VS Code workspace-trust prompts still apply.
+VS Code must be installed in a standard location or have its executable/CLI `bin`
+directory on `PATH`; Windows supports both user and system installations without
+requiring its URI handler. Missing installations and launch failures appear in
+the desktop status message.
 Open in File Explorer (Windows), Open in Finder (macOS), or Open in File Manager
 (Linux) opens the workspace folder in the operating system's default folder viewer.
 These actions require an open workspace and do not save or discard editor drafts.
@@ -1272,6 +1281,12 @@ refreshes outdated instructions through the next top-level H2 or EOF, preserving
 surrounding content. Current MCP and agent configurations are not rewritten.
 See [workspace initialization](commands.md#workspace-initialization) for the
 shared preservation rules and Markdown freshness checks.
+
+The generated instructions tell agents to read and maintain site-specific lessons
+in the consumer project's `.ai/memory/`. Each note is at most 60 lines and covers
+one specific behavior or issue on one site, with a compact linked index. Agents
+retain verified fixes, failed approaches, and evidence without secrets or raw
+logs. Desktop setup neither creates memory files nor rewrites existing notes.
 
 Setup runs in the background after workspace ownership and unsaved-work checks;
 blocked or unsafe paths report an error and keep the current workspace open.

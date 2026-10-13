@@ -20,6 +20,11 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
    fallbacks or empty viewport selections. Shared string/list help must be neutral.
 1. Keep guides self-contained and versioned. Explain runtime exceptions, units, inheritance, paths, safety, complete-file versus fragment examples, and valid repair strategies. No required repository links, website shortcodes, or development-only agent rules may leak into the exported authoring instructions.
    Consumer files such as `AGENTS.md` are legitimate guidance, not source leaks.
+   Startup instructions, the overview, and prompts must teach agents to read and
+   maintain consumer `.ai/memory/` using authorized client tools. Each topic note
+   is at most 60 lines and covers one behavior or issue on one site; keep a compact
+   linked index, record verified lessons/failed approaches/evidence, and correct
+   stale advice. Exclude secrets and raw logs; never upload memory to the Worker.
    Keep CLI/desktop managed-file behavior current. The troubleshooting topic must
    give local evidence paths, focused commands, failure/health interpretation,
    and safe repairs without asking clients to upload logs or private data.
@@ -63,6 +68,8 @@ npm run build
 Worker tests start/stop a local runtime; `build` is a Wrangler dry run. Neither requires publishing credentials. Cover complete/default-feature export, version and dependency consistency, deterministic bytes, self-contained schema refs, every action/example, invalid destinations, file conflicts, concurrent exports, and symlinks where the platform permits. Unix symlink checks run in Linux CI.
 Catalog checks also require direct/referenced property help and standalone
 diagnostic/hook contracts. Script-stub checks do not replace live hook fixtures.
+Check consumer memory guidance through startup instructions, the overview tool
+and resource, and a non-overview prompt, including the file-size/topic limits.
 
 ## Maintain
 

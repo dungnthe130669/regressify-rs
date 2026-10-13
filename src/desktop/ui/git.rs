@@ -1,4 +1,3 @@
-use anyhow::Context as _;
 use gpui_kit::base::ScrollbarHandle as _;
 use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use std::time::{Duration, Instant};
@@ -918,27 +917,36 @@ impl GitPanel {
             .as_ref()
             .and_then(|snapshot| snapshot.repository.as_ref())
             .map(|repository| &repository.root)
-            .or(self.root.as_ref());
-        let result = (|| -> Result<()> {
-            let root = root.context("Open a workspace first")?;
-            let path = if file {
-                self.active_file
-                    .as_ref()
-                    .map(|file| root.join(file))
-                    .unwrap_or_else(|| root.clone())
-            } else {
-                root.clone()
-            };
-            let mut url = reqwest::Url::parse("vscode://file/")?;
-            url.set_path(&display_path(&path));
-            open::that_detached(url.as_str())
-                .context("Cannot open VS Code; install it or open the repository manually")?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.status = format!("{error:#}");
+            .or(self.root.as_ref())
+            .cloned();
+        let Some(root) = root else {
+            self.status = "Open a workspace first".into();
             cx.notify();
-        }
+            return;
+        };
+        let file = file
+            .then(|| self.active_file.as_ref().map(|file| root.join(file)))
+            .flatten();
+        let generation = self.generation;
+        let task = cx
+            .background_executor()
+            .spawn(async move { crate::desktop::vscode::open(&root, file.as_deref()) });
+        self.status = "Opening VS Code...".into();
+        cx.spawn(async move |panel, cx| {
+            let result = task.await;
+            let _ = panel.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                this.status = match result {
+                    Ok(()) => "Opened in VS Code".into(),
+                    Err(error) => format!("{error:#}"),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 }
 

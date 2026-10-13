@@ -85,10 +85,10 @@ failure jumps, selectable/copyable Info content, errors, hostile content,
 narrow/wide layouts, and axe accessibility checks. They also verify the shared
 logo/favicon bytes, suite-aware titles, and list preview alignment, missing images,
 conditional diff lanes, and long labels.
-Side-by-side crosshair checks cover two- and three-lane comparisons, equal-width
-full-span lanes, synchronized image pixels, unequal dimensions,
+Side-by-side crosshair checks cover two- and three-lane comparisons, bounded
+equal-width lanes, synchronized image pixels, unequal dimensions,
 inserted/deleted diff bands, zoom-independent strokes, missing/broken images,
-pointer cleanup, and native scrolling. Band tests cover every source lane, both
+pointer cleanup, and native lane scrolling. Band tests cover every source lane, both
 alignment directions, and absent target pixels inside the gap.
 Delayed-image checks verify explicit dimensions, unchanged fit zoom, and stable
 comparison geometry in every mode, including failed loads. They disable entrance
@@ -101,6 +101,10 @@ Wheel regressions verify the exact pixel anchor through fit boundaries and from
 each lane, cancellation in empty viewer space and at zoom limits, and listener
 cleanup on leaving Comparison. Use integer mouse coordinates and derive the
 expected source pixel from those coordinates to avoid fractional input rounding.
+Fixed-lane tests zoom oversized images, verify independent horizontal/vertical
+scrollbars and reachable image edges, and keep names/controls stationary. Geometry
+tests disable entrance motion; hover offsets use the pane's padding box, excluding
+its border. Crosshair targets must first be scrolled into the source lane.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Footer checks cover short, filtered, and not-found pages, plus long content in

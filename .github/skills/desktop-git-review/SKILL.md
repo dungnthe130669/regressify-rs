@@ -11,7 +11,7 @@ description: 'Use when changing desktop Git status/diffs, selected commit/discar
 
 ## Procedure and Invariants
 
-1. Parse NUL-delimited machine output. Preserve rename pairs, conflicts, submodule state, literal filenames, and the repository root distinct from workspace root.
+1. Parse NUL-delimited machine output. Preserve rename pairs, conflicts, submodule state, literal filenames, and the repository root distinct from workspace root. External VS Code actions pass that repository root plus the optional selected file to the [shared launcher](../../../src/desktop/vscode.rs), so an already-open repository window is focused without replacing another workspace.
 1. Revalidate repository/HEAD/branch and relevant remote/upstream configuration after review. For destructive selection, investigate content changes even when status letters remain unchanged; a status snapshot is not a content fingerprint.
 1. Commit only selected paths while preserving unrelated staged work. Keep ignored comparison artifacts excluded unless explicitly included by the user.
 1. Discard only selected files; protect unselected rename destinations and children, reject unsafe parents, and handle unborn branches without broad resets/cleans.
