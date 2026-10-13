@@ -15,6 +15,11 @@ Issues identified during adversarial review that remain after the September 2026
 - [Web tests](frontend/tests/report.spec.ts) cover fits, exact drag offsets,
   anchored wheel zoom, keyboard isolation, per-mode state, and gesture cleanup.
   Existing published snapshots need regeneration and redeployment, not recapture.
+- Follow-up: pointer zoom now retains its pixel anchor across fit boundaries,
+  captures modifier-wheel events in empty viewport space, and never hands zoom
+  limits to the browser. Side-by-side uses full-span equal-width lanes and retains
+  crosshairs without a Diff image. Browser regressions cover each lane, no-diff
+  comparisons, source-size differences, and listener cleanup.
 
 ## Snapshot Overview Mobile Layout (2026-10-13)
 

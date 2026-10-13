@@ -121,10 +121,14 @@ Assert-SmokeEqual $versionGuards.Count 1 'Native version visibility must check t
 $versionProbe = [scriptblock]::Create($versionGuards[0].Extent.Text)
 foreach ($versionCase in @(
     @{ Width = 1000; Count = 0; Reject = $false },
-    @{ Width = 1399; Count = 0; Reject = $false },
-    @{ Width = 1399; Count = 1; Reject = $true },
+    @{ Width = 1079; Count = 0; Reject = $false },
+    @{ Width = 1079; Count = 1; Reject = $true },
+    @{ Width = 1080; Count = 1; Reject = $false },
+    @{ Width = 1080; Count = 0; Reject = $true },
+    @{ Width = 1081; Count = 1; Reject = $false },
+    @{ Width = 1081; Count = 0; Reject = $true },
+    @{ Width = 1399; Count = 1; Reject = $false },
     @{ Width = 1400; Count = 1; Reject = $false },
-    @{ Width = 1400; Count = 0; Reject = $true },
     @{ Width = 1600; Count = 1; Reject = $false },
     @{ Width = 1600; Count = 2; Reject = $true }
 )) {
@@ -132,7 +136,7 @@ foreach ($versionCase in @(
     $versions = [object[]]::new($versionCase.Count)
     $rejected = $false
     try { & $versionProbe } catch { $rejected = $true }
-    Assert-SmokeEqual $rejected $versionCase.Reject 'Native title-bar version visibility must use the exact 1400px breakpoint'
+    Assert-SmokeEqual $rejected $versionCase.Reject 'Native title-bar version visibility must use the exact 1080px breakpoint'
     $stockSizingChecks++
 }
 $workspaceGuards = @($headerStatements | Where-Object {

@@ -79,11 +79,11 @@ Verified: 2026-10-13
   compact header. The 1080px overview omits breadcrumbs and shows local date/time
   below `Snapshot Overview`; review breadcrumbs stay unchanged. `--grep footer`
   covers short/filtered/missing pages and long document/review scrolling.
-- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) keeps native page scrolling and drag-pan; Ctrl/Cmd+wheel anchors zoom, while toolbar zoom retains scroll behavior. Canvas-scoped keys and per-mode zoom reset on capture change; fits never upscale. The `image viewer` browser tests cover gestures and cleanup.
+- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) keeps native page scrolling and drag-pan; Ctrl/Cmd+wheel on the stable review scroller anchors zoom with padding at fit boundaries, while toolbar zoom retains scroll behavior. Canvas-scoped keys and per-mode zoom reset on capture change; fits never upscale. The `image viewer` browser tests cover gestures and cleanup.
   Optional `imageSizes` reserves decoded dimensions before load; `dimensions` holds deltas. Legacy reports discover sizes on load.
   Delayed-load tests use reduced motion to exclude entrance animation.
 - Side-by-side crosshairs map image pixels through optional comparer `alignment`,
-  excluding band holes and unavailable/out-of-bounds pixels; strokes stay one screen pixel wide.
+  excluding band holes and unavailable/out-of-bounds pixels; strokes stay one screen pixel wide. Crosshairs also work without a diff. Full-span equal-width lanes center images individually without changing scale.
   The `side by side crosshairs|scrolling over images` browser checks cover
   alignment and cleanup on desktop/mobile. Image nodes have `pointer-events: none`;
   hover their wrappers to wait for stable layout before reading image bounds.

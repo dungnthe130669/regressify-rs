@@ -10081,7 +10081,9 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
 ) {
     for (width, height) in [
         (1000., 640.),
+        (1079., 720.),
         (1080., 720.),
+        (1081., 720.),
         (1399., 720.),
         (1400., 720.),
         (1401., 720.),
@@ -10103,10 +10105,10 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
             let status = window.find("status").bounds();
             assert!(status.top() >= titlebar.top() && status.bottom() <= titlebar.bottom());
             let name = window.find("application-name").bounds();
-            if width < 1400. {
+            if width < 1080. {
                 assert!(
                     window.try_find("application-version").is_none(),
-                    "The title-bar version must be hidden below 1400px"
+                    "The title-bar version must be hidden below 1080px"
                 );
             } else {
                 let version = window.find("application-version");
@@ -10178,13 +10180,15 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
                     <= window.find("capture-heading").bounds().top()
             );
             if width == 1600. {
-                for resized_width in [1399., 1400., 1401., 1399., 1600.] {
+                for resized_width in [
+                    1079., 1080., 1081., 1079., 1399., 1400., 1401., 1399., 1600.,
+                ] {
                     window.resize(size(px(resized_width), px(height)));
                     window.bounds_changed(cx);
                     window.render_frame(cx);
                     assert_eq!(
                         window.try_find("application-version").is_some(),
-                        resized_width >= 1400.,
+                        resized_width >= 1080.,
                         "Version visibility must follow live window resizing"
                     );
                     assert_eq!(

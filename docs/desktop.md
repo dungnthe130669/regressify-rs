@@ -823,8 +823,8 @@ own fixture credentials, settings, and processes.
 Workspace navigation and global tools share a compact title bar with native
 window controls. The brand/version, menus, view tabs, and workspace name use
 matching text sizes on one aligned row, with 16px gaps between groups. The view
-tabs keep their underline close to the labels. Version and workspace name are
-hidden below 1400px client width and visible at 1400px or wider. Visible workspace
+tabs keep their underline close to the labels. The version is visible at client
+widths of 1080px or wider; the workspace name appears at 1400px or wider. Visible workspace
 names use normal foreground contrast and truncate within the space left by the
 controls; their full paths remain accessible. Action controls use normal toolkit
 sizing, and toolbar groups wrap without hiding actions. The minimum client area
@@ -1206,7 +1206,7 @@ running CLI writers concurrently. They are not crash-atomic. Remote deployments
 are never modified automatically; redeploy to publish the updated site.
 
 The title bar displays the package version on the same line as Regressify at
-window widths of 1400px or wider; narrower windows hide the title-bar version.
+client widths of 1080px or wider; narrower windows hide the title-bar version.
 The workspace name uses the same text size as the menus, with a small gap after
 Results. Help > About always shows Regressify Desktop, its version, author Tuyen
 Pham, and the clickable website `https://tuyen.blog/`, which opens in the external

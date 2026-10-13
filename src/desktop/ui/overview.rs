@@ -638,7 +638,7 @@ impl Workbench {
                                     .line_height(relative(1.25))
                                     .child("Regressify"),
                             )
-                            .when(window.viewport_size().width >= px(1400.), |brand| {
+                            .when(window.viewport_size().width >= px(1080.), |brand| {
                                 brand.child(
                                     div()
                                         .id("application-version")

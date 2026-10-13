@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-09
+Verified: 2026-10-13
 
 - Run/download bars use Kit Progress with percentages and accessible names.
   Native default smoke checks `Scenario job progress` as a ProgressBar with
@@ -105,7 +105,8 @@ Verified: 2026-10-09
   and Enter/Escape; its dropdown has no InvokePattern. Default's Add uses Tab too,
   retaining the exact backward-wrap assertion. Header menus are File/Publish/Help.
   The [header regression](../../src/desktop/ui/tests.rs) checks equal group gaps,
-  aligned text, compact tab underlines, and version/workspace visibility at 1400px.
+  aligned text, compact tab underlines, version visibility at 1080px, and workspace
+  visibility at 1400px, including live resize across both breakpoints.
 - Minimum-size flows bring scrollable targets into view: Actions via settings
   search, the Comparison suite via wheel, and landing removal via editor scroll.
   Artifact's added Rename size matrix uses the scoped context menu; original

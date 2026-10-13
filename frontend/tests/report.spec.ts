@@ -1850,7 +1850,14 @@ for (const [mode, unavailable] of [
           elements.every((element) => (element as HTMLImageElement).naturalWidth === 0),
         ),
       ).toBe(true);
-      await expect(page.locator(".image-world")).toHaveCSS("width", `${size.width}px`);
+      const reservedWidth =
+        mode === "side"
+          ? Math.max(
+              size.width,
+              await page.locator(".comparison-viewer").evaluate((viewer) => viewer.clientWidth),
+            )
+          : size.width;
+      await expect(page.locator(".image-world")).toHaveCSS("width", `${reservedWidth}px`);
       await expect(page.locator(".image-world")).toHaveCSS("height", `${size.height}px`);
       await page.evaluate(() => document.fonts.ready);
       const canvas = page.locator(".zoom-canvas");
@@ -2028,6 +2035,149 @@ test("image viewer fit, anchored zoom, drag and keyboard controls stay scoped", 
     "true",
   );
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
+});
+
+test("image viewer wheel zoom anchors fitted images and captures empty viewport space", async ({
+  page,
+}) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=reference");
+  const canvas = page.getByRole("region", { name: "Zoomable comparison images" });
+  const content = page.locator(".review-scroll");
+  await expect
+    .poll(() => canvas.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  const bounds = await canvas.boundingBox();
+  const viewport = await content.boundingBox();
+  if (!bounds || !viewport) throw new Error("Image viewer is unavailable");
+  const pointer = {
+    x: Math.min(bounds.x + bounds.width, viewport.x + viewport.width) - 24,
+    y: Math.min(bounds.y + bounds.height, viewport.y + viewport.height) - 24,
+  };
+  const imagePoint = { x: pointer.x - bounds.x, y: pointer.y - bounds.y };
+  const pageScale = await page.evaluate(() => ({
+    width: innerWidth,
+    ratio: devicePixelRatio,
+    scale: visualViewport?.scale,
+  }));
+  let previousScale = 1;
+  await page.keyboard.down("Control");
+  try {
+    for (const scale of [0.9, 0.8, 0.75, 2 / 3, 0.5, 1 / 3, 0.25, 0.25, 1 / 3, 0.5]) {
+      await page.mouse.move(pointer.x, pointer.y);
+      await page.mouse.wheel(0, scale > previousScale ? -40 : 40);
+      previousScale = scale;
+      await expect(page.getByLabel("Zoom level")).toHaveText(`${Math.round(scale * 1000) / 10}%`);
+      await expect
+        .poll(() =>
+          canvas.evaluate(
+            (element, { point, image, scale }) => {
+              const current = element.getBoundingClientRect();
+              return Math.max(
+                Math.abs(current.left + image.x * scale - point.x),
+                Math.abs(current.top + image.y * scale - point.y),
+              );
+            },
+            { point: pointer, image: imagePoint, scale },
+          ),
+        )
+        .toBeLessThan(2);
+    }
+  } finally {
+    await page.keyboard.up("Control");
+  }
+  const margin = { x: viewport.x + 8, y: viewport.y + viewport.height - 8 };
+  const wheelIsCancelled = (modifier: "ctrlKey" | "metaKey" | null, inside = true) =>
+    page.evaluate(
+      ({ point, modifier, inside }) => {
+        const target = inside ? document.elementFromPoint(point.x, point.y) : document.body;
+        if (
+          !target ||
+          (inside && (!target.closest(".review-scroll") || target.closest(".zoom-canvas")))
+        )
+          throw new Error("Expected empty image viewport space");
+        const event = new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          clientX: point.x,
+          clientY: point.y,
+          deltaY: 40,
+          ctrlKey: modifier === "ctrlKey",
+          metaKey: modifier === "metaKey",
+        });
+        target.dispatchEvent(event);
+        return event.defaultPrevented;
+      },
+      { point: margin, modifier, inside },
+    );
+  expect(await wheelIsCancelled("ctrlKey")).toBe(true);
+  expect(await wheelIsCancelled("metaKey")).toBe(true);
+  await expect(page.getByLabel("Zoom level")).toHaveText("25%");
+  expect(await wheelIsCancelled("ctrlKey")).toBe(true);
+  expect(await wheelIsCancelled(null)).toBe(false);
+  expect(await wheelIsCancelled("ctrlKey", false)).toBe(false);
+  expect(
+    await page.evaluate(() => ({
+      width: innerWidth,
+      ratio: devicePixelRatio,
+      scale: visualViewport?.scale,
+    })),
+  ).toEqual(pageScale);
+  await page.getByRole("button", { name: "Capture Log", exact: true }).click();
+  await expect(canvas).toHaveCount(0);
+  expect(await wheelIsCancelled("ctrlKey")).toBe(false);
+});
+
+test("image viewer anchors wheel zoom to the pixel in each side-by-side lane", async ({ page }) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+  const images = page.locator(".comparison-lane img");
+  await expect(images).toHaveCount(3);
+  await expect
+    .poll(() =>
+      images.evaluateAll((elements) =>
+        elements.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+      ),
+    )
+    .toBe(true);
+  for (const image of await images.all()) {
+    await page.getByRole("button", { name: "Fit to window", exact: true }).click();
+    await image.locator("..").hover();
+    const before = await image.boundingBox();
+    if (!before) throw new Error("Comparison image is unavailable");
+    const pointer = {
+      x: Math.round(before.x + before.width * 0.6),
+      y: Math.round(before.y + before.height * 0.2),
+    };
+    const horizontal = (pointer.x - before.x) / before.width;
+    const vertical = (pointer.y - before.y) / before.height;
+    await page.mouse.move(pointer.x, pointer.y);
+    await page.keyboard.down("Control");
+    try {
+      for (let step = 0; step < 2; step++) {
+        const previous = Number.parseFloat(await page.getByLabel("Zoom level").innerText());
+        await page.mouse.wheel(0, -40);
+        await expect
+          .poll(async () => Number.parseFloat(await page.getByLabel("Zoom level").innerText()))
+          .toBeGreaterThan(previous);
+        await expect
+          .poll(() =>
+            image.evaluate(
+              (element, { pointer, horizontal, vertical }) => {
+                const current = element.getBoundingClientRect();
+                return Math.max(
+                  Math.abs(current.left + current.width * horizontal - pointer.x),
+                  Math.abs(current.top + current.height * vertical - pointer.y),
+                );
+              },
+              { pointer, horizontal, vertical },
+            ),
+          )
+          .toBeLessThan(2);
+      }
+    } finally {
+      await page.keyboard.up("Control");
+    }
+  }
 });
 
 test("image viewer keeps per-mode zoom and cancels interrupted drags", async ({
@@ -2246,22 +2396,31 @@ for (const shorter of ["reference", "test"] as const) {
   });
 }
 
-for (const differentSizes of [false, true]) {
-  test(`side by side crosshairs track image pixels (${differentSizes ? "different" : "equal"} sizes)`, async ({
+for (const [differentSizes, hasDiff] of [
+  [false, true],
+  [true, true],
+  [false, false],
+  [true, false],
+]) {
+  test(`side by side crosshairs track image pixels (${differentSizes ? "different" : "equal"} sizes, ${hasDiff ? "with" : "without"} diff)`, async ({
     page,
   }, info) => {
-    if (differentSizes) {
+    const laneCount = hasDiff ? 3 : 2;
+    if (differentSizes || !hasDiff) {
       await page.route("**/_snapshot/data/suites/**", async (route) => {
         const response = await route.fetch();
         const data = await response.json();
-        if (data.id === "workspace-overview") data.tests[0].reference = data.tests[1].reference;
+        if (data.id === "workspace-overview") {
+          if (differentSizes) data.tests[0].reference = data.tests[1].reference;
+          if (!hasDiff) data.tests[0].diff = null;
+        }
         await route.fulfill({ response, json: data });
       });
     }
     await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
     const images = page.locator(".comparison-lane img");
     const crosshairs = page.locator(".comparison-crosshair");
-    await expect(images).toHaveCount(3);
+    await expect(images).toHaveCount(laneCount);
     await expect
       .poll(() =>
         images.evaluateAll((elements) =>
@@ -2291,7 +2450,7 @@ for (const differentSizes of [false, true]) {
           bounds.x + bounds.width * horizontal,
           bounds.y + bounds.height * vertical,
         );
-        await expect(crosshairs).toHaveCount(3);
+        await expect(crosshairs).toHaveCount(laneCount);
         await expect
           .poll(() =>
             page.locator(".comparison-lane").evaluateAll(
@@ -2346,7 +2505,7 @@ for (const differentSizes of [false, true]) {
     await screenshot(
       page,
       info.project.name,
-      `comparison-crosshairs${differentSizes ? "-different-sizes" : ""}`,
+      `comparison-crosshairs${differentSizes ? "-different-sizes" : ""}${hasDiff ? "" : "-without-diff"}`,
     );
     if (differentSizes) {
       const testImage = images.nth(1);
@@ -2354,7 +2513,7 @@ for (const differentSizes of [false, true]) {
       const bounds = await testImage.boundingBox();
       if (!bounds) throw new Error("Test image is not visible");
       await page.mouse.move(bounds.x + bounds.width * 0.9, bounds.y + bounds.height * 0.2);
-      await expect(crosshairs).toHaveCount(2);
+      await expect(crosshairs).toHaveCount(laneCount - 1);
       await expect(
         page.locator(".comparison-lane").first().locator(".comparison-crosshair"),
       ).toHaveCount(0);
@@ -2364,7 +2523,7 @@ for (const differentSizes of [false, true]) {
     const secondLane = await page.locator(".comparison-lane").nth(1).boundingBox();
     if (!firstLane || !secondLane) throw new Error("Comparison lanes are not visible");
     await images.first().locator("..").hover();
-    await expect(crosshairs).toHaveCount(3);
+    await expect(crosshairs).toHaveCount(laneCount);
     await page.mouse.move((firstLane.x + firstLane.width + secondLane.x) / 2, firstLane.y + 10);
     await expect(crosshairs).toHaveCount(0);
     await page.getByRole("button", { name: "Fit images", exact: true }).hover();
@@ -2372,7 +2531,7 @@ for (const differentSizes of [false, true]) {
     await page.goto("/suites/customer-accounts/images/overview__desktop.png?mode=side");
     await expect(images).toHaveCount(2);
     await images.first().locator("..").hover();
-    await expect(crosshairs).toHaveCount(0);
+    await expect(crosshairs).toHaveCount(2);
   });
 }
 
@@ -2489,6 +2648,20 @@ test("comparison images are centered without labels and oversized images stay re
       )
       .toBeLessThan(1);
     if (mode === "side") {
+      const layout = await page.locator(".comparison-viewer").evaluate((viewer) => {
+        const lanes = Array.from(viewer.querySelectorAll(".comparison-lane"), (lane) =>
+          lane.getBoundingClientRect(),
+        );
+        return {
+          available: viewer.clientWidth,
+          span: (lanes.at(-1)?.right ?? 0) - (lanes[0]?.left ?? 0),
+          widthDifference:
+            Math.max(...lanes.map((lane) => lane.width)) -
+            Math.min(...lanes.map((lane) => lane.width)),
+        };
+      });
+      expect(Math.abs(layout.span - layout.available)).toBeLessThan(1);
+      expect(layout.widthDifference).toBeLessThan(1);
       for (const lane of await page.locator(".comparison-lane").all()) {
         const difference = await lane.evaluate((element) => {
           const bounds = element.getBoundingClientRect();

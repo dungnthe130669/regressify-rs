@@ -1470,6 +1470,9 @@ body:has(.settings-dialog[open]) {
   padding: 9px 12px;
   color: var(--text);
 }
+.comparison-stage {
+  overflow-anchor: none;
+}
 .comparison-viewer .zoom-canvas {
   position: relative;
   margin-inline: auto;

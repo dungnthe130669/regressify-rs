@@ -12,7 +12,8 @@
     "format": "biome check --write .",
     "test": "bun test src scripts",
     "test:e2e": "bun --bun playwright test",
-    "preview": "bun scripts/serve-report.ts"
+    "preview": "bun scripts/serve-report.ts",
+    "deploy": "tuyen build && tuyen rm -rf ../regressify-mcp-worker && regressify mcp --output ../regressify-mcp-worker && bun ci --cwd ../regressify-mcp-worker && bun run --cwd ../regressify-mcp-worker build && bun run --cwd ../regressify-mcp-worker deploy"
   },
   "dependencies": {
     "@floating-ui/react": "0.27.20",

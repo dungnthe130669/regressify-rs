@@ -365,14 +365,20 @@ stepped zoom through 800%, fit-width, fit-to-window, actual size, downloads, and
 safe links to captured pages. Images scroll with the right page, not an inner
 image canvas. Unmodified wheel/trackpad and touch scrolling keep their native
 behavior. Left-drag pans that page; Ctrl/Cmd+wheel zooms around the pointer.
+The pixel under the pointer stays fixed even when the image fits inside the
+viewport. Modifier-wheel gestures over empty viewer space or at the zoom limit
+remain image gestures and do not zoom the browser page.
 Double-click toggles actual size and fit-to-window. With the image surface focused,
 `+`/`-` zoom, `0` fits the window, `1` selects actual size, `W` fits width, and arrow
 keys pan (Shift moves farther). Escape cancels a drag. Mode changes retain their
 own zoom; capture changes reset it. Fit modes never upscale small images.
-Side-by-side includes three aligned lanes when a diff exists. Hovering any image
-shows synchronized crosshairs at matching pixel coordinates in Reference, Test,
-and Diff, with high-contrast guides that stay thin at every zoom level. Missing
-images and coordinates outside a smaller image are excluded. When comparison
+Side-by-side uses equal-width lanes spanning at least the available viewer width,
+with each image centered in its own lane. Reference and Test remain separate even
+at small zoom levels; Diff adds a third lane when available. Hovering any loaded
+image shows synchronized crosshairs at matching pixel coordinates in the other
+images, whether or not a diff exists. High-contrast guides stay thin at every zoom
+level. Failed or missing images and coordinates outside a smaller image are
+excluded. When comparison
 aligns an inserted or deleted vertical band, crosshairs follow the corresponding
 content above and below it. Within the band, the shorter image has no matching
 pixel and shows no crosshair. Alignment comes from the saved comparison, not an

@@ -41,8 +41,8 @@ function Test-TitlebarControlBounds([string]$Theme, [int[]]$Dimensions, [string]
     $clientWidth = ($bounds.Right - $bounds.Left - 2 * $border) / $scale
     $versions = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
         Where-Object { $_.Current.Name -match '^v\d+\.\d+\.\d+(?:[-+].+)?$' })
-    if ($versions.Count -ne [int]($clientWidth -ge 1400)) {
-        throw 'The title-bar version must be visible only at client widths of 1400px or wider.'
+    if ($versions.Count -ne [int]($clientWidth -ge 1080)) {
+        throw 'The title-bar version must be visible only at client widths of 1080px or wider.'
     }
     if ($versions.Count -eq 1) {
         $versionBounds = $versions[0].Current.BoundingRectangle

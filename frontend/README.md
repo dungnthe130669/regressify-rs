@@ -85,7 +85,8 @@ failure jumps, selectable/copyable Info content, errors, hostile content,
 narrow/wide layouts, and axe accessibility checks. They also verify the shared
 logo/favicon bytes, suite-aware titles, and list preview alignment, missing images,
 conditional diff lanes, and long labels.
-Side-by-side crosshair checks cover synchronized image pixels, unequal dimensions,
+Side-by-side crosshair checks cover two- and three-lane comparisons, equal-width
+full-span lanes, synchronized image pixels, unequal dimensions,
 inserted/deleted diff bands, zoom-independent strokes, missing/broken images,
 pointer cleanup, and native scrolling. Band tests cover every source lane, both
 alignment directions, and absent target pixels inside the gap.
@@ -96,6 +97,10 @@ The `image viewer` browser checks cover fit-to-window, anchored Ctrl+wheel zoom,
 exact drag offsets, keyboard scoping, per-mode zoom, double-click, and touch/blur
 cleanup on desktop and mobile. Run these and the existing image-mode/crosshair
 checks against both Vite and the generated report.
+Wheel regressions verify the exact pixel anchor through fit boundaries and from
+each lane, cancellation in empty viewer space and at zoom limits, and listener
+cleanup on leaving Comparison. Use integer mouse coordinates and derive the
+expected source pixel from those coordinates to avoid fractional input rounding.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Footer checks cover short, filtered, and not-found pages, plus long content in
