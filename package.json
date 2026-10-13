@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "ver": "bun ver.ts",
-    "sync": "git add .istari -f"
+    "sync": "git add .istari -f",
+    "deploy": "tuyen build && tuyen rm -rf ../regressify-mcp-worker && regressify mcp --output ../regressify-mcp-worker && bun ci --cwd ../regressify-mcp-worker && bun run --cwd ../regressify-mcp-worker build && bun run --cwd ../regressify-mcp-worker deploy"
   },
   "devDependencies": {
     "@types/bun": "latest"
