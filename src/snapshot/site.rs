@@ -115,6 +115,8 @@ pub(super) struct Capture {
     pub test: Option<String>,
     pub diff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<crate::compare::image_compare::DiffAlignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_sizes: Option<ImageSizes>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previews: Option<CapturePreviews>,

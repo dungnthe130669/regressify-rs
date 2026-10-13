@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { formatLogRecord, logRecordSchema, matchesLog } from "./logs";
 import {
+  alignedRowToImageRow,
   artifactPath,
   captureSchema,
   encodeArtifactPath,
   filterCaptures,
+  imageAlignmentGap,
   imagePath,
+  imageRowToAlignedRow,
   manifestSchema,
   passRate,
   safePageUrl,
@@ -160,6 +163,53 @@ describe("snapshot contract", () => {
     expect(
       captureSchema.safeParse({ ...capture, logs: { reference: null, test: log } }).success,
     ).toBe(false);
+  });
+  test("diff alignment is optional and accepts only one bounded source gap", () => {
+    expect(capture.alignment).toBeUndefined();
+    const gap = { start: 24, height: 5 };
+    for (const alignment of [
+      { reference: null, test: null },
+      { reference: gap, test: null },
+      { reference: null, test: gap },
+    ]) {
+      expect(captureSchema.parse({ ...capture, alignment }).alignment).toEqual(alignment);
+    }
+    for (const alignment of [
+      null,
+      {},
+      { reference: gap, test: gap },
+      ...[
+        { start: -1, height: 5 },
+        { start: 0.5, height: 5 },
+        { start: 24, height: 0 },
+        { start: 24, height: -5 },
+        { start: 24, height: Infinity },
+        { start: 0x100000000, height: 5 },
+      ].map((reference) => ({ reference, test: null })),
+    ]) {
+      expect(captureSchema.safeParse({ ...capture, alignment }).success).toBe(false);
+    }
+  });
+  test("aligned rows map both ways and missing band pixels have no source coordinate", () => {
+    const gap = { start: 24, height: 5 };
+    expect(imageAlignmentGap(gap, 128, 133)).toEqual(gap);
+    for (const [height, diffHeight] of [
+      [128, 128],
+      [128, undefined],
+      [20, 25],
+    ]) {
+      expect(imageAlignmentGap(gap, height || 0, diffHeight)).toBeNull();
+    }
+    expect(imageAlignmentGap(undefined, 128, 133)).toBeNull();
+    for (const row of [0, 23.5, 24, 24.5, 127.5]) {
+      const aligned = imageRowToAlignedRow(row, gap);
+      expect(aligned).toBe(row < 24 ? row : row + 5);
+      expect(alignedRowToImageRow(aligned, gap)).toBe(row);
+      expect(imageRowToAlignedRow(row, null)).toBe(row);
+      expect(alignedRowToImageRow(row, null)).toBe(row);
+    }
+    for (const row of [24, 24.5, 28.999]) expect(alignedRowToImageRow(row, gap)).toBeNull();
+    expect(alignedRowToImageRow(29, gap)).toBe(24);
   });
   test("source image sizes are optional and distinct from signed comparison deltas", () => {
     expect(capture.imageSizes).toBeUndefined();

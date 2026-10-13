@@ -8,7 +8,7 @@ use colored::Colorize;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::compare::image_compare::{CompareResult, compare_images_with_threshold};
+use crate::compare::image_compare::{CompareResult, DiffAlignment, compare_images_with_threshold};
 use crate::config::DEFAULT_PIXEL_MATCH_THRESHOLD;
 use crate::helpers::{copy_file_atomically, write_file_atomically};
 use crate::progress::{self, Event as ProgressEvent};
@@ -146,6 +146,8 @@ enum ComparisonOutcome {
 struct ReportDiff {
     is_same_dimensions: bool,
     dimension_difference: DimensionDiff,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alignment: Option<DiffAlignment>,
     raw_mis_match_percentage: f64,
     mis_match_percentage: String,
     analysis_time: u128,
@@ -1296,6 +1298,7 @@ fn build_diff(result: &CompareResult) -> ReportDiff {
             width: result.dimension_difference.0,
             height: result.dimension_difference.1,
         },
+        alignment: Some(result.alignment),
         raw_mis_match_percentage: result.raw_mis_match_percentage,
         mis_match_percentage: result.mis_match_percentage.clone(),
         analysis_time: result.analysis_time_ms,
@@ -1310,6 +1313,61 @@ mod tests {
 
     fn png_bytes(red: u8) -> Vec<u8> {
         lodepng::encode32(&[red, 20, 30, 255], 1, 1).unwrap()
+    }
+
+    #[test]
+    fn diff_alignment_metadata_round_trips_without_changing_legacy_reports() {
+        use crate::compare::image_compare::VerticalGap;
+
+        for alignment in [
+            DiffAlignment::default(),
+            DiffAlignment {
+                reference: Some(VerticalGap {
+                    start: 24,
+                    height: 5,
+                }),
+                test: None,
+            },
+            DiffAlignment {
+                reference: None,
+                test: Some(VerticalGap {
+                    start: 24,
+                    height: 5,
+                }),
+            },
+        ] {
+            let result = CompareResult {
+                is_same_dimensions: alignment == DiffAlignment::default(),
+                dimension_difference: (0, 5),
+                ref_width: 32,
+                ref_height: 128,
+                test_width: 32,
+                test_height: 133,
+                alignment,
+                raw_mis_match_percentage: 1.0,
+                mis_match_percentage: "1.00".into(),
+                analysis_time_ms: 0,
+            };
+            let mut value = serde_json::to_value(build_diff(&result)).unwrap();
+            assert_eq!(value["alignment"], serde_json::to_value(alignment).unwrap());
+            let parsed: ReportDiff = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(parsed.alignment, Some(alignment));
+            #[cfg(feature = "desktop")]
+            {
+                let parsed: crate::desktop::results::Difference =
+                    serde_json::from_value(value.clone()).unwrap();
+                assert_eq!(parsed.alignment, Some(alignment));
+            }
+            value.as_object_mut().unwrap().remove("alignment");
+            let legacy: ReportDiff = serde_json::from_value(value).unwrap();
+            assert!(legacy.alignment.is_none());
+            assert!(
+                serde_json::to_value(legacy)
+                    .unwrap()
+                    .get("alignment")
+                    .is_none()
+            );
+        }
     }
 
     #[test]

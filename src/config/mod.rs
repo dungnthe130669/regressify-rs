@@ -22,6 +22,8 @@ pub const DEFAULT_POST_INTERACTION_WAIT_MS: f64 = 1000.0;
 pub const DEFAULT_ASYNC_COMPARE_LIMIT: usize = 2;
 pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
 pub const DEFAULT_PIXEL_MATCH_THRESHOLD: f64 = 5.0;
+pub const DEFAULT_LAZY_LOAD_SCROLL_DELAY_MS: u64 = 250;
+pub const DEFAULT_LAZY_LOAD_TIMEOUT_MS: u64 = 20_000;
 
 /// Workspace-level configuration loaded from `regressify.yaml` or `regressify.yml`.
 /// All fields are optional — missing fields inherit defaults.
@@ -63,6 +65,12 @@ pub struct WorkspaceConfig {
     /// Standard browser JavaScript injected once per active page document after readiness and before onReadyScript and actions. Returned promises are awaited; errors fail the capture. No Node.js or Playwright is required. Defaults to common/_on-ready.js.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
+    /// Minimum whole milliseconds at each lazy-load scroll stop. Resource checks still run with 0. Default: 250; overridden by suite and scenario settings. Ignored when noScrollTop is true.
+    #[schemars(example = 250)]
+    pub lazy_load_scroll_delay: Option<u64>,
+    /// Positive whole milliseconds for the complete lazy-load scroll and return to the top. Expiry fails the capture. Default: 20000; overridden by suite and scenario settings. Ignored when noScrollTop is true.
+    #[schemars(range(min = 1), example = 20000)]
+    pub lazy_load_timeout: Option<u64>,
     /// Allowed percentage of different pixels, from 0 to 100. Default: 0.1, meaning 0.1%.
     #[schemars(range(min = 0.0, max = 100.0), example = 0.1)]
     pub mis_match_threshold: Option<f64>,
@@ -135,6 +143,8 @@ pub struct ResolvedConfig {
     pub hide_selectors: Vec<String>,
     pub ignore_ssl_errors: bool,
     pub js_on_ready_path: Option<String>,
+    pub lazy_load_scroll_delay_ms: u64,
+    pub lazy_load_timeout_ms: u64,
     pub mis_match_threshold: f64,
     pub pixel_match_threshold: f64,
     pub no_scroll_top: bool,
@@ -169,6 +179,8 @@ impl Default for ResolvedConfig {
             hide_selectors: Vec::new(),
             ignore_ssl_errors: false,
             js_on_ready_path: None,
+            lazy_load_scroll_delay_ms: DEFAULT_LAZY_LOAD_SCROLL_DELAY_MS,
+            lazy_load_timeout_ms: DEFAULT_LAZY_LOAD_TIMEOUT_MS,
             mis_match_threshold: 0.1,
             pixel_match_threshold: DEFAULT_PIXEL_MATCH_THRESHOLD,
             no_scroll_top: false,
@@ -407,6 +419,18 @@ pub fn resolve_config(
             .clone()
             .or(suite.js_on_ready_path.clone())
             .or(workspace.js_on_ready_path.clone()),
+
+        lazy_load_scroll_delay_ms: scenario
+            .lazy_load_scroll_delay
+            .or(suite.lazy_load_scroll_delay)
+            .or(workspace.lazy_load_scroll_delay)
+            .unwrap_or(defaults.lazy_load_scroll_delay_ms),
+
+        lazy_load_timeout_ms: scenario
+            .lazy_load_timeout
+            .or(suite.lazy_load_timeout)
+            .or(workspace.lazy_load_timeout)
+            .unwrap_or(defaults.lazy_load_timeout_ms),
 
         mis_match_threshold: scenario
             .mis_match_threshold
@@ -764,6 +788,122 @@ mod tests {
         let round_trip: TestSuite = serde_json::from_value(serialized).unwrap();
         assert_eq!(round_trip.pixel_match_threshold, Some(3.1));
         assert_eq!(round_trip.scenarios[0].pixel_match_threshold, Some(0.0));
+    }
+
+    #[test]
+    fn lazy_load_settings_cascade_and_preserve_zero_scroll_delay() {
+        for (workspace_values, suite_values, scenario_values, expected) in [
+            (None, None, None, (250, 20_000)),
+            (Some((300, 30_000)), None, None, (300, 30_000)),
+            (
+                Some((300, 30_000)),
+                Some((500, 40_000)),
+                None,
+                (500, 40_000),
+            ),
+            (
+                Some((300, 30_000)),
+                Some((500, 40_000)),
+                Some((700, 50_000)),
+                (700, 50_000),
+            ),
+            (
+                Some((300, 30_000)),
+                Some((500, 40_000)),
+                Some((0, 1_000)),
+                (0, 1_000),
+            ),
+            (Some((300, 30_000)), Some((0, 40_000)), None, (0, 40_000)),
+            (Some((0, 30_000)), None, None, (0, 30_000)),
+        ] {
+            let workspace = WorkspaceConfig {
+                lazy_load_scroll_delay: workspace_values.map(|values| values.0),
+                lazy_load_timeout: workspace_values.map(|values| values.1),
+                ..Default::default()
+            };
+            let suite = TestSuite {
+                lazy_load_scroll_delay: suite_values.map(|values| values.0),
+                lazy_load_timeout: suite_values.map(|values| values.1),
+                ..suite()
+            };
+            let scenario = TestScenario {
+                lazy_load_scroll_delay: scenario_values.map(|values| values.0),
+                lazy_load_timeout: scenario_values.map(|values| values.1),
+                ..scenario()
+            };
+            let resolved = resolve_config(&workspace, &suite, &scenario);
+            assert_eq!(
+                (
+                    resolved.lazy_load_scroll_delay_ms,
+                    resolved.lazy_load_timeout_ms
+                ),
+                expected
+            );
+        }
+
+        let workspace = WorkspaceConfig {
+            lazy_load_scroll_delay: Some(300),
+            lazy_load_timeout: Some(30_000),
+            ..Default::default()
+        };
+        let suite = TestSuite {
+            lazy_load_timeout: Some(40_000),
+            ..suite()
+        };
+        let scenario = TestScenario {
+            lazy_load_scroll_delay: Some(0),
+            ..scenario()
+        };
+        let resolved = resolve_config(&workspace, &suite, &scenario);
+        assert_eq!(resolved.lazy_load_scroll_delay_ms, 0);
+        assert_eq!(resolved.lazy_load_timeout_ms, 40_000);
+    }
+
+    #[test]
+    fn lazy_load_settings_round_trip_and_reject_non_integer_values() {
+        let workspace: WorkspaceConfig =
+            serde_yaml::from_str("lazyLoadScrollDelay: 300\nlazyLoadTimeout: 40000\n").unwrap();
+        let suite: TestSuite = serde_yaml::from_str(
+            "lazyLoadScrollDelay: 500\nlazyLoadTimeout: 35000\nscenarios:\n  - url: https://example.com\n    lazyLoadScrollDelay: 0\n    lazyLoadTimeout: 30000\n",
+        ).unwrap();
+        let workspace_json = serde_json::to_value(workspace).unwrap();
+        assert_eq!(workspace_json["lazyLoadScrollDelay"], 300);
+        assert_eq!(workspace_json["lazyLoadTimeout"], 40_000);
+        let round_trip: WorkspaceConfig = serde_json::from_value(workspace_json).unwrap();
+        assert_eq!(round_trip.lazy_load_timeout, Some(40_000));
+        let suite_json = serde_json::to_value(suite).unwrap();
+        assert_eq!(suite_json["lazyLoadScrollDelay"], 500);
+        assert_eq!(suite_json["lazyLoadTimeout"], 35_000);
+        assert_eq!(suite_json["scenarios"][0]["lazyLoadScrollDelay"], 0);
+        assert_eq!(suite_json["scenarios"][0]["lazyLoadTimeout"], 30_000);
+        let round_trip: TestSuite = serde_json::from_value(suite_json).unwrap();
+        assert_eq!(round_trip.scenarios[0].lazy_load_scroll_delay, Some(0));
+        for field in ["lazyLoadScrollDelay", "lazyLoadTimeout"] {
+            for invalid in [
+                serde_json::json!(-1),
+                serde_json::json!(0.5),
+                serde_json::json!("300"),
+            ] {
+                assert!(
+                    serde_json::from_value::<WorkspaceConfig>(
+                        serde_json::json!({(field): invalid})
+                    )
+                    .is_err()
+                );
+                assert!(
+                    serde_json::from_value::<TestSuite>(
+                        serde_json::json!({(field): invalid, "scenarios": []})
+                    )
+                    .is_err()
+                );
+                assert!(
+                    serde_json::from_value::<TestScenario>(
+                        serde_json::json!({(field): invalid, "url": "https://example.com"})
+                    )
+                    .is_err()
+                );
+            }
+        }
     }
 
     #[test]

@@ -18,6 +18,7 @@ description: 'Use when changing regressify compare, capture-run selection, image
 1. Read optional suite-root `suite.json` through the bounded metadata reader and emit `displayName` independently of `id`/`testSuite`. Captures write metadata even with skip-compare. Malformed metadata is an artifact error, not an absent label.
 1. Missing references, capture errors, and visual mismatches remain report results. Malformed manifests, unreadable files, and report-write failures are process errors.
 1. Preserve PNG safety limits and signed dimension differences. Do not conflate a size mismatch with a decoding or I/O failure.
+1. Persist the comparer's chosen `alignment` on report `diff`: optional reference/test gaps contain source-row `start` and positive `height`; at most one source is shifted. Preserve the exact decision used to render the diff, including explicit unshifted metadata. Older reports omit it. Do not reconstruct alignment from dimensions or magenta pixels in consumers; rerun Compare for legacy captures.
 1. Report-viewport approval recalculates the reviewed capture list, order, and per-pair thresholds, not a narrowed selection or the current workspace settings.
 1. Persist `pixelMatchThreshold` on report pairs. A reviewed legacy report without it used normalized 0.1, so deserialize that missing field as 10 for approval; do not substitute the new-capture default.
 

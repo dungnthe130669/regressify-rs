@@ -75,6 +75,14 @@ pub struct TestSuite {
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
 
+    /// Minimum whole milliseconds at each lazy-load scroll stop. Resource checks still run with 0. Inherits the workspace setting (default: 250); scenarios can override it. Ignored when noScrollTop is true.
+    #[schemars(example = 250)]
+    pub lazy_load_scroll_delay: Option<u64>,
+
+    /// Positive whole milliseconds for the complete lazy-load scroll and return to the top. Expiry fails the capture. Inherits the workspace setting (default: 20000); scenarios can override it. Ignored when noScrollTop is true.
+    #[schemars(range(min = 1), example = 20000)]
+    pub lazy_load_timeout: Option<u64>,
+
     /// Allowed percentage of different pixels, from 0 to 100. Inherits the workspace setting (default: 0.1, meaning 0.1%).
     #[schemars(range(min = 0.0, max = 100.0), example = 0.1)]
     pub mis_match_threshold: Option<f64>,
@@ -209,6 +217,14 @@ pub struct TestScenario {
     /// Human-readable scenario name shown in reports and navigation. Also used to generate an ID when id is omitted.
     #[schemars(example = "Home page")]
     pub label: Option<String>,
+
+    /// Minimum whole milliseconds at each lazy-load scroll stop. Resource checks still run with 0. Inherits the suite or workspace setting (default: 250). Ignored when noScrollTop is true.
+    #[schemars(example = 250)]
+    pub lazy_load_scroll_delay: Option<u64>,
+
+    /// Positive whole milliseconds for the complete lazy-load scroll and return to the top. Expiry fails the capture. Inherits the suite or workspace setting (default: 20000). Ignored when noScrollTop is true.
+    #[schemars(range(min = 1), example = 20000)]
+    pub lazy_load_timeout: Option<u64>,
 
     /// Allowed percentage of different pixels, from 0 to 100. Inherits the suite or workspace setting (default: 0.1%).
     #[schemars(range(min = 0.0, max = 100.0), example = 0.1)]

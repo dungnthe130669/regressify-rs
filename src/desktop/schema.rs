@@ -97,7 +97,10 @@ impl Field {
             "asyncCaptureLimit" | "asyncCompareLimit" | "width" | "height" => {
                 (1.0, 1.0, u32::MAX as f64)
             }
-            key if key.ends_with("Timeout") || matches!(key, "delay" | "postInteractionWait") => {
+            "lazyLoadTimeout" => (100.0, 1.0, u32::MAX as f64),
+            key if key.ends_with("Timeout")
+                || matches!(key, "delay" | "postInteractionWait" | "lazyLoadScrollDelay") =>
+            {
                 (100.0, 0.0, u32::MAX as f64)
             }
             _ => (1.0, 0.0, u32::MAX as f64),
@@ -490,7 +493,9 @@ pub(crate) fn label(key: &str) -> String {
             label.push(character);
         }
     }
-    if key.ends_with("Timeout") || matches!(key, "delay" | "postInteractionWait") {
+    if key.ends_with("Timeout")
+        || matches!(key, "delay" | "postInteractionWait" | "lazyLoadScrollDelay")
+    {
         label.push_str(" (ms)");
     }
     label
@@ -529,7 +534,12 @@ pub(crate) fn action_viewport_choices(
 pub fn effective_key(key: &str) -> String {
     if matches!(
         key,
-        "elementTimeout" | "actionabilityTimeout" | "settleTimeout" | "scenarioTimeout"
+        "elementTimeout"
+            | "actionabilityTimeout"
+            | "settleTimeout"
+            | "scenarioTimeout"
+            | "lazyLoadScrollDelay"
+            | "lazyLoadTimeout"
     ) {
         format!("{key}Ms")
     } else {
@@ -706,6 +716,56 @@ mod tests {
             ),
             "Scenario"
         );
+    }
+
+    #[test]
+    fn lazy_load_fields_support_all_scopes_and_effective_values() {
+        for scope in [Scope::Workspace, Scope::Suite, Scope::Scenario] {
+            let fields = fields(&scope).unwrap();
+            for (key, minimum) in [("lazyLoadScrollDelay", 0), ("lazyLoadTimeout", 1)] {
+                let field = fields.iter().find(|field| field.key == key).unwrap();
+                assert_eq!(field.kind, FieldKind::Number { integer: true });
+                assert!(field.label.ends_with("(ms)"));
+                assert!(!field.required);
+                assert!(!field.description.is_empty());
+                assert_eq!(field.parse("250").unwrap(), json!(250));
+                assert!(field.parse("0.5").is_err());
+                assert_eq!(field.stepped_value(&json!(250), true).unwrap(), json!(350));
+                assert_eq!(
+                    field.stepped_value(&json!(0), false).unwrap(),
+                    json!(minimum)
+                );
+            }
+        }
+        let workspace = json!({"lazyLoadScrollDelay": 300, "lazyLoadTimeout": 30000});
+        let suite = json!({"lazyLoadScrollDelay": 500, "lazyLoadTimeout": 40000, "scenarios": [
+            {"url": "/", "lazyLoadScrollDelay": 0, "lazyLoadTimeout": 50000}, {"url": "/other"}
+        ]});
+        for (workspace, suite, scenario, delay, timeout) in [
+            (None, None, None, 250, 20000),
+            (Some(&workspace), None, None, 300, 30000),
+            (Some(&workspace), Some(&suite), None, 500, 40000),
+            (Some(&workspace), Some(&suite), Some(0), 0, 50000),
+            (Some(&workspace), Some(&suite), Some(1), 500, 40000),
+        ] {
+            let effective = effective(workspace, suite, scenario).unwrap();
+            assert_eq!(effective[effective_key("lazyLoadScrollDelay")], delay);
+            assert_eq!(effective[effective_key("lazyLoadTimeout")], timeout);
+        }
+        for key in ["lazyLoadScrollDelay", "lazyLoadTimeout"] {
+            assert_eq!(origin(key, None, None, None), "Default");
+            assert_eq!(origin(key, Some(&workspace), None, None), "Workspace");
+            assert_eq!(origin(key, Some(&workspace), Some(&suite), None), "Suite");
+            assert_eq!(
+                origin(
+                    key,
+                    Some(&workspace),
+                    Some(&suite),
+                    Some(&suite["scenarios"][0])
+                ),
+                "Scenario"
+            );
+        }
     }
 
     #[test]

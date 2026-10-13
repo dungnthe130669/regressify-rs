@@ -704,6 +704,7 @@ fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Resu
     )?;
     for (name, value) in [
         ("elementTimeout", workspace_config.element_timeout),
+        ("lazyLoadTimeout", workspace_config.lazy_load_timeout),
         (
             "actionabilityTimeout",
             workspace_config.actionability_timeout,
@@ -799,6 +800,12 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
         &format!("test suite '{}' postInteractionWait", input.name),
         suite.post_interaction_wait,
     )?;
+    if suite.lazy_load_timeout == Some(0) {
+        anyhow::bail!(
+            "Test suite '{}' lazyLoadTimeout must be greater than zero",
+            input.name
+        );
+    }
     if suite.async_capture_limit == Some(0) {
         anyhow::bail!(
             "Test suite '{}' asyncCaptureLimit must be greater than zero",
@@ -844,6 +851,12 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
             &format!("scenario '{}' postInteractionWait", scenario_name),
             scenario.post_interaction_wait,
         )?;
+        if scenario.lazy_load_timeout == Some(0) {
+            anyhow::bail!(
+                "scenario '{}' lazyLoadTimeout must be greater than zero",
+                scenario_name
+            );
+        }
         capture::validate_scenario_capture_names(scenario).map_err(|error| {
             anyhow!(
                 "Invalid selectors for scenario '{}': {}",
@@ -2672,6 +2685,50 @@ mod tests {
                 .to_string()
                 .contains("asyncCaptureLimit")
         );
+    }
+
+    #[test]
+    fn lazy_load_timeouts_are_validated_at_every_scope() {
+        let workspace = config::WorkspaceConfig {
+            lazy_load_timeout: Some(0),
+            no_scroll_top: Some(true),
+            ..Default::default()
+        };
+        assert!(
+            validate_workspace_config(&workspace)
+                .unwrap_err()
+                .to_string()
+                .contains("lazyLoadTimeout")
+        );
+
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.lazy_load_timeout = Some(0);
+        suite.scenarios[0].lazy_load_timeout = Some(1000);
+        assert!(
+            validate_test_suite_config(&input(), &suite)
+                .unwrap_err()
+                .to_string()
+                .contains("lazyLoadTimeout")
+        );
+        suite.lazy_load_timeout = Some(1000);
+        suite.scenarios[0].lazy_load_timeout = Some(0);
+        assert!(
+            validate_test_suite_config(&input(), &suite)
+                .unwrap_err()
+                .to_string()
+                .contains("lazyLoadTimeout")
+        );
+
+        suite.scenarios[0].lazy_load_timeout = Some(1);
+        suite.scenarios[0].lazy_load_scroll_delay = Some(0);
+        suite.lazy_load_scroll_delay = Some(0);
+        validate_test_suite_config(&input(), &suite).unwrap();
+        validate_workspace_config(&config::WorkspaceConfig {
+            lazy_load_timeout: Some(1),
+            lazy_load_scroll_delay: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
     }
 
     #[test]

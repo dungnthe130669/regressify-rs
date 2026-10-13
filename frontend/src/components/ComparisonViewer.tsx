@@ -11,7 +11,12 @@ import {
   SquareSplitHorizontal,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { Capture } from "../data/report";
+import {
+  alignedRowToImageRow,
+  type Capture,
+  imageAlignmentGap,
+  imageRowToAlignedRow,
+} from "../data/report";
 import { CaptureInfo } from "./CaptureInfo";
 import { IconButton, ReportImage } from "./ui";
 
@@ -108,11 +113,22 @@ export function ComparisonViewer({
     (compact && capture.reference && capture.test ? "wipe" : "side");
   const referenceSize = getSize(capture.reference) || fallback;
   const testSize = getSize(capture.test) || fallback;
+  const diffSize = getSize(capture.diff);
   const lanes = [
-    { label: "Reference", path: capture.reference, size: referenceSize },
-    { label: "Test", path: capture.test, size: testSize },
+    {
+      label: "Reference",
+      path: capture.reference,
+      size: referenceSize,
+      gap: imageAlignmentGap(capture.alignment?.reference, referenceSize.height, diffSize?.height),
+    },
+    {
+      label: "Test",
+      path: capture.test,
+      size: testSize,
+      gap: imageAlignmentGap(capture.alignment?.test, testSize.height, diffSize?.height),
+    },
     ...(capture.diff
-      ? [{ label: "Diff", path: capture.diff, size: getSize(capture.diff) || fallback }]
+      ? [{ label: "Diff", path: capture.diff, size: diffSize || fallback, gap: null }]
       : []),
   ];
   const laneWidth = Math.max(...lanes.map((lane) => lane.size.width));
@@ -275,81 +291,85 @@ export function ComparisonViewer({
           }}
         >
           {mode === "side" ? (
-            lanes.map((lane) => (
-              <div
-                className="comparison-lane"
-                key={lane.label}
-                style={{ width: laneWidth, height: size.height }}
-              >
+            lanes.map((lane) => {
+              const crosshairY = crosshair ? alignedRowToImageRow(crosshair.y, lane.gap) : null;
+              return (
                 <div
-                  className="comparison-image"
-                  style={lane.size}
-                  onPointerMove={(event) => {
-                    const image = event.currentTarget.querySelector("img");
-                    if (
-                      !capture.diff ||
-                      event.pointerType === "touch" ||
-                      event.buttons !== 0 ||
-                      !image?.naturalWidth ||
-                      !image.naturalHeight
-                    ) {
-                      setCrosshair(null);
-                      return;
-                    }
-                    const bounds = image.getBoundingClientRect();
-                    const imageX =
-                      ((event.clientX - bounds.left) / bounds.width) * image.naturalWidth;
-                    const imageY =
-                      ((event.clientY - bounds.top) / bounds.height) * image.naturalHeight;
-                    setCrosshair(
-                      imageX >= 0 &&
-                        imageX < image.naturalWidth &&
-                        imageY >= 0 &&
-                        imageY < image.naturalHeight
-                        ? { capture, scale, x: imageX, y: imageY }
-                        : null,
-                    );
-                  }}
-                  onPointerLeave={() => setCrosshair(null)}
-                  onPointerCancel={() => setCrosshair(null)}
-                  onPointerDown={() => setCrosshair(null)}
+                  className="comparison-lane"
+                  key={lane.label}
+                  style={{ width: laneWidth, height: size.height }}
                 >
-                  <ReportImage
-                    path={lane.path}
-                    alt={`${lane.label}: ${capture.label}`}
-                    width={lane.size.width}
-                    height={lane.size.height}
-                    eager
-                  />
-                  {capture.diff &&
-                    isLoaded(lane.path) &&
-                    crosshair &&
-                    crosshair.capture === capture &&
-                    crosshair.scale === scale &&
-                    crosshair.x < lane.size.width &&
-                    crosshair.y < lane.size.height && (
-                      <span
-                        className="comparison-crosshair"
-                        aria-hidden="true"
-                        style={{
-                          width: lane.size.width * scale,
-                          height: lane.size.height * scale,
-                          transform: `scale(${1 / scale})`,
-                        }}
-                      >
+                  <div
+                    className="comparison-image"
+                    style={lane.size}
+                    onPointerMove={(event) => {
+                      const image = event.currentTarget.querySelector("img");
+                      if (
+                        !capture.diff ||
+                        event.pointerType === "touch" ||
+                        event.buttons !== 0 ||
+                        !image?.naturalWidth ||
+                        !image.naturalHeight
+                      ) {
+                        setCrosshair(null);
+                        return;
+                      }
+                      const bounds = image.getBoundingClientRect();
+                      const imageX =
+                        ((event.clientX - bounds.left) / bounds.width) * image.naturalWidth;
+                      const imageY =
+                        ((event.clientY - bounds.top) / bounds.height) * image.naturalHeight;
+                      setCrosshair(
+                        imageX >= 0 &&
+                          imageX < image.naturalWidth &&
+                          imageY >= 0 &&
+                          imageY < image.naturalHeight
+                          ? { capture, scale, x: imageX, y: imageRowToAlignedRow(imageY, lane.gap) }
+                          : null,
+                      );
+                    }}
+                    onPointerLeave={() => setCrosshair(null)}
+                    onPointerCancel={() => setCrosshair(null)}
+                    onPointerDown={() => setCrosshair(null)}
+                  >
+                    <ReportImage
+                      path={lane.path}
+                      alt={`${lane.label}: ${capture.label}`}
+                      width={lane.size.width}
+                      height={lane.size.height}
+                      eager
+                    />
+                    {capture.diff &&
+                      isLoaded(lane.path) &&
+                      crosshair &&
+                      crosshair.capture === capture &&
+                      crosshair.scale === scale &&
+                      crosshair.x < lane.size.width &&
+                      crosshairY !== null &&
+                      crosshairY < lane.size.height && (
                         <span
-                          className="crosshair-horizontal"
-                          style={{ top: crosshair.y * scale }}
-                        />
-                        <span
-                          className="crosshair-vertical"
-                          style={{ left: crosshair.x * scale }}
-                        />
-                      </span>
-                    )}
+                          className="comparison-crosshair"
+                          aria-hidden="true"
+                          style={{
+                            width: lane.size.width * scale,
+                            height: lane.size.height * scale,
+                            transform: `scale(${1 / scale})`,
+                          }}
+                        >
+                          <span
+                            className="crosshair-horizontal"
+                            style={{ top: crosshairY * scale }}
+                          />
+                          <span
+                            className="crosshair-vertical"
+                            style={{ left: crosshair.x * scale }}
+                          />
+                        </span>
+                      )}
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           ) : mode === "wipe" || mode === "overlay" ? (
             <>
               <div className="image-layer" style={referenceSize}>

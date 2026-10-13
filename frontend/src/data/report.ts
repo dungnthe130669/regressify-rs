@@ -114,6 +114,12 @@ const imageSizeSchema = z.object({
   height: z.number().int().positive().max(0xffffffff),
 });
 
+const verticalGapSchema = z.object({
+  start: count.max(0xffffffff),
+  height: z.number().int().positive().max(0xffffffff),
+});
+type VerticalGap = z.infer<typeof verticalGapSchema>;
+
 export const captureSchema = z
   .object({
     id: segment,
@@ -128,6 +134,10 @@ export const captureSchema = z
     reference: artifact("images").nullable(),
     test: artifact("images").nullable(),
     diff: artifact("images").nullable(),
+    alignment: z
+      .object({ reference: verticalGapSchema.nullable(), test: verticalGapSchema.nullable() })
+      .refine((alignment) => !alignment.reference || !alignment.test)
+      .optional(),
     imageSizes: z
       .object({
         reference: imageSizeSchema.nullable(),
@@ -182,6 +192,23 @@ export type SuiteSummary = z.infer<typeof suiteSummarySchema>;
 export type SuiteReport = z.infer<typeof suiteReportSchema>;
 export type Capture = z.infer<typeof captureSchema>;
 export type StatusFilter = "all" | "fail" | "pass" | "error";
+
+export function imageAlignmentGap(
+  gap: VerticalGap | null | undefined,
+  imageHeight: number,
+  diffHeight: number | undefined,
+): VerticalGap | null {
+  return gap && gap.start <= imageHeight && imageHeight + gap.height === diffHeight ? gap : null;
+}
+
+export function imageRowToAlignedRow(row: number, gap: VerticalGap | null): number {
+  return gap && row >= gap.start ? row + gap.height : row;
+}
+
+export function alignedRowToImageRow(row: number, gap: VerticalGap | null): number | null {
+  if (!gap || row < gap.start) return row;
+  return row < gap.start + gap.height ? null : row - gap.height;
+}
 
 export function suiteLabel(suite: { id: string; displayName?: string }): string {
   return suite.displayName?.trim() ? suite.displayName : suite.id;

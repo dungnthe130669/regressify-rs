@@ -362,7 +362,13 @@ with the right page, not an inner image canvas; wheel/touch scrolling never zoom
 Side-by-side includes three aligned lanes when a diff exists. Hovering any image
 shows synchronized crosshairs at matching pixel coordinates in Reference, Test,
 and Diff, with high-contrast guides that stay thin at every zoom level. Missing
-images and coordinates outside a smaller image are excluded. Wipe follows mouse
+images and coordinates outside a smaller image are excluded. When comparison
+aligns an inserted or deleted vertical band, crosshairs follow the corresponding
+content above and below it. Within the band, the shorter image has no matching
+pixel and shows no crosshair. Alignment comes from the saved comparison, not an
+estimate based on image height or colors. Rerun Compare on an existing run, then
+regenerate and redeploy its snapshot to add alignment to older reports; no new
+capture is needed. Wipe follows mouse
 movement; keyboard and touch users can also use its slider. Hover, focus, or pin
 the Info icon for selectable/copyable diff statistics, capture details, URLs, and
 comparison or engine errors. Previous/next failure arrows on suite pages scroll to visible failed
@@ -615,7 +621,48 @@ Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one comp
 
 Regressify waits for the configured navigation checkpoint (full `load` by default). After readiness hooks, it stabilizes active animations before lazy-load scrolling and actions. `freezeAnimations` defaults to `true`; it completes finite CSS/Web Animations and freezes infinite ones at their initial frame.
 
+The initial lazy-load pass moves 80% of a viewport at a time. Each stop waits at
+least `lazyLoadScrollDelay` milliseconds (default `250`), then for visible images
+to finish loading and decoding. Deferred image/picture sources and common
+`lazyload`/`lazyloading` states, including LazySizes backgrounds, are checked so a
+decoded placeholder is not mistaken for the final image. Hidden and clipped
+carousel slides do not block this pass, and document growth is checked after
+each stop. This is not a global network-idle wait or a readiness guarantee for
+arbitrary CSS backgrounds and custom loaders; use a browser ready hook when the
+application needs its own activation/readiness logic.
+
+`lazyLoadTimeout` bounds the complete pass, including returning to a stable top
+position (default `20000` ms). It must be positive. Expiry or exceeding 150 scroll
+steps fails the capture rather than silently accepting an incomplete pass.
+`noScrollTop: true` skips the pass. `lazyLoadScrollDelay: 0` removes the minimum
+pause, not resource checks. Both new settings resolve independently in this
+order: scenario, suite, workspace, defaults.
+
+For slower pages, start with these workspace settings:
+
+```yaml
+lazyLoadScrollDelay: 500
+lazyLoadTimeout: 60000
+```
+
+A suite can override them, and an individual scenario can override the suite:
+
+```yaml
+id: public-pages
+lazyLoadScrollDelay: 300
+lazyLoadTimeout: 40000
+scenarios:
+  - id: utilities
+    url: https://example.com/industries/utilities
+    lazyLoadScrollDelay: 750
+    lazyLoadTimeout: 60000
+```
+
 Every `save` checkpoint and the final capture sequence share the resolved `delay` and one `settleTimeout` budget for font/image readiness plus DOM/layout quiet. Animation freezing runs before and after settling to catch newly started animations. Capture preparation does not repeat lazy-load scrolling or move the pointer. Settling remains best-effort: a timeout or settling error is logged and capture continues.
+
+Increasing `settleTimeout` alone cannot activate untouched placeholders. Recapture
+and review affected reference and test images; comparing existing PNGs again
+cannot load their missing content.
 
 Set `delay: 0` to skip the explicit delay, `settleTimeout: 0` to disable settling, or `freezeAnimations: false` when an animated intermediate state is intentional. `postInteractionWait` remains a separate wait after actions, before the final captures.
 

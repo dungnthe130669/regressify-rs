@@ -14,6 +14,7 @@ description: 'Use when changing screenshot settling, lazy loading, animation fre
 1. Preserve bounded DOM/resource/font/image/layout readiness and configurable settling. Avoid replacing observable conditions with arbitrary sleeps.
 1. Run lazy-load scrolling after initial navigation/readiness hooks and before prerequisite, scenario, or legacy actions so it cannot disturb their hover or scroll state. `noScrollTop` skips this pass; keep it distinct from selecting a viewport-only capture.
 1. Bypass CSS smooth scrolling for the lazy-load pass and verify both offsets stay at the top for a quiet window before returning. Bound the completion wait and propagate failure; a fixed delay or later capture settling is not proof that scrolling finished.
+1. Resolve `lazyLoadScrollDelay` (default 250 ms, zero allowed) and `lazyLoadTimeout` (default 20000 ms, positive) independently through scenario -> suite -> workspace. Hold each viewport until visible native/deferred images decode and common lazy-loader states finish, including picture sources and LazySizes backgrounds. Use intersections to exclude clipped slides; decoded placeholders are not loaded sources. Recheck growing document height, bound scroll steps, disconnect observers, and restore the top on failure. Do not rewrite application sources or require global network idle. The total deadline includes the stable return and uses the existing runtime CDP client so long waits are not evicted by Chromiumoxide.
 1. Stabilize initial animations after readiness hooks and before lazy loading/actions when enabled. Share `prepare_screenshot` for `save` and final captures: resolved delay, animation freeze, bounded settling, then another freeze for late animations. Honor opt-outs and do not scroll or move the pointer during this preparation. `delay` resolves scenario -> workspace -> default; `postInteractionWait` remains final-only.
 1. Hide text carets independently of animation freezing and settling. Preserve focus, selection, and values; do not blur controls or weaken comparison thresholds to hide cursor noise.
 1. Support full-page, viewport, CSS target, and save captures without collisions. Optional `save.selector` clips only that save; scenario `selector` clips only `FINAL`. Keep filenames independent of these selectors, reject blanks and simultaneous scenario `selector`/`selectors`, and restore scroll after clips. `viewport` is reserved in all three selector fields and captures the visible viewport without scrolling. Element clips are the target's border box after centering it, so layers overflowing the target are excluded and overlays inside it are included.
@@ -36,7 +37,7 @@ For scenario and checkpoint preparation, with managed Chromium already installed
 
 ```sh
 cargo test --lib test::test_scenario::tests::lazy_loading_precedes_actions_and_preserves_hover -- --ignored --exact
-cargo test --lib test::page_stability::tests::lazy_loading_waits_for_stable_offsets_and_bounds_stalled_scroll -- --ignored --exact
+cargo test --lib test::page_stability::tests::lazy_loading_ -- --ignored
 cargo test --lib test::page_stability::tests::screenshot_preparation_hides_carets_without_blurring_inputs -- --ignored --exact
 cargo test --lib test::test_action::tests::save_actions_wait_for_the_resolved_screenshot_delay -- --ignored --exact
 cargo test --lib test::test_scenario::tests::selector_saves_and_final_captures_match_pixels_and_inventory -- --ignored --exact
@@ -45,6 +46,12 @@ cargo test --lib test::test_scenario::tests::selector_saves_and_final_captures_m
 The selector fixture verifies default/full-page pixels, independent save/final clips, quoted selectors, skipped finals and their waits, explicit plural targets, viewport filtering, missing/hidden/invalid targets, preserved completed saves, and restored scroll offsets.
 
 Cover absent/empty actions with capture settling disabled, smooth scrolling, delayed or interrupted returns, non-scrolling pages, and blocked-scroll timeouts. Checkpoint coverage must verify saved pixels, inherited/overridden delay, repeated saves, invalid-name rejection before waiting, animation opt-outs, and animations started during settling. Caret coverage must check inputs, textareas, and editable content with animation freezing both on and off, unchanged focus/selection/values, and identical screenshot pixels across a blink interval.
+
+The lazy-load group includes a 61-second stop to cross Chromiumoxide's periodic
+request eviction interval. Loopback fixtures verify delayed native/picture/background
+pixels, placeholders, growing pages, clipped/hidden slides, zero/large pauses,
+deadline failures, and no continued scrolling after failure. Also run the `lazy_load`
+filter with `--features desktop` for cascading values and editor/schema validation.
 
 Inspect ignored Chromium fixtures for live behavior; unit tests alone do not prove rendering stability. Cover delayed resources, motion, clipped targets, multiple saves, invalid names, timeouts, and write failures.
 

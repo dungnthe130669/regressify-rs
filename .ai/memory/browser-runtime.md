@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-10-12
+Verified: 2026-10-13
 
 - [Script hooks](../../src/test/hooks.rs) run entirely in Chromium: document-start
   `onBeforeScript`, then CSS/`jsOnReadyPath`/`onReadyScript` after readiness and
@@ -67,6 +67,17 @@ Verified: 2026-10-12
   [scenario regression](../../src/test/test_scenario.rs) reproduces this with
   capture settling disabled; page-stability fixtures cover delayed/interrupted
   returns and the blocked-scroll deadline. Both fixtures require managed Chromium.
+- The lazy-load pass now holds visible native/deferred image and picture sources
+  and common lazy-loader backgrounds until ready, rather than accepting decoded
+  placeholders. Intersections exclude clipped slides; growing page height is
+  rechecked. The slow-image pixel fixture failed before the fix; delayed loopback
+  resource, clipping, timeout-cleanup, and scenario-hover regressions pass.
+  `lazyLoadScrollDelay` (250 ms, zero allowed) and `lazyLoadTimeout` (20000 ms,
+  positive) cascade through all three scopes; CLI and desktop tests cover them.
+- [Timed main-document evaluation](../../src/test/runtime.rs) uses the existing
+  scenario CDP client for long lazy-load waits. Chromiumoxide checks expired
+  commands periodically: a 31-second probe passed on the old path. The retained
+  61-second [regression](../../src/test/page_stability.rs) verifies the explicit budget.
 - [Screenshot preparation](../../src/test/page_stability.rs) is shared by `save`
   and final captures: resolved delay, freeze, bounded settling, then freeze again
   for late animations. Initial animation stabilization also runs before lazy

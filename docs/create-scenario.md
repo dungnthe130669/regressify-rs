@@ -382,6 +382,40 @@ scenarios:
 
 {% spoiler() %}
 
+lazyLoadScrollDelay
+
+:::::
+
+Type: non-negative whole milliseconds. Default: suite value, then workspace
+value, then `250`.
+
+Minimum pause at each stop during initial lazy-load scrolling. The pass also
+waits for visible image loading/decoding and common deferred image, picture, and
+lazy-loader states. A longer pause can help debounced custom loaders. `0`
+removes only the minimum pause, not resource checks. This scenario's value
+overrides the suite and workspace; it is ignored with `noScrollTop: true`.
+
+{% end %}
+
+{% spoiler() %}
+
+lazyLoadTimeout
+
+:::::
+
+Type: positive whole milliseconds. Default: suite value, then workspace value,
+then `20000`.
+
+Total budget for the initial lazy-load pass, including its pauses, visible
+resource waits, and stable return to the top. Increase it for slow or long pages,
+for example `60000`. Expiry fails this capture, rather than treating its remaining
+placeholders as a successful load. The overall `scenarioTimeout` still applies.
+Zero is invalid; `noScrollTop: true` skips the entire pass instead.
+
+{% end %}
+
+{% spoiler() %}
+
 misMatchThreshold
 
 :::::
@@ -482,7 +516,13 @@ Disable the initial lazy-load scroll.
 
 By default, after navigation and readiness hooks, Regressify scrolls the page down and back to the top to trigger lazy-loaded images before any prerequisite (`needs`), scenario, or legacy actions. This lazy-load pass is not repeated before the final screenshot, so it does not disturb hover or scroll states established by actions. Set this to `true` to skip the initial scroll.
 
-Automatic lazy-load scrolling bypasses smooth scrolling. Before actions or capture, both scroll offsets must remain at the top for 500 ms, even when there are no actions or capture settling is disabled. Returning to a stable top position has a 3-second deadline within the overall 20-second lazy-load budget; failure stops the scenario instead of capturing mid-scroll.
+Automatic lazy-load scrolling bypasses smooth scrolling and honors
+`lazyLoadScrollDelay` and `lazyLoadTimeout`. Before actions or capture, both scroll
+offsets must remain at the top for 500 ms, even when there are no actions or
+capture settling is disabled. Returning to a stable top position has a 3-second
+deadline within the configured total budget; failure stops the scenario instead
+of capturing mid-scroll. The pass also stops with an error after 150 scroll steps
+to bound endlessly growing pages.
 
 {% end %}
 

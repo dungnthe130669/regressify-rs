@@ -371,7 +371,8 @@ impl ScenarioPage {
             self.runtime = runtime;
             hooks.apply(&self.page).await?;
             if first_visit {
-                prepare_page_for_actions(&self.page, ctx.resolved, ctx.log_prefix).await?;
+                prepare_page_for_actions(&self.page, &self.runtime, ctx.resolved, ctx.log_prefix)
+                    .await?;
             }
             return Ok(());
         }
@@ -399,6 +400,7 @@ impl ScenarioPage {
 
 async fn prepare_page_for_actions(
     page: &chromiumoxide::Page,
+    runtime: &super::runtime::Runtime,
     resolved: &ResolvedConfig,
     log_prefix: &str,
 ) -> Result<()> {
@@ -406,7 +408,7 @@ async fn prepare_page_for_actions(
         stabilize_capture_animations(page, log_prefix).await?;
     }
     if !resolved.no_scroll_top {
-        trigger_lazy_loading(page).await?;
+        trigger_lazy_loading(runtime, resolved).await?;
     }
     Ok(())
 }
@@ -723,7 +725,7 @@ async fn run_scenario_capture_inner(
     }
 
     hooks.apply(&active.page).await?;
-    prepare_page_for_actions(&active.page, resolved, log_prefix).await?;
+    prepare_page_for_actions(&active.page, &active.runtime, resolved, log_prefix).await?;
 
     // Execute prerequisite actions from `needs` dependencies
     if !needs_actions.is_empty() {

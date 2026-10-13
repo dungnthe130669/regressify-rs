@@ -86,7 +86,9 @@ narrow/wide layouts, and axe accessibility checks. They also verify the shared
 logo/favicon bytes, suite-aware titles, and list preview alignment, missing images,
 conditional diff lanes, and long labels.
 Side-by-side crosshair checks cover synchronized image pixels, unequal dimensions,
-zoom-independent strokes, missing/broken images, pointer cleanup, and native scrolling.
+inserted/deleted diff bands, zoom-independent strokes, missing/broken images,
+pointer cleanup, and native scrolling. Band tests cover every source lane, both
+alignment directions, and absent target pixels inside the gap.
 Delayed-image checks verify explicit dimensions, unchanged fit zoom, and stable
 comparison geometry in every mode, including failed loads. They disable entrance
 animations so measurements isolate image loading.
@@ -241,6 +243,15 @@ pixel sizes are separate from the signed comparison deltas in `dimensions`.
 The comparison viewer reserves its layout and fit zoom from these sizes before
 images load. Reports without `imageSizes` still discover sizes when originals load;
 regenerate and redeploy them to get stable pre-load sizing. Existing captures are reused.
+
+Optional capture `alignment` records the comparer's virtual vertical gap in
+`reference` or `test` as `{ start, height }`, with null for an unshifted source.
+The diff uses aligned coordinates. Crosshairs map each source row into that space
+and back into the target image; rows within a missing band have no target guide.
+Validate the gap against source/diff heights and retain ordinary pixel coordinates
+when metadata is absent or inconsistent. Older runs need Compare rerun before
+snapshot regeneration and redeployment; never infer a gap from diff colors or
+height differences alone. This metadata does not change captures or diff pixels.
 
 [ReportImage](src/components/ui.tsx) uses one IntersectionObserver per scroll root,
 activating preview sources within 600 pixels and removing distant sources so the

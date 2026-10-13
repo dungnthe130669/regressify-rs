@@ -1,6 +1,6 @@
 # Results Review
 
-Verified: 2026-10-09
+Verified: 2026-10-13
 
 - [Overview](../../src/desktop/ui/overview.rs) uses uniform DataTable rows with
   full summaries/errors retained in explicit selectable Details. `overview_table_`
@@ -94,3 +94,9 @@ Verified: 2026-10-09
   fractional widths previously caused tall-image height drift. GUI one-pixel
   checks and native minimum/compact/large Comparison pass without changing zoom,
   scrolling or no-upscaling policy.
+- [Comparer](../../src/compare/image_compare.rs) exports its exact vertical-gap
+  alignment through saved reports and snapshots. Native/web crosshairs map source
+  pixels through aligned diff rows; a missing band has no target pixel. Native
+  canvas bounds include padding, so [pointer geometry](../../src/desktop/ui/reports.rs)
+  keeps actual image size separately. `crosshairs_` includes a real generated-band
+  GPUI pointer test; web `aligned diff bands` covers both directions and zoom.

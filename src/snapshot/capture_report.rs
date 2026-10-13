@@ -133,6 +133,7 @@ struct RawDiff {
     mis_match_percentage: Option<String>,
     is_same_dimensions: bool,
     dimension_difference: RawDimensions,
+    alignment: Option<crate::compare::image_compare::DiffAlignment>,
 }
 
 #[derive(Deserialize)]
@@ -344,6 +345,20 @@ pub(super) fn load_suite(
             (0.0..=100.0).contains(&pair.mis_match_threshold),
             "Invalid snapshot comparison threshold"
         );
+        if let Some(alignment) = pair.diff.as_ref().and_then(|diff| diff.alignment) {
+            ensure!(
+                (alignment.reference.is_none() || alignment.test.is_none())
+                    && [alignment.reference, alignment.test]
+                        .into_iter()
+                        .flatten()
+                        .all(|gap| {
+                            gap.height > 0
+                                && u32::try_from(gap.start).is_ok()
+                                && u32::try_from(gap.height).is_ok()
+                        }),
+                "Invalid snapshot diff alignment"
+            );
+        }
         let capture_path = normalize_image(
             pair.test
                 .as_deref()
@@ -451,6 +466,7 @@ pub(super) fn load_suite(
             reference: reference.as_ref().map(|asset| asset.full.clone()),
             test: current.as_ref().map(|asset| asset.full.clone()),
             diff: diff.as_ref().map(|asset| asset.full.clone()),
+            alignment: pair.diff.as_ref().and_then(|diff| diff.alignment),
             image_sizes: Some(ImageSizes {
                 reference: reference.as_ref().map(|asset| asset.size),
                 test: current.as_ref().map(|asset| asset.size),
@@ -688,6 +704,56 @@ mod tests {
         let loaded = load(temp.path()).unwrap().unwrap();
         assert_eq!(loaded.tests[0].diff, loaded.tests[1].test);
         assert!(loaded.tests[1].previews.as_ref().unwrap().grid.is_some());
+    }
+
+    #[test]
+    fn snapshot_preserves_diff_alignment_and_legacy_absence() {
+        use crate::compare::image_compare::{DiffAlignment, VerticalGap};
+
+        let (temp, mut report) = fixture();
+        assert!(
+            load(temp.path()).unwrap().unwrap().tests[0]
+                .alignment
+                .is_none()
+        );
+        for alignment in [
+            DiffAlignment::default(),
+            DiffAlignment {
+                reference: Some(VerticalGap {
+                    start: 24,
+                    height: 5,
+                }),
+                test: None,
+            },
+            DiffAlignment {
+                reference: None,
+                test: Some(VerticalGap {
+                    start: 24,
+                    height: 5,
+                }),
+            },
+        ] {
+            report["tests"][0]["pair"]["diff"]["alignment"] =
+                serde_json::to_value(alignment).unwrap();
+            write_fixture(temp.path(), &report);
+            let loaded = load(temp.path()).unwrap().unwrap();
+            assert_eq!(loaded.tests[0].alignment, Some(alignment));
+            assert_eq!(
+                serde_json::to_value(&loaded.tests[0]).unwrap()["alignment"],
+                serde_json::to_value(alignment).unwrap()
+            );
+        }
+        for alignment in [
+            json!({"reference": {"start": 24, "height": 0}, "test": null}),
+            json!({"reference": {"start": -1, "height": 5}, "test": null}),
+            json!({"reference": {"start": 24.5, "height": 5}, "test": null}),
+            json!({"reference": {"start": 4294967296_u64, "height": 5}, "test": null}),
+            json!({"reference": {"start": 24, "height": 5}, "test": {"start": 24, "height": 5}}),
+        ] {
+            report["tests"][0]["pair"]["diff"]["alignment"] = alignment;
+            write_fixture(temp.path(), &report);
+            assert!(load(temp.path()).is_err());
+        }
     }
 
     #[test]

@@ -349,6 +349,7 @@ pub struct Difference {
     #[serde(default)]
     pub mis_match_percentage: String,
     pub dimension_difference: Option<DimensionDifference>,
+    pub alignment: Option<crate::compare::image_compare::DiffAlignment>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

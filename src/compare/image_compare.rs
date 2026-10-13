@@ -3,6 +3,7 @@ use std::{path::Path, time::Instant};
 use anyhow::{Result, anyhow};
 use lodepng::Image;
 use rgb::RGBA8;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::DEFAULT_PIXEL_MATCH_THRESHOLD,
@@ -17,6 +18,7 @@ pub struct CompareResult {
     pub ref_height: usize,
     pub test_width: usize,
     pub test_height: usize,
+    pub alignment: DiffAlignment,
     pub raw_mis_match_percentage: f64,
     pub mis_match_percentage: String,
     pub analysis_time_ms: u128,
@@ -200,10 +202,43 @@ fn is_antialiased(
             && has_many_siblings(other, max_x, max_y, w, h))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct VerticalGap {
-    start: usize,
-    height: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct VerticalGap {
+    pub start: usize,
+    pub height: usize,
+}
+
+impl VerticalGap {
+    pub fn for_image(self, image_height: usize, diff_height: usize) -> Option<Self> {
+        (self.height > 0
+            && self.start <= image_height
+            && image_height.checked_add(self.height) == Some(diff_height))
+        .then_some(self)
+    }
+
+    pub fn to_aligned_row(self, row: f32) -> f32 {
+        if row >= self.start as f32 {
+            row + self.height as f32
+        } else {
+            row
+        }
+    }
+
+    pub fn to_image_row(self, row: f32) -> Option<f32> {
+        if row < self.start as f32 {
+            Some(row)
+        } else if row < self.start as f32 + self.height as f32 {
+            None
+        } else {
+            Some(row - self.height as f32)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct DiffAlignment {
+    pub reference: Option<VerticalGap>,
+    pub test: Option<VerticalGap>,
 }
 
 #[derive(Clone, Copy)]
@@ -413,6 +448,7 @@ pub fn compare_images_with_threshold(
                 ref_height: ref_h,
                 test_width: test_w,
                 test_height: test_h,
+                alignment: DiffAlignment::default(),
                 raw_mis_match_percentage: 0.0,
                 mis_match_percentage: "0.00".to_string(),
                 analysis_time_ms: start.elapsed().as_millis(),
@@ -481,6 +517,10 @@ pub fn compare_images_with_threshold(
             ref_height: ref_h,
             test_width: test_w,
             test_height: test_h,
+            alignment: DiffAlignment {
+                reference: reference.gap,
+                test: test.gap,
+            },
             raw_mis_match_percentage: raw_mis_match,
             mis_match_percentage: format!("{:.2}", raw_mis_match),
             analysis_time_ms: elapsed,
@@ -521,6 +561,35 @@ mod tests {
     }
 
     #[test]
+    fn diff_alignment_rows_preserve_boundaries_and_reject_inconsistent_geometry() {
+        let gap = VerticalGap {
+            start: 24,
+            height: 5,
+        };
+        assert_eq!(gap.for_image(128, 133), Some(gap));
+        for (image_height, diff_height) in [(128, 128), (20, 25), (usize::MAX, 4)] {
+            assert_eq!(gap.for_image(image_height, diff_height), None);
+        }
+        assert!(
+            VerticalGap {
+                start: 0,
+                height: 0
+            }
+            .for_image(128, 128)
+            .is_none()
+        );
+        for row in [0., 23.5, 24., 24.5, 127.5] {
+            let aligned = gap.to_aligned_row(row);
+            assert_eq!(aligned, if row < 24. { row } else { row + 5. });
+            assert_eq!(gap.to_image_row(aligned), Some(row));
+        }
+        for row in [24., 24.5, 28.999] {
+            assert_eq!(gap.to_image_row(row), None);
+        }
+        assert_eq!(gap.to_image_row(29.), Some(24.));
+    }
+
+    #[test]
     fn inserted_rows_are_a_band_without_hiding_other_changes() {
         let dir = tempfile::tempdir().unwrap();
         let reference_path = dir.path().join("reference.png");
@@ -552,6 +621,16 @@ mod tests {
 
         assert!(!result.is_same_dimensions);
         assert_eq!(result.dimension_difference, (0, gap_height as i64));
+        assert_eq!(
+            result.alignment,
+            DiffAlignment {
+                reference: Some(VerticalGap {
+                    start: gap_start,
+                    height: gap_height,
+                }),
+                test: None,
+            }
+        );
         let expected = (gap_height * width + 2) as f64 / test.len() as f64 * 100.0;
         assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
         let diff = lodepng::decode32(diff.unwrap()).unwrap();
@@ -602,6 +681,16 @@ mod tests {
 
         assert!(!result.is_same_dimensions);
         assert_eq!(result.dimension_difference, (0, -(gap_height as i64)));
+        assert_eq!(
+            result.alignment,
+            DiffAlignment {
+                reference: None,
+                test: Some(VerticalGap {
+                    start: gap_start,
+                    height: gap_height,
+                }),
+            }
+        );
         let expected = (gap_height * width + 2) as f64 / reference.len() as f64 * 100.0;
         assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
         let diff = lodepng::decode32(diff.unwrap()).unwrap();
@@ -635,6 +724,7 @@ mod tests {
 
         let (result, diff) = compare_images(&img_path, &img_path).unwrap();
         assert!(result.is_same_dimensions);
+        assert_eq!(result.alignment, DiffAlignment::default());
         assert_eq!(result.raw_mis_match_percentage, 0.0);
         assert!(diff.is_none());
     }

@@ -248,6 +248,36 @@ Whether the tool should ignore SSL errors.
 
 {% spoiler() %}
 
+lazyLoadScrollDelay
+
+:::::
+
+Type: non-negative whole milliseconds. Default: workspace value, then `250`.
+
+Minimum pause at each stop during the initial lazy-load scroll, before actions.
+Visible image loading/decoding and common lazy-loader states are also checked;
+`0` removes only the minimum pause. Scenario values override the suite value.
+Ignored when `noScrollTop` resolves to `true`.
+
+{% end %}
+
+{% spoiler() %}
+
+lazyLoadTimeout
+
+:::::
+
+Type: positive whole milliseconds. Default: workspace value, then `20000`.
+
+Total budget for initial lazy loading and returning to the top. Increase it with
+`lazyLoadScrollDelay` for slow or long pages. Expiry fails the capture; unlike
+`settleTimeout`, it is not best-effort. Scenario values override the suite value.
+Zero is invalid; use `noScrollTop` to skip initial scrolling.
+
+{% end %}
+
+{% spoiler() %}
+
 misMatchThreshold
 
 :::::

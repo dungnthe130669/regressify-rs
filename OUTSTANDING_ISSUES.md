@@ -2,6 +2,34 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Deferred Capture Resources (2026-10-13)
+
+- Resolved in source: fast lazy-load scrolling could leave a decoded placeholder
+  in place and later report successful settling. The slow-image
+  [pixel regression](src/test/page_stability.rs) failed before resource-aware
+  scrolling and passes afterward. Visible native/picture images and common
+  lazy-loader states now finish before scrolling away; clipped slides are ignored.
+- `lazyLoadScrollDelay` and `lazyLoadTimeout` support workspace, suite, and
+  scenario overrides. Native Chromium tests cover delayed resources, background
+  pixels, growing pages, deadline cleanup, long waits, and preserved action state;
+  config and desktop tests cover inheritance and validation.
+- Existing reference/test PNGs need recapture and review. Custom loaders without
+  observable resource state and arbitrary CSS backgrounds can still require an
+  awaited browser ready hook; this is not a global network-idle guarantee.
+
+## Diff Band Crosshair Alignment (2026-10-13)
+
+- Resolved in source: the comparer could align an inserted/deleted vertical band,
+  but desktop and web crosshairs still used unaligned rows. The exact chosen gap
+  now travels through saved comparison and snapshot metadata; both viewers map
+  through diff coordinates and omit impossible target pixels within the band.
+- [Browser regressions](frontend/tests/report.spec.ts) reproduced the row offset
+  and extra guide before the fix. Native geometry and real generated-band pointer
+  checks in [Results](src/desktop/ui/reports.rs) cover all source panes, both gap
+  directions, zoom, padding, and reset. Legacy reports remain readable; rerun
+  Compare for their saved run, then regenerate/redeploy snapshots. No recapture
+  is required.
+
 ## Snapshot Image Layout Stability (2026-10-13)
 
 - Resolved in source: report images omitted width/height attributes and comparison

@@ -29,6 +29,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 1. Capture rows use Kit List/ListItem with application-owned preview navigation and the toolkit scroll handle. Keep selection single-item through `select_capture`, clear pending approval on refresh/change, and leave search keys scoped to its input. Restore only unique keys in the same report; duplicate-key row IDs are catalog-scoped and old click callbacks reject a changed catalog. `flat_collection_capture_` covers reordered and duplicate keys.
 1. Fit-mode zoom readouts use current laid-out image bounds, not the stored manual zoom. Show one decimal place and cover both fit modes, image tabs, capture changes, and preview resizing with the `image_previews_` GUI tests.
 1. Side-by-side FitWidth uses the approved public canvas measurement adapter to align pane widths to device pixels before aspect-ratio layout; fractional widths can amplify height error in tall images. Preserve one-pixel GUI tolerances, no-upscaling, fit-area/manual policies and native pan/zoom/scroll checks.
+1. Crosshairs convert padded canvas bounds to actual image pixels, then use saved comparison `alignment` to map through virtual diff rows. Reject inconsistent gap heights, placeholders, missing images, empty padding, and target rows within a missing band. Clear geometry/alignment on reset and apply asynchronous metadata only with the matching capture generation. Preserve raw-pixel fallback for legacy reports without alignment.
 
 ## Checks
 
@@ -36,6 +37,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 cargo test --features desktop --lib desktop::results::tests
 cargo test --features desktop --lib snapshot::capture_report::tests
 cargo test --features gui-tests --lib comparison_completion_ -- --test-threads=1
+cargo test --features gui-tests --lib crosshairs_ -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui::tests -- --test-threads=1
 ```
 

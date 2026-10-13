@@ -1875,6 +1875,98 @@ test("side by side includes a third lane only when a diff is available", async (
   await expect(page.locator(".canvas-labels")).toHaveCount(0);
 });
 
+for (const shorter of ["reference", "test"] as const) {
+  test(`side by side crosshairs follow aligned diff bands (${shorter} shorter)`, async ({
+    page,
+  }, info) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const roles = ["reference", "test", "diff"] as const;
+    const gap = { start: 100, height: 48 };
+    const imageSizes = {
+      reference: { width: 320, height: shorter === "reference" ? 400 : 448 },
+      test: { width: 320, height: shorter === "test" ? 400 : 448 },
+      diff: { width: 320, height: 448 },
+    };
+    const paths = Object.fromEntries(
+      roles.map((role) => [role, `_snapshot/images/diff-band-${role}.png?v=${"a".repeat(20)}`]),
+    );
+    await page.route("**/_snapshot/data/suites/workspace-overview.json?*", async (route) => {
+      const response = await route.fetch();
+      const report = await response.json();
+      Object.assign(report.tests[0], paths, {
+        imageSizes,
+        alignment: {
+          reference: shorter === "reference" ? gap : null,
+          test: shorter === "test" ? gap : null,
+        },
+      });
+      await route.fulfill({ response, json: report });
+    });
+    await page.route("**/_snapshot/images/diff-band-*.png?*", async (route) => {
+      const role = roles.find((role) => route.request().url().includes(`diff-band-${role}.png`));
+      if (!role) throw new Error("Unexpected aligned diff fixture image");
+      const image = new PNG(imageSizes[role]);
+      image.data.fill(255);
+      await route.fulfill({ contentType: "image/png", body: PNG.sync.write(image) });
+    });
+    await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+    const lanes = page.locator(".comparison-image");
+    const images = lanes.locator("img");
+    await expect(images).toHaveCount(3);
+    await expect
+      .poll(() =>
+        images.evaluateAll((elements) =>
+          elements.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+        ),
+      )
+      .toBe(true);
+    for (const zoomIn of [false, true]) {
+      if (zoomIn) await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+      for (const [sourceIndex, source] of roles.entries()) {
+        for (const row of [50, 124, 220]) {
+          const inBand = row >= gap.start && row < gap.start + gap.height;
+          if (source === shorter && inBand) continue;
+          const sourceRow = source === shorter && row >= gap.start ? row - gap.height : row;
+          await lanes.nth(sourceIndex).hover();
+          const bounds = await images.nth(sourceIndex).boundingBox();
+          if (!bounds) throw new Error("Aligned comparison image is not visible");
+          await page.mouse.move(
+            bounds.x + bounds.width / 2,
+            bounds.y + (sourceRow / imageSizes[source].height) * bounds.height,
+          );
+          await expect(page.locator(".comparison-crosshair")).toHaveCount(inBand ? 2 : 3);
+          for (const [targetIndex, target] of roles.entries()) {
+            const guide = lanes.nth(targetIndex).locator(".crosshair-horizontal");
+            if (target === shorter && inBand) {
+              await expect(guide).toHaveCount(0);
+              continue;
+            }
+            const targetRow = target === shorter && row >= gap.start ? row - gap.height : row;
+            await expect
+              .poll(() =>
+                lanes.nth(targetIndex).evaluate((lane, row) => {
+                  const image = lane.querySelector("img");
+                  const guide = lane.querySelector(".crosshair-horizontal");
+                  if (!image || !guide) return Infinity;
+                  const bounds = image.getBoundingClientRect();
+                  const crosshair = guide.getBoundingClientRect();
+                  return Math.abs(
+                    crosshair.y +
+                      crosshair.height / 2 -
+                      bounds.y -
+                      (row / image.naturalHeight) * bounds.height,
+                  );
+                }, targetRow),
+              )
+              .toBeLessThan(1);
+          }
+        }
+      }
+    }
+    await screenshot(page, info.project.name, `comparison-aligned-crosshairs-${shorter}`);
+  });
+}
+
 for (const differentSizes of [false, true]) {
   test(`side by side crosshairs track image pixels (${differentSizes ? "different" : "equal"} sizes)`, async ({
     page,

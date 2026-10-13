@@ -11,7 +11,6 @@ use crate::diagnostics::{
 
 const DOM_READY_POLL: Duration = Duration::from_millis(100);
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(5);
-const LAZY_LOAD_TIMEOUT: Duration = Duration::from_secs(20);
 const SETTLE_QUIET_WINDOW_MS: u64 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,45 +180,152 @@ pub async fn wait_for_dom_ready(page: &Page, timeout: Duration) -> Result<()> {
 }
 
 /// Scroll through the document to trigger viewport-based lazy loading.
-pub async fn trigger_lazy_loading(page: &Page) -> Result<()> {
+pub(super) async fn trigger_lazy_loading(
+    runtime: &super::runtime::Runtime,
+    config: &ResolvedConfig,
+) -> Result<()> {
     diagnostics::stage(
         Stage::ScreenshotSettling,
-        [(Field::Condition, FieldValue::Kind(SafeValue::LazyLoading))],
-        trigger_lazy_loading_inner(page),
+        [
+            (Field::Condition, FieldValue::Kind(SafeValue::LazyLoading)),
+            (
+                Field::TimeoutMs,
+                FieldValue::Number(config.lazy_load_timeout_ms),
+            ),
+        ],
+        trigger_lazy_loading_inner(runtime, config),
     )
     .await
 }
 
-async fn trigger_lazy_loading_inner(page: &Page) -> Result<()> {
+async fn trigger_lazy_loading_inner(
+    runtime: &super::runtime::Runtime,
+    config: &ResolvedConfig,
+) -> Result<()> {
+    let timeout = Duration::from_millis(config.lazy_load_timeout_ms);
+    let script = build_lazy_load_script(
+        config.lazy_load_scroll_delay_ms,
+        config.lazy_load_timeout_ms,
+    );
+    let budget = timeout.saturating_add(Duration::from_secs(2));
     tokio::time::timeout(
-        LAZY_LOAD_TIMEOUT,
-        page.evaluate(
-            r#"(async () => {
+        budget,
+        runtime.evaluate_main_document_with_timeout(script, budget),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "Timed out after {}ms while triggering lazy loading",
+            timeout.as_millis()
+        )
+    })??;
+    Ok(())
+}
+
+fn build_lazy_load_script(scroll_delay_ms: u64, timeout_ms: u64) -> String {
+    let options = serde_json::json!({ "scrollDelay": scroll_delay_ms, "timeout": timeout_ms });
+    format!(
+        "(async () => {{ const options = {options}; {} }})()",
+        r#"
                 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                 const MAX_STEPS = 150;
                 const STEP = Math.max(100, Math.floor(window.innerHeight * 0.8));
-                let previousY = -1;
+                const deadline = performance.now() + options.timeout;
+                const documentBottom = () => {
+                    const root = document.scrollingElement || document.documentElement;
+                    return Math.max(0, document.body?.scrollHeight || 0,
+                        document.documentElement.scrollHeight, root.scrollHeight) - innerHeight;
+                };
+                const decoded = new WeakMap();
+                let intersections = new WeakMap();
+                let observed = new WeakSet();
+                const observer = new IntersectionObserver(entries => {
+                    for (const entry of entries) intersections.set(entry.target,
+                        entry.isIntersecting && entry.intersectionRect.width > 0 && entry.intersectionRect.height > 0);
+                });
+                const candidates = () => Array.from(document.querySelectorAll(
+                    'img, [data-bgset], [data-bg], [data-background]'
+                ));
+                const visible = (element) => {
+                    const rect = element.getBoundingClientRect();
+                    if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 ||
+                        rect.top >= innerHeight || rect.right <= 0 || rect.left >= innerWidth) return false;
+                    const style = getComputedStyle(element);
+                    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+                    if (!observed.has(element)) {
+                        observed.add(element);
+                        observer.observe(element);
+                    }
+                    // Bounding boxes alone include slides clipped by an overflow ancestor.
+                    return intersections.get(element) ?? null;
+                };
+                const resourceReady = (element) => {
+                    if (element.matches('.lazyload, .lazyloading') &&
+                        element.matches('[data-src], [data-srcset], [data-bgset], [data-bg], [data-background]'))
+                        return false;
+                    if (!(element instanceof HTMLImageElement)) return true;
+                    const deferred = element.getAttribute('data-src') || element.getAttribute('data-lazy-src');
+                    const source = element.currentSrc || element.src;
+                    const deferredPicture = element.parentElement?.tagName === 'PICTURE' &&
+                        Array.from(element.parentElement.querySelectorAll('source[data-srcset]'))
+                            .some(source => source.getAttribute('data-srcset') && !source.getAttribute('srcset'));
+                    // A decoded placeholder is not proof that the deferred source was requested.
+                    if ((!source || source.startsWith('data:')) &&
+                        ((deferred && deferred !== element.getAttribute('src')) ||
+                         (element.hasAttribute('data-srcset') && !element.getAttribute('srcset')) ||
+                         deferredPicture))
+                        return false;
+                    if (!element.complete) return false;
+                    if (element.naturalWidth === 0 || typeof element.decode !== 'function') return true;
+                    let state = decoded.get(element);
+                    if (!state || state.source !== source) {
+                        state = { source, ready: false };
+                        decoded.set(element, state);
+                        Promise.resolve().then(() => element.decode()).catch(() => {}).then(() => state.ready = true);
+                    }
+                    return state.ready;
+                };
+                const waitForVisibleResources = async () => {
+                    observer.disconnect();
+                    observer.takeRecords();
+                    intersections = new WeakMap();
+                    observed = new WeakSet();
+                    candidates().forEach(visible);
+                    await sleep(Math.min(options.scrollDelay, Math.max(0, deadline - performance.now())));
+                    while (performance.now() < deadline) {
+                        const ready = candidates().map(element => {
+                            const inView = visible(element);
+                            return inView === null ? false : !inView || resourceReady(element);
+                        });
+                        if (ready.every(Boolean)) return;
+                        await sleep(Math.min(100, Math.max(0, deadline - performance.now())));
+                    }
+                    throw new Error('Timed out waiting for visible lazy-loaded resources');
+                };
                 let steps = 0;
 
-                while (steps < MAX_STEPS) {
-                    const bodyHeight = document.body ? document.body.scrollHeight : 0;
-                    const root = document.scrollingElement || document.documentElement;
-                    const bottom = Math.max(0, bodyHeight, document.documentElement.scrollHeight,
-                        root.scrollHeight) - window.innerHeight;
-                    if (window.scrollY >= bottom) break;
+                try {
+                    await waitForVisibleResources();
+                    while (true) {
+                        if (window.scrollY >= documentBottom()) break;
+                        if (steps >= MAX_STEPS) throw new Error('Exceeded the lazy-load scroll step limit');
 
-                    window.scrollBy({ left: 0, top: STEP, behavior: 'instant' });
-                    await sleep(100);
-                    if (window.scrollY <= previousY) break;
-                    previousY = window.scrollY;
-                    steps++;
+                        const previousY = window.scrollY;
+                        window.scrollBy({ left: 0, top: STEP, behavior: 'instant' });
+                        steps++;
+                        await waitForVisibleResources();
+                        if (window.scrollY <= previousY && window.scrollY < documentBottom())
+                            throw new Error('Lazy-load scrolling stopped before reaching the bottom');
+                    }
+                } finally {
+                    observer.disconnect();
+                    window.scrollTo({ left: 0, top: 0, behavior: 'instant' });
                 }
 
-                window.scrollTo({ left: 0, top: 0, behavior: 'instant' });
                 // Lazy-load handlers are often debounced after scrolling stops.
-                const deadline = performance.now() + 3000;
+                const returnDeadline = Math.min(deadline, performance.now() + 3000);
                 let stableSince = null;
-                while (performance.now() < deadline) {
+                while (performance.now() < returnDeadline) {
                     const now = performance.now();
                     const atTop = Math.abs(window.scrollX) < 1 && Math.abs(window.scrollY) < 1;
                     if (atTop) {
@@ -229,20 +335,11 @@ async fn trigger_lazy_loading_inner(page: &Page) -> Result<()> {
                         stableSince = null;
                         window.scrollTo({ left: 0, top: 0, behavior: 'instant' });
                     }
-                    await sleep(100);
+                    await sleep(Math.min(100, Math.max(0, returnDeadline - performance.now())));
                 }
                 throw new Error('Timed out waiting for lazy-load scrolling to return to the top');
-            })()"#,
-        ),
+        "#,
     )
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "Timed out after {}ms while triggering lazy loading",
-            LAZY_LOAD_TIMEOUT.as_millis()
-        )
-    })??;
-    Ok(())
 }
 
 /// Freeze active CSS/Web Animations before capture.
@@ -580,8 +677,9 @@ mod tests {
             crate::test::browser_tests::launch_browser("scroll-completion", Default::default())
                 .await?;
         let result: Result<()> = async {
-            for mode in ["short", "delayed", "interrupted", "stalled"] {
+            for mode in ["blocked", "short", "delayed", "interrupted", "stalled"] {
                 let page = browser.new_page("about:blank").await?;
+                let runtime = super::super::runtime::Runtime::new(&browser, &page).await?;
                 page.evaluate(format!(
                     r#"(() => {{
                         const mode = {};
@@ -612,22 +710,31 @@ mod tests {
                             }};
                         }} else if (mode === 'stalled') {{
                             window.scrollTo = () => {{}};
+                        }} else if (mode === 'blocked') {{
+                            window.scrollBy = () => {{}};
                         }}
                     }})()"#,
                     serde_json::to_string(mode)?
                 ))
                 .await?;
                 let start = Instant::now();
-                let scrolling = trigger_lazy_loading(&page).await;
-                if mode == "stalled" {
+                let scrolling = trigger_lazy_loading(&runtime, &ResolvedConfig::default()).await;
+                if mode == "stalled" || mode == "blocked" {
                     let error = scrolling
                         .err()
                         .ok_or_else(|| anyhow!("Blocked scrolling must fail instead of capturing"))?;
+                    let expected = if mode == "blocked" {
+                        "before reaching the bottom"
+                    } else {
+                        "return to the top"
+                    };
                     anyhow::ensure!(
-                        format!("{error:#}").contains("return to the top"),
+                        format!("{error:#}").contains(expected),
                         "Unexpected blocked-scroll error: {error:#}"
                     );
-                    anyhow::ensure!(start.elapsed() < LAZY_LOAD_TIMEOUT);
+                    anyhow::ensure!(start.elapsed() < Duration::from_millis(
+                        crate::config::DEFAULT_LAZY_LOAD_TIMEOUT_MS
+                    ));
                 } else {
                     scrolling?;
                     let state: serde_json::Value = page
@@ -656,6 +763,314 @@ mod tests {
         browser.close().await?;
         handler.await?;
         let _ = std::fs::remove_dir_all(directory);
+        result
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn lazy_loading_waits_for_deferred_image_pixels_before_scrolling_away() -> Result<()> {
+        use chromiumoxide::{
+            cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
+        };
+
+        let (mut browser, handler, directory) =
+            crate::test::browser_tests::launch_browser("slow-lazy-image", Default::default())
+                .await?;
+        let result: Result<()> = async {
+            let page = browser.new_page("about:blank").await?;
+            let runtime = super::super::runtime::Runtime::new(&browser, &page).await?;
+            let top: usize = page
+                .evaluate(
+                    r#"(() => {
+                        const top = Math.ceil(innerHeight * 1.2);
+                        document.body.style.cssText = `margin: 0; height: ${top + innerHeight * 2}px`;
+                        const canvas = document.createElement('canvas');
+                        canvas.width = canvas.height = 64;
+                        const context = canvas.getContext('2d');
+                        context.fillStyle = 'rgb(255, 255, 255)';
+                        context.fillRect(0, 0, 64, 64);
+                        const image = document.createElement('img');
+                        image.src = canvas.toDataURL();
+                        context.fillStyle = 'rgb(14, 160, 80)';
+                        context.fillRect(0, 0, 64, 64);
+                        image.dataset.src = canvas.toDataURL();
+                        image.className = 'lazyload';
+                        image.style.cssText = `position: absolute; left: 24px; top: ${top}px; width: 64px; height: 64px`;
+                        document.body.appendChild(image);
+                        window.fixtureImage = image;
+                        let timer;
+                        const observer = new IntersectionObserver(entries => {
+                            clearTimeout(timer);
+                            if (!entries[0].isIntersecting) return;
+                            timer = setTimeout(async () => {
+                                image.src = image.dataset.src;
+                                image.className = 'lazyloading';
+                                await image.decode();
+                                image.className = 'lazyloaded';
+                                observer.disconnect();
+                            }, 650);
+                        });
+                        observer.observe(image);
+                        return top;
+                    })()"#,
+                )
+                .await?
+                .into_value()?;
+
+            trigger_lazy_loading(&runtime, &ResolvedConfig::default()).await?;
+
+            let state: serde_json::Value = page
+                .evaluate(
+                    "({ loaded: window.fixtureImage.className === 'lazyloaded', x: scrollX, y: scrollY })",
+                )
+                .await?
+                .into_value()?;
+            anyhow::ensure!(state["loaded"] == true, "Captured a lazy placeholder: {state}");
+            anyhow::ensure!(state["x"] == 0 && state["y"] == 0);
+            let png = page
+                .screenshot(
+                    ScreenshotParams::builder()
+                        .format(CaptureScreenshotFormat::Png)
+                        .full_page(true)
+                        .from_surface(true)
+                        .build(),
+                )
+                .await?;
+            let image = lodepng::decode32(png)?;
+            let pixel = image.buffer[(top + 32) * image.width + 56];
+            anyhow::ensure!(
+                (pixel.r, pixel.g, pixel.b) == (14, 160, 80),
+                "Deferred image pixels were not ready: {pixel:?}"
+            );
+            page.close().await?;
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = fs::remove_dir_all(directory);
+        result
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn lazy_loading_waits_for_resources_and_page_growth_without_waiting_for_clipped_slides()
+    -> Result<()> {
+        use chromiumoxide::{
+            cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
+        };
+        let pixels = vec![rgb::RGBA8::new(14, 160, 80, 255); 64 * 64];
+        let png = lodepng::encode32(&pixels, 64, 64)?;
+        let site = crate::test::browser_tests::Site::new(move |request| {
+            std::thread::sleep(Duration::from_millis(800));
+            let _ = request.respond(
+                tiny_http::Response::from_data(png.clone())
+                    .with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "image/png").unwrap(),
+                    )
+                    .with_header(
+                        tiny_http::Header::from_bytes("Cache-Control", "no-store").unwrap(),
+                    ),
+            );
+        })?;
+        let (mut browser, handler, directory) =
+            crate::test::browser_tests::launch_browser("lazy-resource-pixels", Default::default())
+                .await?;
+        let result: Result<()> = async {
+            for mode in ["native", "picture", "background", "growing", "clipped"] {
+                let page = browser.new_page("about:blank").await?;
+                let runtime = super::super::runtime::Runtime::new(&browser, &page).await?;
+                page.evaluate(format!(
+                    "window.fixtureOptions = {}",
+                    serde_json::json!({ "mode": mode, "url": format!("{}/image.png?mode={mode}", site.origin) }),
+                )).await?;
+                page.evaluate(r#"(() => {
+                    const { mode, url } = window.fixtureOptions;
+                    const top = Math.ceil(innerHeight * 1.2);
+                    document.body.style.cssText = `margin: 0; height: ${top + innerHeight * 2}px`;
+                    const canvas = document.createElement('canvas');
+                    canvas.width = canvas.height = 64;
+                    const placeholder = canvas.toDataURL();
+                    window.fixtureResources = [];
+                    window.fixtureMaxY = 0;
+                    addEventListener('scroll', () => window.fixtureMaxY = Math.max(window.fixtureMaxY, scrollY));
+                    const create = (kind, offset, resourceUrl) => {
+                        const element = document.createElement(kind === 'background' ? 'div' : 'img');
+                        element.style.cssText = `position: absolute; left: 24px; top: ${offset}px; width: 64px; height: 64px`;
+                        let source;
+                        if (kind === 'picture') {
+                            const picture = document.createElement('picture');
+                            source = document.createElement('source');
+                            source.dataset.srcset = resourceUrl;
+                            element.src = placeholder;
+                            picture.append(source, element);
+                            document.body.appendChild(picture);
+                        } else {
+                            if (kind === 'background') element.dataset.bgset = resourceUrl;
+                            else if (kind === 'native') {
+                                element.loading = 'lazy';
+                                element.src = resourceUrl;
+                            } else {
+                                element.src = placeholder;
+                                element.dataset.src = resourceUrl;
+                            }
+                            document.body.appendChild(element);
+                        }
+                        window.fixtureResources.push(element);
+                        if (kind === 'native') return;
+                        element.className = 'lazyload';
+                        let timer;
+                        const observer = new IntersectionObserver(entries => {
+                            clearTimeout(timer);
+                            if (!entries[0].isIntersecting) return;
+                            timer = setTimeout(async () => {
+                                element.className = 'lazyloading';
+                                if (kind === 'background') {
+                                    const image = new Image();
+                                    image.src = resourceUrl;
+                                    await image.decode();
+                                    element.style.backgroundImage = `url("${resourceUrl}")`;
+                                } else {
+                                    if (source) source.srcset = source.dataset.srcset;
+                                    else element.src = element.dataset.src;
+                                    await element.decode();
+                                }
+                                element.className = 'lazyloaded';
+                                observer.disconnect();
+                                if (kind === 'growing') {
+                                    const tailTop = document.documentElement.scrollHeight + 100;
+                                    document.body.style.height = `${tailTop + innerHeight}px`;
+                                    create('native', tailTop, resourceUrl + '&tail=1');
+                                }
+                            }, 650);
+                        });
+                        observer.observe(element);
+                    };
+                    create(mode === 'clipped' ? 'native' : mode, top, url);
+                    if (mode === 'clipped') {
+                        const container = document.createElement('div');
+                        container.style.cssText = 'position: absolute; top: 24px; left: 24px; width: 1px; height: 1px; overflow: hidden';
+                        const hidden = document.createElement('img');
+                        hidden.className = 'lazyload';
+                        hidden.src = placeholder;
+                        hidden.dataset.src = url + '&hidden=1';
+                        hidden.style.cssText = 'position: absolute; top: 80px; left: 80px; width: 64px; height: 64px';
+                        container.appendChild(hidden);
+                        document.body.appendChild(container);
+                        const detached = hidden.cloneNode();
+                        detached.style.display = 'none';
+                        document.body.appendChild(detached);
+                    }
+                })()"#).await?;
+
+                trigger_lazy_loading(&runtime, &ResolvedConfig::default()).await?;
+
+                let state: serde_json::Value = page.evaluate(r#"({
+                    positions: window.fixtureResources.map(element => Math.round(element.getBoundingClientRect().top + scrollY)),
+                    loaded: window.fixtureResources.every(element => element instanceof HTMLImageElement
+                        ? element.complete && element.naturalWidth === 64 && !element.currentSrc.startsWith('data:')
+                        : element.className === 'lazyloaded'),
+                    maxY: window.fixtureMaxY, height: innerHeight, x: scrollX, y: scrollY,
+                })"#).await?.into_value()?;
+                anyhow::ensure!(state["loaded"] == true, "{mode} resources are incomplete: {state}");
+                anyhow::ensure!(state["x"] == 0 && state["y"] == 0, "{mode}: {state}");
+                let positions: Vec<usize> = serde_json::from_value(state["positions"].clone())?;
+                if mode == "growing" {
+                    anyhow::ensure!(positions.len() == 2, "Did not append the deferred section: {state}");
+                    anyhow::ensure!(state["maxY"].as_f64().unwrap() + state["height"].as_f64().unwrap() > positions[1] as f64);
+                }
+                let png = page.screenshot(ScreenshotParams::builder()
+                    .format(CaptureScreenshotFormat::Png)
+                    .full_page(true)
+                    .from_surface(true)
+                    .build()).await?;
+                let image = lodepng::decode32(png)?;
+                for top in positions {
+                    let pixel = image.buffer[(top + 32) * image.width + 56];
+                    anyhow::ensure!((pixel.r, pixel.g, pixel.b) == (14, 160, 80), "{mode} captured missing pixels: {pixel:?}");
+                }
+                page.close().await?;
+            }
+            Ok(())
+        }.await;
+        browser.close().await?;
+        handler.await?;
+        let _ = fs::remove_dir_all(directory);
+        result
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn lazy_loading_bounds_unresolved_resources_and_restores_scroll_on_error() -> Result<()> {
+        let (mut browser, handler, directory) =
+            crate::test::browser_tests::launch_browser("lazy-resource-timeout", Default::default())
+                .await?;
+        let result: Result<()> = async {
+            for scroll_delay in [0, u64::MAX] {
+                let page = browser.new_page("about:blank").await?;
+                let runtime = super::super::runtime::Runtime::new(&browser, &page).await?;
+                page.evaluate(r#"(() => {
+                    document.body.style.height = `${innerHeight * 3}px`;
+                    const image = document.createElement('img');
+                    image.className = 'lazyload';
+                    image.dataset.src = 'never-activated.png';
+                    image.style.cssText = `position: absolute; top: ${innerHeight * 1.2}px; left: 24px; width: 64px; height: 64px`;
+                    document.body.appendChild(image);
+                    const scrollBy = window.scrollBy.bind(window);
+                    window.fixtureScrolls = 0;
+                    window.scrollBy = (...args) => { window.fixtureScrolls++; scrollBy(...args); };
+                })()"#).await?;
+                let config = ResolvedConfig {
+                    lazy_load_scroll_delay_ms: scroll_delay,
+                    lazy_load_timeout_ms: 700,
+                    ..Default::default()
+                };
+                let started = Instant::now();
+                let error = trigger_lazy_loading(&runtime, &config).await.err()
+                    .ok_or_else(|| anyhow!("Unresolved lazy resources must fail"))?;
+                anyhow::ensure!(format!("{error:#}").contains("visible lazy-loaded resources"));
+                anyhow::ensure!(started.elapsed() >= Duration::from_millis(700) && started.elapsed() < Duration::from_secs(4));
+                let state: serde_json::Value = page.evaluate("({ x: scrollX, y: scrollY, scrolls: window.fixtureScrolls })").await?.into_value()?;
+                anyhow::ensure!(state["x"] == 0 && state["y"] == 0, "{state}");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let scrolls: u64 = page.evaluate("window.fixtureScrolls").await?.into_value()?;
+                anyhow::ensure!(state["scrolls"] == scrolls, "Scrolling continued after timeout");
+                page.close().await?;
+            }
+            Ok(())
+        }.await;
+        browser.close().await?;
+        handler.await?;
+        let _ = fs::remove_dir_all(directory);
+        result
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn lazy_loading_honors_timeouts_beyond_the_cdp_default() -> Result<()> {
+        let (mut browser, handler, directory) = crate::test::browser_tests::launch_browser(
+            "lazy-load-long-timeout",
+            Default::default(),
+        )
+        .await?;
+        let result: Result<()> = async {
+            let page = browser.new_page("about:blank").await?;
+            let runtime = super::super::runtime::Runtime::new(&browser, &page).await?;
+            let config = ResolvedConfig {
+                lazy_load_scroll_delay_ms: 61_000,
+                lazy_load_timeout_ms: 70_000,
+                ..Default::default()
+            };
+            let start = Instant::now();
+            trigger_lazy_loading(&runtime, &config).await?;
+            anyhow::ensure!(start.elapsed() >= Duration::from_secs(61));
+            page.close().await?;
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = fs::remove_dir_all(directory);
         result
     }
 

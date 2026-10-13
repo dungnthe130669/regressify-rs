@@ -1949,8 +1949,13 @@ restores that tab's own fit/zoom choice; dragging does not switch tabs.
 All comparison panes use a common canvas and scale, including when their
 dimensions differ. Zoom, dragging, and both scroll axes stay synchronized from
 any pane. Moving the pointer over an image draws horizontal and vertical guides
-in all comparison panes at the same image coordinate. Guides disappear when the pointer leaves the
-images, and selecting another capture resets the shared scroll position.
+at corresponding image pixels in all comparison panes. For an aligned insertion
+or deletion, guides account for the saved band position and height; points inside
+the band have no counterpart in the shorter image. Empty canvas padding and
+unavailable images have no guides. Guides disappear when the pointer leaves the
+images, and selecting another capture resets the shared scroll position and
+alignment. Older reports without alignment metadata retain ordinary image-pixel
+coordinates. Rerun Compare for their saved run to add alignment without recapturing.
 Image dimensions are bounded
 with the CLI's PNG helper before decoding. When a reference capture failed and
 no baseline image exists, Reference displays the shared rounded report error

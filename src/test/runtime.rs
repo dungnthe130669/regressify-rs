@@ -7,7 +7,10 @@ use std::{
 use anyhow::{Result, anyhow, bail};
 use chromiumoxide::{
     Browser, Command, Page,
-    cdp::{browser_protocol::dom::NodeId, js_protocol::runtime::EvaluateParams},
+    cdp::{
+        browser_protocol::dom::NodeId,
+        js_protocol::runtime::{EvaluateParams, EvaluateReturns},
+    },
     error::CdpError,
     js::{Evaluation, EvaluationResult},
 };
@@ -143,6 +146,34 @@ impl Runtime {
             main_session,
             cache: Arc::new(Mutex::new(ContextCache::new(events))),
         })
+    }
+
+    pub(super) async fn evaluate_main_document_with_timeout(
+        &self,
+        expression: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<EvaluationResult> {
+        // Long lazy-load waits must not inherit Chromiumoxide's periodic request eviction.
+        let params = EvaluateParams::builder()
+            .expression(expression)
+            .await_promise(true)
+            .return_by_value(true)
+            .build()
+            .map_err(anyhow::Error::msg)?;
+        let response: EvaluateReturns = serde_json::from_value(
+            self.client
+                .call_with_timeout(
+                    Some(&self.main_session),
+                    "Runtime.evaluate",
+                    serde_json::to_value(params)?,
+                    timeout,
+                )
+                .await?,
+        )?;
+        if let Some(exception) = response.exception_details {
+            return Err(CdpError::JavascriptException(Box::new(exception)).into());
+        }
+        Ok(EvaluationResult::new(response.result))
     }
 
     async fn root(&self) -> Result<Realm> {

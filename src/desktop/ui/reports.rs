@@ -8,6 +8,7 @@ use std::{
 };
 
 use super::*;
+use crate::compare::image_compare::{DiffAlignment, VerticalGap};
 use crate::desktop::results::{
     Catalog, Outcome, Pair, ReportArtifacts, ReportEntry, ReportSelection,
 };
@@ -188,24 +189,57 @@ struct PreviewPan {
     dragged: bool,
 }
 
+#[derive(Clone, Copy)]
+struct PointerGeometry {
+    canvas: (usize, usize),
+    image: (usize, usize),
+    gap: Option<VerticalGap>,
+}
+
 #[derive(Default)]
 struct PointerGuides {
     active: Cell<Option<usize>>,
     bounds: [Cell<Option<Bounds<Pixels>>>; 3],
+    geometry: [Cell<Option<PointerGeometry>>; 3],
+    alignment: Cell<Option<DiffAlignment>>,
     pan: RefCell<Option<PreviewPan>>,
 }
 
 impl PointerGuides {
     fn position(&self, index: usize, mouse: Point<Pixels>) -> Option<Point<Pixels>> {
-        let source = self.bounds.get(self.active.get()?)?.get()?;
+        let active = self.active.get()?;
+        let source = self.bounds.get(active)?.get()?;
         let target = self.bounds.get(index)?.get()?;
+        let source_geometry = self.geometry.get(active)?.get()?;
+        let target_geometry = self.geometry.get(index)?.get()?;
         if source.size.width <= px(0.) || source.size.height <= px(0.) || !source.contains(&mouse) {
             return None;
         }
+        let column =
+            (mouse.x - source.origin.x) / source.size.width * source_geometry.canvas.0 as f32;
+        let row =
+            (mouse.y - source.origin.y) / source.size.height * source_geometry.canvas.1 as f32;
+        if column < 0.
+            || column >= source_geometry.image.0 as f32
+            || row < 0.
+            || row >= source_geometry.image.1 as f32
+        {
+            return None;
+        }
+        let aligned_row = source_geometry
+            .gap
+            .map_or(row, |gap| gap.to_aligned_row(row));
+        let target_row = match target_geometry.gap {
+            Some(gap) => gap.to_image_row(aligned_row)?,
+            None => aligned_row,
+        };
+        if column >= target_geometry.image.0 as f32 || target_row >= target_geometry.image.1 as f32
+        {
+            return None;
+        }
         Some(point(
-            target.origin.x + target.size.width * ((mouse.x - source.origin.x) / source.size.width),
-            target.origin.y
-                + target.size.height * ((mouse.y - source.origin.y) / source.size.height),
+            target.origin.x + target.size.width * (column / target_geometry.canvas.0 as f32),
+            target.origin.y + target.size.height * (target_row / target_geometry.canvas.1 as f32),
         ))
     }
 }
@@ -898,6 +932,10 @@ impl ResultsPanel {
         }
         self.pointer_guides.pan.borrow_mut().take();
         self.pointer_guides.active.set(None);
+        self.pointer_guides.alignment.set(None);
+        for geometry in &self.pointer_guides.geometry {
+            geometry.set(None);
+        }
         for bounds in &self.pointer_guides.bounds {
             bounds.set(None);
         }
@@ -928,6 +966,12 @@ impl ResultsPanel {
                 .unwrap_or_else(|| format!("capture:{capture}")),
         );
         let artifacts = Arc::new(report.artifacts());
+        let alignment = test
+            .pair
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.alignment)
+            .filter(|alignment| alignment.reference.is_none() || alignment.test.is_none());
         let images = [
             ("Reference", test.pair.reference.clone()),
             ("Test", test.pair.test.clone()),
@@ -976,6 +1020,7 @@ impl ResultsPanel {
             let _ = view.update_in(cx, |this, _, cx| {
                 if this.generation == generation {
                     this.previews = previews;
+                    this.pointer_guides.alignment.set(alignment);
                     this.image_loading = false;
                     cx.notify();
                 }
@@ -1597,6 +1642,26 @@ impl ResultsPanel {
             Ok(image) => {
                 let view = self.preview_views[self.image_mode];
                 let (canvas_width, canvas_height) = self.preview_canvas_size(index);
+                let gap = self
+                    .pointer_guides
+                    .alignment
+                    .get()
+                    .and_then(|alignment| match index {
+                        0 => alignment.reference,
+                        1 => alignment.test,
+                        _ => None,
+                    })
+                    .and_then(|gap| {
+                        let diff = self.previews.get(2)?.result.as_ref().ok()?;
+                        gap.for_image(image.height, diff.height)
+                    });
+                self.pointer_guides.geometry[index].set(image.path.is_some().then_some(
+                    PointerGeometry {
+                        canvas: (canvas_width, canvas_height),
+                        image: (image.width, image.height),
+                        gap,
+                    },
+                ));
                 let scroll = if self.image_mode == 3 {
                     &self.comparison_scroll
                 } else {
@@ -2582,7 +2647,7 @@ impl Render for ResultsPanel {
 
 #[cfg(test)]
 mod pointer_tests {
-    use super::{PointerGuides, ZOOM_LEVELS, next_zoom};
+    use super::{PointerGeometry, PointerGuides, VerticalGap, ZOOM_LEVELS, next_zoom};
     use gpui_kit::{Bounds, point, px, size};
 
     #[test]
@@ -2752,6 +2817,13 @@ mod pointer_tests {
     #[test]
     fn crosshairs_use_the_same_image_coordinate_after_scroll_and_scaling() {
         let guides = PointerGuides::default();
+        for geometry in &guides.geometry[..2] {
+            geometry.set(Some(PointerGeometry {
+                canvas: (1000, 2000),
+                image: (1000, 2000),
+                gap: None,
+            }));
+        }
         guides.active.set(Some(0));
         guides.bounds[0].set(Some(Bounds::new(
             point(px(-100.), px(-200.)),
@@ -2776,6 +2848,76 @@ mod pointer_tests {
         assert!(guides.position(1, point(px(-101.), px(300.))).is_none());
         guides.active.set(None);
         assert!(guides.position(1, point(px(150.), px(300.))).is_none());
+    }
+
+    #[test]
+    fn crosshairs_map_diff_bands_and_exclude_padding_in_every_pane() {
+        let gap = VerticalGap {
+            start: 100,
+            height: 48,
+        };
+        for shorter in [0, 1] {
+            for scale in [0.5, 1., 1.25] {
+                let guides = PointerGuides::default();
+                for index in 0..3 {
+                    guides.bounds[index].set(Some(Bounds::new(
+                        point(px(index as f32 * 600. - 80.), px(-40.)),
+                        size(px(320. * scale), px(448. * scale)),
+                    )));
+                    guides.geometry[index].set(Some(PointerGeometry {
+                        canvas: (320, 448),
+                        image: (320, if index == shorter { 400 } else { 448 }),
+                        gap: (index == shorter).then_some(gap),
+                    }));
+                }
+                for source in 0..3 {
+                    guides.active.set(Some(source));
+                    for row in [0., 99.5, 100., 124., 147.5, 148., 220., 447.5] {
+                        let Some(source_row) = (if source == shorter {
+                            gap.to_image_row(row)
+                        } else {
+                            Some(row)
+                        }) else {
+                            continue;
+                        };
+                        let mouse = guides.bounds[source].get().unwrap().origin
+                            + point(px(160. * scale), px(source_row * scale));
+                        for target in 0..3 {
+                            let expected_row = if target == shorter {
+                                gap.to_image_row(row)
+                            } else {
+                                Some(row)
+                            };
+                            let actual = guides.position(target, mouse);
+                            match expected_row {
+                                Some(expected_row) => {
+                                    let expected = guides.bounds[target].get().unwrap().origin
+                                        + point(px(160. * scale), px(expected_row * scale));
+                                    let actual = actual
+                                        .expect("Corresponding image pixel must have a guide");
+                                    assert!((actual.x - expected.x).abs() < px(0.01));
+                                    assert!((actual.y - expected.y).abs() < px(0.01));
+                                }
+                                None => assert!(
+                                    actual.is_none(),
+                                    "Missing band pixels must not have a guide"
+                                ),
+                            }
+                        }
+                    }
+                }
+                guides.active.set(Some(shorter));
+                let padding = guides.bounds[shorter].get().unwrap().origin
+                    + point(px(100. * scale), px(420. * scale));
+                assert!(guides.position(2, padding).is_none());
+                guides.geometry[2].set(None);
+                assert!(
+                    guides
+                        .position(2, guides.bounds[shorter].get().unwrap().center())
+                        .is_none()
+                );
+            }
+        }
     }
 
     #[cfg(feature = "gui-tests")]
@@ -3724,6 +3866,152 @@ mod pointer_tests {
             assert!(!results.read(cx).image_loading);
             assert!(results.read(cx).previews.is_empty());
         });
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn crosshairs_follow_generated_diff_bands_from_every_pane(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use gpui_kit::{AppContext, InputEvent as _};
+        use std::time::Duration;
+
+        let gap = VerticalGap {
+            start: 100,
+            height: 48,
+        };
+        for shorter in [0, 1] {
+            let directory = tempfile::tempdir().unwrap();
+            let run = directory
+                .path()
+                .join(".regressify/ui-test/bitmaps_test/run-1");
+            std::fs::create_dir_all(&run).unwrap();
+            let pixels: Vec<_> = (0..320 * 400)
+                .map(|index| {
+                    let row = index / 320;
+                    rgb::RGBA8::new(
+                        (row * 73 % 256) as u8,
+                        (row * 151 % 256) as u8,
+                        (row * 199 % 256) as u8,
+                        255,
+                    )
+                })
+                .collect();
+            let mut taller = pixels[..gap.start * 320].to_vec();
+            taller.extend(vec![rgb::RGBA8::new(0, 0, 0, 255); gap.height * 320]);
+            taller.extend_from_slice(&pixels[gap.start * 320..]);
+            for (index, name) in ["reference", "test"].iter().enumerate() {
+                let (pixels, height) = if index == shorter {
+                    (&pixels, 400)
+                } else {
+                    (&taller, 448)
+                };
+                lodepng::encode32_file(run.join(format!("{name}.png")), pixels, 320, height)
+                    .unwrap();
+            }
+            let (comparison, diff) = crate::compare::image_compare::compare_images(
+                &run.join("reference.png"),
+                &run.join("test.png"),
+            )
+            .unwrap();
+            assert_eq!(
+                if shorter == 0 {
+                    comparison.alignment.reference
+                } else {
+                    comparison.alignment.test
+                },
+                Some(gap)
+            );
+            std::fs::write(run.join("diff.png"), diff.unwrap()).unwrap();
+            std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
+                "id": "ui-test", "tests": [{"status": "fail", "pair": {
+                    "label": "Aligned band fixture",
+                    "reference": "../bitmaps_test/run-1/reference.png",
+                    "test": "../bitmaps_test/run-1/test.png",
+                    "diffImage": "../bitmaps_test/run-1/diff.png",
+                    "diff": {"alignment": comparison.alignment, "rawMisMatchPercentage": comparison.raw_mis_match_percentage}
+                }}]
+            })).unwrap()).unwrap();
+            let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.within("workbench-tabs").click(2_usize, cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+                window.try_find(("image-details", 2_usize)).is_some()
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let results = view.read(cx).results.clone();
+                let guides = results.read(cx).pointer_guides.clone();
+                assert_eq!(guides.geometry[shorter].get().unwrap().gap, Some(gap));
+                for source in 0..3 {
+                    for row in [50., 124., 220.] {
+                        let Some(source_row) = (if source == shorter {
+                            gap.to_image_row(row)
+                        } else {
+                            Some(row)
+                        }) else {
+                            continue;
+                        };
+                        window.hover(("image-content", source), cx);
+                        window.render_frame(cx);
+                        let bounds = guides.bounds[source].get().unwrap();
+                        let mouse = bounds.origin
+                            + point(
+                                bounds.size.width * 0.5,
+                                bounds.size.height * (source_row / 448.),
+                            );
+                        window.dispatch_event(
+                            gpui_kit::MouseMoveEvent {
+                                position: mouse,
+                                pressed_button: None,
+                                modifiers: Default::default(),
+                            }
+                            .to_platform_input(),
+                            cx,
+                        );
+                        window.render_frame(cx);
+                        assert_eq!(guides.active.get(), Some(source));
+                        for target in 0..3 {
+                            let expected_row = if target == shorter {
+                                gap.to_image_row(row)
+                            } else {
+                                Some(row)
+                            };
+                            let actual = guides.position(target, window.mouse_position());
+                            if let Some(row) = expected_row {
+                                let bounds = guides.bounds[target].get().unwrap();
+                                let expected = bounds.origin
+                                    + point(
+                                        bounds.size.width * 0.5,
+                                        bounds.size.height * (row / 448.),
+                                    );
+                                let actual = actual
+                                    .expect("Generated band metadata must map to the target pixel");
+                                assert!((actual.x - expected.x).abs() < px(0.1));
+                                assert!((actual.y - expected.y).abs() < px(0.1));
+                            } else {
+                                assert!(actual.is_none());
+                            }
+                        }
+                    }
+                }
+                results.update(cx, |panel, cx| panel.clear(window, cx));
+                assert!(guides.alignment.get().is_none());
+                assert!(
+                    guides
+                        .geometry
+                        .iter()
+                        .all(|geometry| geometry.get().is_none())
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
     }
 
     #[cfg(feature = "gui-tests")]

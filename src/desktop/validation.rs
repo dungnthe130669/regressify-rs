@@ -572,6 +572,55 @@ mod tests {
     }
 
     #[test]
+    fn lazy_load_schema_feedback_handles_all_scopes_and_formats() {
+        for key in ["lazyLoadScrollDelay", "lazyLoadTimeout"] {
+            for (value, valid) in [
+                (json!(null), true),
+                (json!(0), key == "lazyLoadScrollDelay"),
+                (json!(1), true),
+                (json!(60000), true),
+                (json!(-1), false),
+                (json!(0.5), false),
+                (json!(1.0), false),
+                (json!("100"), false),
+                (json!(false), false),
+            ] {
+                for (kind, document, pointer) in [
+                    (
+                        DocumentKind::Workspace,
+                        json!({(key): value}),
+                        format!("/{key}"),
+                    ),
+                    (
+                        DocumentKind::Suite,
+                        json!({(key): value, "scenarios": []}),
+                        format!("/{key}"),
+                    ),
+                    (
+                        DocumentKind::Suite,
+                        json!({"scenarios": [{"url": "/", (key): value}]}),
+                        format!("/scenarios/0/{key}"),
+                    ),
+                ] {
+                    for document in [
+                        serde_json::from_str::<Value>(&serde_json::to_string(&document).unwrap())
+                            .unwrap(),
+                        serde_yaml::from_str::<Value>(&serde_yaml::to_string(&document).unwrap())
+                            .unwrap(),
+                    ] {
+                        let issues = diagnostics(kind, &document).unwrap();
+                        assert_eq!(issues.is_empty(), valid, "{document}: {issues:?}");
+                        assert!(
+                            issues.iter().all(|issue| issue.pointer == pointer),
+                            "{issues:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn screenshot_selector_schema_feedback_handles_yaml_and_json() {
         for (selector, valid) in [
             (json!(null), true),

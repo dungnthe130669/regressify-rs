@@ -83,9 +83,9 @@ Verified: 2026-10-13
 - [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) reserves full height in the right page; only explicit zoom controls change scale, not native scrolling.
   Optional `imageSizes` provides pre-load sizing; `dimensions` holds deltas. Legacy reports discover sizes on load.
   Delayed-load tests emulate reduced motion to exclude the page entrance animation.
-- Side-by-side crosshairs share image-pixel coordinates, excluding unavailable or
-  out-of-bounds pixels. Their inverse-scaled overlays keep strokes one screen pixel
-  wide. The `side by side crosshairs|scrolling over images` browser checks cover
+- Side-by-side crosshairs map image pixels through optional comparer `alignment`,
+  excluding band holes and unavailable/out-of-bounds pixels; strokes stay one screen pixel wide.
+  The `side by side crosshairs|scrolling over images` browser checks cover
   alignment and cleanup on desktop/mobile. Image nodes have `pointer-events: none`;
   hover their wrappers to wait for stable layout before reading image bounds.
 - [Info dialog](../../frontend/src/components/CaptureInfo.tsx) uses Floating UI, native selection/copy, dialog semantics, and a non-banner heading.

@@ -206,8 +206,9 @@ viewport identities, viewport size, and `captureRole`. Useful fields:
   ready script; `Condition=Before` or `Condition=Ready` with `TimeoutMs` is the
   `onBeforeScript` or `onReadyScript` browser hook. `ActionType=Restore` loads
   saved state, or the cookie file when an `Artifact` field is present. Stage
-  `ScreenshotSettling` with `Condition=LazyLoading` is the 20-second lazy-load
-  scroll. Stage `CaptureArtifacts` with `Capture` is a screenshot target; a
+  `ScreenshotSettling` with `Condition=LazyLoading` is the initial lazy-load
+  scroll; `TimeoutMs` records its resolved `lazyLoadTimeout` (default 20000 ms).
+  Stage `CaptureArtifacts` with `Capture` is a screenshot target; a
   failed screenshot selector also records `Waiting for readiness` with its
   `Target` and `Condition`.
 - A `scenarioTimeout` expiry records `Execution decision` with
@@ -281,7 +282,7 @@ browser developer tools, with authorization.
   `process.env`, or Playwright callbacks. Return a promise for asynchronous
   work and check `elementTimeout`. `jsOnReadyPath` and `onReadyScript` both run
   after readiness and before actions, so they can dismiss a blocking banner.
-- Invalid timeout: `elementTimeout`, `actionabilityTimeout`, and
+- Invalid timeout: `elementTimeout`, `actionabilityTimeout`, `lazyLoadTimeout`, and
   `scenarioTimeout` must be positive whole milliseconds. `settleTimeout: 0`
   disables settling; omitted/zero `readyTimeout` inherits element timeout;
   omitted/zero navigation timeout uses 60000 ms.
@@ -294,6 +295,13 @@ browser developer tools, with authorization.
   personalized, animated, or lazily loaded content with `hideSelectors`,
   `removeSelectors`, explicit waits, `settleTimeout`, or `delay`. Captures
   already freeze animations and hide text carets.
+- Missing lazy images: inspect both captures for placeholders. Initial scrolling
+  waits for visible resources and common lazy-loader markers. Tune
+  `lazyLoadScrollDelay` and `lazyLoadTimeout` at workspace, suite, or scenario
+  level, in that override order. A timeout fails the capture and does not mean
+  the page settled. Use an awaited browser ready hook for custom loaders;
+  increasing `settleTimeout` alone cannot activate an untouched placeholder.
+  Recapture affected references too instead of raising mismatch thresholds.
 - No captures or unexpected capture count: check scenario/viewport filters,
   inherited action filters, named saves, and singular versus plural selectors.
   `selectors: []` is invalid; omitted/null means automatic full-page capture. A

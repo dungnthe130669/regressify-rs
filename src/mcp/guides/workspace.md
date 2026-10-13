@@ -20,7 +20,8 @@ Do not assume every field exists at every scope:
 - Workspace, suite, and scenario: `logLevel`, `basicAuth`, `bypassCsp`,
   `cookiePath`, `cssOverridePath`, `jsOnReadyPath`, `useCssOverride`,
   `hideSelectors`, `removeSelectors`, `misMatchThreshold`,
-  `pixelMatchThreshold`, `postInteractionWait`, and `viewportNames`.
+  `pixelMatchThreshold`, `postInteractionWait`, `lazyLoadScrollDelay`,
+  `lazyLoadTimeout`, and `viewportNames`.
 - Workspace and scenario only: `delay`, `noScrollTop`, and `requiredLogin`.
   The global `--required-login` flag can force the login flag.
 - Workspace and suite only: `asyncCaptureLimit`, `asyncCompareLimit`,
@@ -67,6 +68,10 @@ Inheritance exceptions:
 - `delay`: 1000 milliseconds before each save checkpoint and final capture.
 - `postInteractionWait`: 1000 milliseconds after actions,
   before final captures only.
+- `lazyLoadScrollDelay`: 250 whole milliseconds minimum at each initial
+  lazy-load scroll stop. Zero removes the pause, not visible resource checks.
+- `lazyLoadTimeout`: 20000 positive whole milliseconds for the complete initial
+  lazy-load pass and stable return to the top. Expiry fails the capture.
 - `elementTimeout`: 30000 milliseconds for finding elements and frames,
   selector and URL waits, `goto`, `select`, `switchTab`, and hooks.
 - `actionabilityTimeout`: 5000 milliseconds for visibility, stability,
@@ -81,7 +86,7 @@ Inheritance exceptions:
   false. Headed debug mode is disabled in CI without a display.
 
 Thresholds and timing values must be finite; do not use negative delays or zero
-concurrency. `elementTimeout`, `actionabilityTimeout`, and `scenarioTimeout` must
+concurrency. `elementTimeout`, `actionabilityTimeout`, `lazyLoadTimeout`, and `scenarioTimeout` must
 be positive whole milliseconds; zero is invalid. `elementTimeout` also bounds
 injected browser hooks. `settleTimeout: 0` disables settling, not all waits or
 animation freezing. A scenario's initial navigation timeout lives under
@@ -92,6 +97,36 @@ and may never arrive on continuously polling pages. The overall scenario
 timeout still applies. Omitted/zero scenario `readyTimeout` inherits
 `elementTimeout`. Use the hooks topic for script timing and troubleshooting for
 interpreting timeout failures.
+
+## Slow Lazy-Loaded Content
+
+Initial scrolling runs before actions, moves 80% of a viewport at a time, and
+waits for visible image loading/decoding and common deferred source/loading
+markers, including picture sources and LazySizes backgrounds. It rechecks page
+height after each stop and excludes hidden or clipped slides. It does not
+replay scrolling before saves or final captures. `noScrollTop: true` skips it.
+
+Both lazy-load settings inherit independently from workspace to suite to
+scenario. For a slow page, this complete suite overrides a workspace's defaults:
+
+```yaml
+id: public-pages
+lazyLoadScrollDelay: 300
+lazyLoadTimeout: 40000
+scenarios:
+  - id: utilities
+    url: https://example.com/industries/utilities
+    lazyLoadScrollDelay: 750
+    lazyLoadTimeout: 60000
+```
+
+The configured timeout covers pauses, resources, and the return to the top;
+150 scroll steps also bound endlessly growing pages. `scenarioTimeout` remains
+the outer limit. Custom loaders or CSS backgrounds without observable loading
+state may need an awaited browser ready hook. Increasing best-effort
+`settleTimeout` alone cannot activate an untouched placeholder. Recapture and
+review affected references as well as test images; rerunning comparison cannot
+repair existing PNGs.
 
 ## Files, Replacements, and Credentials
 
