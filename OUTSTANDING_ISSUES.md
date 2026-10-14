@@ -100,13 +100,19 @@ Issues identified during adversarial review that remain after the September 2026
   Geometry and gesture regressions retain pixel anchoring through scrollbar
   transitions and verify stationary controls on desktop/mobile.
 - Follow-up resolved in source (2026-10-14): side-by-side scrollbars now synchronize
-  both axes from any lane, including drag and keyboard movement. Smaller images
-  clamp without scrolling larger peers back, and zoom anchoring remains intact.
+  both axes from any lane, including drag and keyboard movement. Lanes share
+  maximum-width/maximum-height canvas bounds, and zoom anchoring remains intact.
   Desktop/mobile browser regressions cover two/three lanes and unequal sizes.
 - Follow-up resolved in source (2026-10-14): frontend crosshairs cover the entire
   hovered lane, including empty space and small-image padding. They stay visible
   through scrolling, zoom, and fit changes without enlarging image scroll ranges.
   Tests retain diff-band mapping, unavailable-image exclusions, and gesture cleanup.
+- Follow-up resolved in source (2026-10-14): desktop guides also remain visible
+  in shared-canvas space beyond smaller images. Both viewers allow synchronized
+  horizontal dragging of fitted canvases, bounded by the widest image reaching
+  a lane edge, without changing scale or creating horizontal overflow. GUI and
+  browser regressions cover both edges, resize, fit reset, and pointer anchoring;
+  native Comparison includes fitted dragging in both themes and window sizes.
 
 ## Snapshot Overview Mobile Layout (2026-10-13)
 

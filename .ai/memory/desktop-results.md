@@ -1,6 +1,6 @@
 # Results Review
 
-Verified: 2026-10-13
+Verified: 2026-10-14
 
 - [Overview](../../src/desktop/ui/overview.rs) uses uniform DataTable rows with
   full summaries/errors retained in explicit selectable Details. `overview_table_`
@@ -102,6 +102,11 @@ Verified: 2026-10-13
 - [Comparer](../../src/compare/image_compare.rs) exports its exact vertical-gap
   alignment through saved reports and snapshots. Native/web crosshairs map source
   pixels through aligned diff rows; a missing band has no target pixel. Native
-  canvas bounds include padding, so [pointer geometry](../../src/desktop/ui/reports.rs)
-  keeps actual image size separately. `crosshairs_` includes a real generated-band
+  [pointer geometry](../../src/desktop/ui/reports.rs) uses maximum-width/height
+  canvas coordinates, including blank space beyond smaller images, without
+  clamping guides to individual image sizes. `crosshairs_` includes a generated-band
   GPUI pointer test; web `aligned diff bands` covers both directions and zoom.
+- Underfilled side-by-side canvases drag together within the unused lane width.
+  Normalized placement preserves bounds after resize; weak pan notifications
+  avoid retaining Results through pointer layers. `image_previews_` covers fit,
+  manual zoom, both edges, vertical scroll, recentering, and post-drag zoom anchors.

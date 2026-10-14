@@ -157,6 +157,74 @@ public static class RegressifySmokeZoomKeys {
         } finally { [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
         Assert-ComparisonPixels "$Name-zoom-pan" $Pane
     }
+    function Test-FittedComparisonPan {
+        foreach ($image in @(@('reference', 200, 1600), @('test', 300, 800), @('diff', 250, 1200))) {
+            Write-ComparisonImage (Join-Path $output ('bitmaps_test/smoke-run/fitted-' + $image[0] + '.png')) $image[1] $image[2]
+        }
+        Write-JsonFixture $reportPath @{
+            id = 'smoke'
+            tests = @(@{ status = 'fail'; pair = @{
+                label = 'Fitted comparison'; fileName = 'fitted.png'
+                reference = '../bitmaps_test/smoke-run/fitted-reference.png'
+                test = '../bitmaps_test/smoke-run/fitted-test.png'
+                diffImage = '../bitmaps_test/smoke-run/fitted-diff.png'
+            } })
+        }
+        Invoke-Control 'smoke.tests.json'
+        Invoke-Control 'Results'
+        Invoke-Control 'Refresh reports'
+        Wait-Control 'Mismatch Fitted comparison' | Out-Null
+        Wait-Control 'Test 300 x 800' | Out-Null
+        Invoke-Control 'Side by side'
+        foreach ($dimensions in @(@(1000, 640), @(1600, 1000))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            foreach ($theme in @('Light', 'Dark')) {
+                Select-Theme $theme
+                Invoke-Control 'Actual size (100%)'
+                Invoke-Control 'Fit area'
+                foreach ($pane in @('Reference', 'Test', 'Diff')) {
+                    foreach ($direction in @(-1, 1)) {
+                        $preview = (Wait-Control "$pane image preview").Current.BoundingRectangle
+                        $before = (Wait-Control "$pane image canvas").Current.BoundingRectangle
+                        if ($before.Width -ge $preview.Width) { throw 'The fitted comparison fixture must leave horizontal drag space.' }
+                        $horizontal = [int]($before.Left + $before.Width / 2)
+                        $vertical = [int]($before.Top + $before.Height / 2)
+                        $delta = if ($direction -lt 0) { $preview.Left - $before.Left - 12 } else { $preview.Right - $before.Right + 12 }
+                        Focus-Fixture
+                        if (-not [RegressifySmokePointer]::SetPhysicalCursorPos($horizontal, $vertical)) { throw 'Cannot position the fitted comparison pointer.' }
+                        [RegressifySmokeNative]::DwmFlush() | Out-Null
+                        [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+                        try {
+                            [RegressifySmokeNative]::DwmFlush() | Out-Null
+                            if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($horizontal + $delta), $vertical)) { throw 'Cannot drag the fitted comparison pointer.' }
+                            foreach ($target in @('Reference', 'Test', 'Diff')) {
+                                $canvas = (Wait-Control "$target image canvas").Current.BoundingRectangle
+                                $viewport = (Wait-Control "$target image preview").Current.BoundingRectangle
+                                $distance = if ($direction -lt 0) { $canvas.Left - $viewport.Left } else { $viewport.Right - $canvas.Right }
+                                if ([Math]::Abs($distance) -gt 1) { throw "Fitted $target did not stop at its lane boundary when dragging $pane." }
+                                if ([Math]::Abs($canvas.Width - $before.Width) -gt 1 -or [Math]::Abs($canvas.Height - $before.Height) -gt 1) {
+                                    throw 'Dragging a fitted comparison changed its zoom.'
+                                }
+                            }
+                        } finally {
+                            [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                            [RegressifySmokeNative]::DwmFlush() | Out-Null
+                        }
+                    }
+                }
+                Move-ComparisonPointer 'Reference' 0.9 0.9 | Out-Null
+                Capture-Window ('comparison-fitted-pan-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+                Invoke-Control 'Fit area'
+                foreach ($pane in @('Reference', 'Test', 'Diff')) {
+                    $canvas = (Wait-Control "$pane image canvas").Current.BoundingRectangle
+                    $viewport = (Wait-Control "$pane image preview").Current.BoundingRectangle
+                    if ([Math]::Abs(($canvas.Left + $canvas.Width / 2) - ($viewport.Left + $viewport.Width / 2)) -gt 1) {
+                        throw 'Fit area did not recenter the dragged comparison.'
+                    }
+                }
+            }
+        }
+    }
     function Test-BlendPixels {
         $referenceColor = [System.Drawing.Color]::FromArgb(200, 40, 60)
         $testColor = [System.Drawing.Color]::FromArgb(40, 160, 200)
@@ -330,6 +398,7 @@ public static class RegressifySmokeZoomKeys {
     Wait-Control 'Test 1280 x 1800' | Out-Null
     Test-ReportApproval
     Test-ErrorImageFlows
+    Test-FittedComparisonPan
     Test-BlendPixels
-    Write-Output 'Six-mode Results, fit modes, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, crosshairs, and wipe/overlay pixels passed native checks in light/dark desktop and compact windows.'
+    Write-Output 'Six-mode Results, fit modes, bounded fitted-image dragging, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, crosshairs, and wipe/overlay pixels passed native checks in light/dark desktop and compact windows.'
 }

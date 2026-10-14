@@ -155,6 +155,8 @@ enum ZoomMode {
 struct PreviewView {
     mode: ZoomMode,
     zoom: f32,
+    // A fraction of unused lane width keeps fitted dragging bounded after resize.
+    horizontal_position: Option<f32>,
     padding: Option<gpui_kit::Edges<Pixels>>,
 }
 
@@ -163,6 +165,7 @@ impl Default for PreviewView {
         Self {
             mode: ZoomMode::FitArea,
             zoom: 1.0,
+            horizontal_position: None,
             padding: None,
         }
     }
@@ -188,6 +191,8 @@ struct PreviewPan {
     offset: Point<Pixels>,
     scroll: ScrollHandle,
     horizontal: bool,
+    horizontal_origin: Pixels,
+    horizontal_space: Pixels,
     vertical: bool,
     dragged: bool,
 }
@@ -195,7 +200,6 @@ struct PreviewPan {
 #[derive(Clone, Copy)]
 struct PointerGeometry {
     canvas: (usize, usize),
-    image: (usize, usize),
     gap: Option<VerticalGap>,
 }
 
@@ -223,12 +227,13 @@ impl PointerGuides {
         let row =
             (mouse.y - source.origin.y) / source.size.height * source_geometry.canvas.1 as f32;
         if column < 0.
-            || column >= source_geometry.image.0 as f32
+            || column >= source_geometry.canvas.0 as f32
             || row < 0.
-            || row >= source_geometry.image.1 as f32
+            || row >= source_geometry.canvas.1 as f32
         {
             return None;
         }
+        // Shared canvas coordinates remain inspectable beyond each image's own edges.
         let aligned_row = source_geometry
             .gap
             .map_or(row, |gap| gap.to_aligned_row(row));
@@ -236,10 +241,6 @@ impl PointerGuides {
             Some(gap) => gap.to_image_row(aligned_row)?,
             None => aligned_row,
         };
-        if column >= target_geometry.image.0 as f32 || target_row >= target_geometry.image.1 as f32
-        {
-            return None;
-        }
         Some(point(
             target.origin.x + target.size.width * (column / target_geometry.canvas.0 as f32),
             target.origin.y + target.size.height * (target_row / target_geometry.canvas.1 as f32),
@@ -250,6 +251,7 @@ impl PointerGuides {
 struct PointerLayer {
     index: usize,
     guides: Rc<PointerGuides>,
+    owner: WeakEntity<ResultsPanel>,
 }
 
 impl Render for PointerLayer {
@@ -257,6 +259,7 @@ impl Render for PointerLayer {
         let index = self.index;
         let geometry = self.guides.clone();
         let guides = self.guides.clone();
+        let owner = self.owner.clone();
         canvas(
             move |bounds, _, _| geometry.bounds[index].set(Some(bounds)),
             move |bounds, _, window, _| {
@@ -281,9 +284,22 @@ impl Render for PointerLayer {
                         if let Some(pan) = panning.pan.borrow_mut().as_mut() {
                             pan.dragged = true;
                         }
+                        if pan.horizontal_space > px(0.)
+                            && let Some(owner) = owner.upgrade()
+                        {
+                            let position = ((pan.horizontal_origin + movement.x)
+                                / pan.horizontal_space)
+                                .clamp(0., 1.);
+                            owner.update(cx, |panel, cx| {
+                                panel.preview_views[3].horizontal_position = Some(position);
+                                cx.notify();
+                            });
+                        }
                         let maximum = pan.scroll.max_offset();
                         pan.scroll.set_offset(point(
-                            if pan.horizontal {
+                            if pan.horizontal_space > px(0.) {
+                                px(0.)
+                            } else if pan.horizontal {
                                 (pan.offset.x + movement.x).clamp(-maximum.x, px(0.))
                             } else {
                                 pan.offset.x
@@ -474,10 +490,11 @@ impl ResultsPanel {
 
     fn set_zoom_mode(&mut self, mode: ZoomMode, cx: &mut Context<Self>) {
         let view = &mut self.preview_views[self.image_mode];
-        if view.mode == mode {
+        if view.mode == mode && view.horizontal_position.is_none() {
             return;
         }
         view.mode = mode;
+        view.horizontal_position = None;
         view.padding = None;
         self.image_scroll().set_offset(point(px(0.), px(0.)));
         self.pointer_guides.pan.borrow_mut().take();
@@ -732,10 +749,12 @@ impl ResultsPanel {
                 .default_value(50.)
         });
         let blend_subscription = cx.observe(&blend, |_, _, cx| cx.notify());
+        let pointer_owner = cx.entity().downgrade();
         let pointer_layers = std::array::from_fn(|index| {
             cx.new(|_| PointerLayer {
                 index,
                 guides: pointer_guides.clone(),
+                owner: pointer_owner.clone(),
             })
         });
         let capture_owner = cx.entity().downgrade();
@@ -1002,6 +1021,7 @@ impl ResultsPanel {
         self.previews.clear();
         for view in &mut self.preview_views {
             view.padding = None;
+            view.horizontal_position = None;
         }
         self.pointer_guides.pan.borrow_mut().take();
         self.pointer_guides.active.set(None);
@@ -1631,6 +1651,7 @@ impl ResultsPanel {
         self.preview_views[self.image_mode] = PreviewView {
             mode: ZoomMode::Manual,
             zoom,
+            horizontal_position: view.horizontal_position,
             padding: None,
         };
         self.pointer_guides.pan.borrow_mut().take();
@@ -1671,16 +1692,15 @@ impl ResultsPanel {
         let next_size = size(px(width as f32 * zoom), px(height as f32 * zoom));
         let scroll = self.image_scroll().clone();
         let viewport = scroll.bounds().size;
-        let padding = view
-            .padding
-            .filter(|_| view.mode == ZoomMode::Manual)
-            .map(|padding| point(padding.left, padding.top))
-            .unwrap_or_else(|| {
-                point(
-                    (viewport.width - bounds.size.width).max(px(0.)) / 2.,
-                    px(0.),
-                )
-            });
+        let padding = view.padding.filter(|_| view.mode == ZoomMode::Manual);
+        let horizontal_space = (viewport.width - bounds.size.width).max(px(0.));
+        let padding = point(
+            view.horizontal_position
+                .map(|position| horizontal_space * position)
+                .or_else(|| padding.map(|padding| padding.left))
+                .unwrap_or(horizontal_space / 2.),
+            padding.map_or(px(0.), |padding| padding.top),
+        );
         let origin = bounds.origin - scroll.offset() - padding;
         let anchored = event.position
             - origin
@@ -1691,6 +1711,7 @@ impl ResultsPanel {
         self.preview_views[self.image_mode] = PreviewView {
             mode: ZoomMode::Manual,
             zoom,
+            horizontal_position: None,
             padding: Some(gpui_kit::Edges {
                 left: anchored.x.max(px(0.)),
                 top: anchored.y.max(px(0.)),
@@ -1733,6 +1754,8 @@ impl ResultsPanel {
         let content = match &preview.result {
             Ok(image) => {
                 let view = self.preview_views[self.image_mode];
+                let horizontal_position = view.horizontal_position.unwrap_or(0.5);
+                let side_by_side = self.image_mode == 3;
                 let (canvas_width, canvas_height) = self.preview_canvas_size(index);
                 let gap = self
                     .pointer_guides
@@ -1750,7 +1773,6 @@ impl ResultsPanel {
                 self.pointer_guides.geometry[index].set(image.path.is_some().then_some(
                     PointerGeometry {
                         canvas: (canvas_width, canvas_height),
-                        image: (image.width, image.height),
                         gap,
                     },
                 ));
@@ -1843,12 +1865,12 @@ impl ResultsPanel {
                             .is_some_and(|pan| pan.horizontal || pan.vertical)
                         {
                             CursorStyle::ClosedHand
-                        } else if view.mode != ZoomMode::FitArea
-                            && self.pointer_guides.bounds[index]
+                        } else if self.pointer_guides.bounds[index]
                                 .get()
                                 .is_some_and(|bounds| {
                                     bounds.size.width > scroll.bounds().size.width
                                         || bounds.size.height > scroll.bounds().size.height
+                                        || (side_by_side && bounds.size.width < scroll.bounds().size.width)
                                 })
                         {
                             CursorStyle::OpenHand
@@ -1867,13 +1889,28 @@ impl ResultsPanel {
                                 return;
                             };
                             let viewport = scroll.bounds().size;
-                            let horizontal = bounds.size.width > viewport.width;
+                            let horizontal_space = if side_by_side {
+                                (viewport.width - bounds.size.width).max(px(0.))
+                            } else {
+                                px(0.)
+                            };
+                            let horizontal_origin = match (
+                                view.horizontal_position,
+                                view.padding.filter(|_| view.mode == ZoomMode::Manual),
+                            ) {
+                                (Some(position), _) => horizontal_space * position,
+                                (None, Some(padding)) => padding.left + scroll.offset().x,
+                                _ => horizontal_space / 2.,
+                            };
+                            let horizontal = bounds.size.width > viewport.width || horizontal_space > px(0.);
                             let vertical = bounds.size.height > viewport.height;
                             *guides.pan.borrow_mut() = Some(PreviewPan {
                                 position: event.position,
                                 offset: scroll.offset(),
                                 scroll: scroll.clone(),
                                 horizontal,
+                                horizontal_origin,
+                                horizontal_space,
                                 vertical,
                                 dragged: false,
                             });
@@ -1952,7 +1989,7 @@ impl ResultsPanel {
                                     bounds.origin
                                         + point(
                                             (bounds.size.width - px(canvas_width as f32 * scale))
-                                                / 2.,
+                                                * horizontal_position,
                                             px(0.),
                                         ),
                                     bounds.size.map(gpui_kit::AvailableSpace::Definite),
@@ -1966,31 +2003,42 @@ impl ResultsPanel {
                         .size_full(),
                     )
                 } else if view.mode == ZoomMode::FitWidth {
-                    div().w_full().flex().items_start().justify_center().child(
-                        display
-                            .w_full()
-                            .max_w(px(canvas_width as f32))
-                            .aspect_ratio(canvas_width as f32 / canvas_height as f32)
-                            .flex_shrink_0(),
-                    )
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_start()
+                        .child(div().flex_basis(px(0.)).flex_grow(horizontal_position))
+                        .child(
+                            display
+                                .w_full()
+                                .max_w(px(canvas_width as f32))
+                                .aspect_ratio(canvas_width as f32 / canvas_height as f32)
+                                .flex_shrink_0(),
+                        )
+                        .child(div().flex_basis(px(0.)).flex_grow(1. - horizontal_position))
                 } else {
                     let width = px(canvas_width as f32 * view.zoom);
                     let height = px(canvas_height as f32 * view.zoom);
                     let display = display.w(width).h(height).flex_shrink_0();
-                    if let Some(padding) = view.padding {
+                    if let Some(padding) =
+                        view.padding.filter(|_| view.horizontal_position.is_none())
+                    {
                         div()
                             .relative()
                             .w(width + padding.left + padding.right)
                             .h(height + padding.top + padding.bottom)
                             .child(display.absolute().left(padding.left).top(padding.top))
                     } else {
+                        let top = view.padding.map_or(px(0.), |padding| padding.top);
+                        let bottom = view.padding.map_or(px(0.), |padding| padding.bottom);
                         div()
                             .w(width)
                             .min_w_full()
-                            .h(height)
+                            .h(height + top + bottom)
                             .flex()
-                            .justify_center()
-                            .child(display)
+                            .child(div().flex_basis(px(0.)).flex_grow(horizontal_position))
+                            .child(display.mt(top))
+                            .child(div().flex_basis(px(0.)).flex_grow(1. - horizontal_position))
                     }
                 }
                 .id(("image-surface", index))
@@ -3128,7 +3176,6 @@ mod pointer_tests {
         for geometry in &guides.geometry[..2] {
             geometry.set(Some(PointerGeometry {
                 canvas: (1000, 2000),
-                image: (1000, 2000),
                 gap: None,
             }));
         }
@@ -3159,7 +3206,7 @@ mod pointer_tests {
     }
 
     #[test]
-    fn crosshairs_map_diff_bands_and_exclude_padding_in_every_pane() {
+    fn crosshairs_map_diff_bands_across_shared_canvas_in_every_pane() {
         let gap = VerticalGap {
             start: 100,
             height: 48,
@@ -3174,7 +3221,6 @@ mod pointer_tests {
                     )));
                     guides.geometry[index].set(Some(PointerGeometry {
                         canvas: (320, 448),
-                        image: (320, if index == shorter { 400 } else { 448 }),
                         gap: (index == shorter).then_some(gap),
                     }));
                 }
@@ -3217,7 +3263,13 @@ mod pointer_tests {
                 guides.active.set(Some(shorter));
                 let padding = guides.bounds[shorter].get().unwrap().origin
                     + point(px(100. * scale), px(420. * scale));
-                assert!(guides.position(2, padding).is_none());
+                let expected = guides.bounds[2].get().unwrap().origin
+                    + point(px(100. * scale), px(468. * scale));
+                let actual = guides
+                    .position(2, padding)
+                    .expect("Blank shared canvas must retain its aligned guide");
+                assert!((actual.x - expected.x).abs() < px(0.01));
+                assert!((actual.y - expected.y).abs() < px(0.01));
                 guides.geometry[2].set(None);
                 assert!(
                     guides
@@ -4174,6 +4226,206 @@ mod pointer_tests {
             assert!(!results.read(cx).image_loading);
             assert!(results.read(cx).previews.is_empty());
         });
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn image_previews_drag_fitted_comparison_canvases_within_lanes(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use gpui_kit::{AppContext, InputEvent as _};
+        use std::time::Duration;
+
+        for has_diff in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let run = directory
+                .path()
+                .join(".regressify/ui-test/bitmaps_test/run-1");
+            std::fs::create_dir_all(&run).unwrap();
+            for (name, width, height) in [
+                ("reference", 60, 1000),
+                ("test", 90, 500),
+                ("diff", 75, 800),
+            ] {
+                lodepng::encode32_file(
+                    run.join(format!("{name}.png")),
+                    &[30_u8, 150, 180, 255].repeat(width * height),
+                    width,
+                    height,
+                )
+                .unwrap();
+            }
+            std::fs::write(
+                run.join("report.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "ui-test", "tests": [{"status": "fail", "pair": {
+                        "label": "Shared canvas",
+                        "reference": "../bitmaps_test/run-1/reference.png",
+                        "test": "../bitmaps_test/run-1/test.png",
+                        "diffImage": has_diff.then_some("../bitmaps_test/run-1/diff.png")
+                    }}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+            let count = if has_diff { 3 } else { 2 };
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.within("workbench-tabs").click(2_usize, cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+                window.try_find(("image-details", count - 1)).is_some()
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let results = view.read(cx).results.clone();
+                let guides = results.read(cx).pointer_guides.clone();
+                for source in 0..count {
+                    assert_eq!(results.read(cx).preview_canvas_size(source), (90, 1000));
+                    let bounds = guides.bounds[source].get().unwrap();
+                    let mouse = bounds.origin
+                        + point(bounds.size.width * (80. / 90.), bounds.size.height * 0.95);
+                    window.dispatch_event(
+                        gpui_kit::MouseMoveEvent {
+                            position: mouse,
+                            pressed_button: None,
+                            modifiers: Default::default(),
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(guides.active.get(), Some(source));
+                    for target in 0..count {
+                        let bounds = guides.bounds[target].get().unwrap();
+                        let expected = bounds.origin
+                            + point(bounds.size.width * (80. / 90.), bounds.size.height * 0.95);
+                        let actual = guides
+                            .position(target, window.mouse_position())
+                            .expect("Shared canvas must show guides beyond smaller images");
+                        assert!((actual.x - expected.x).abs() < px(0.1));
+                        assert!((actual.y - expected.y).abs() < px(0.1));
+                    }
+                }
+                for control in ["fit-image", "fit-width", "actual-size", "zoom-in"] {
+                    window.click(control, cx);
+                    window.render_frame(cx);
+                    let zoom = window.find("zoom-value").label().unwrap().to_owned();
+                    let mode = results.read(cx).preview_views[3].mode;
+                    for source in 0..count {
+                        for direction in [-1., 1.] {
+                            let content = window.find(("image-content", source)).bounds();
+                            let viewport = window.find(("image-scroll", source)).bounds();
+                            assert!(content.size.width < viewport.size.width);
+                            let start = point(content.center().x, viewport.top() + px(12.));
+                            window.drag(
+                                start,
+                                start + point(viewport.size.width * direction, px(0.)),
+                                cx,
+                            );
+                            window.render_frame(cx);
+                            assert_eq!(results.read(cx).image_mode, 3);
+                            assert!(results.read(cx).preview_views[3].mode == mode);
+                            assert_eq!(window.find("zoom-value").label(), Some(zoom.as_str()));
+                            assert_eq!(results.read(cx).comparison_scroll.max_offset().x, px(0.));
+                            for target in 0..count {
+                                let content = window.find(("image-content", target)).bounds();
+                                let viewport = window.find(("image-scroll", target)).bounds();
+                                let distance = if direction < 0. {
+                                    content.left() - viewport.left()
+                                } else {
+                                    viewport.right() - content.right()
+                                };
+                                assert!(
+                                    distance.abs() <= px(1.),
+                                    "{control}, source={source}, target={target}, direction={direction}, distance={distance:?}"
+                                );
+                            }
+                            if control != "fit-image" {
+                                window.scroll(
+                                    ("image-scroll", source),
+                                    gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-40.))),
+                                    cx,
+                                );
+                                window.render_frame(cx);
+                                assert!(results.read(cx).comparison_scroll.offset().y < px(0.));
+                            }
+                        }
+                    }
+                }
+                for hidden in [true, false] {
+                    view.update(cx, |editor, cx| {
+                        editor.preferences.navigator_hidden = hidden;
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    for index in 0..count {
+                        let content = window.find(("image-content", index)).bounds();
+                        let viewport = window.find(("image-scroll", index)).bounds();
+                        assert!((content.right() - viewport.right()).abs() <= px(1.));
+                    }
+                }
+                let before = window.find(("image-content", 0_usize)).bounds();
+                let viewport = window.find(("image-scroll", 0_usize)).bounds();
+                let pointer = point(before.center().x, viewport.top() + px(30.));
+                window.dispatch_event(
+                    gpui_kit::ScrollWheelEvent {
+                        position: pointer,
+                        delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-40.))),
+                        modifiers: gpui_kit::Modifiers {
+                            control: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.render_frame(cx);
+                let after = window.find(("image-content", 0_usize)).bounds();
+                let anchor = after.origin
+                    + point(
+                        (pointer.x - before.left()) * (after.size.width / before.size.width),
+                        (pointer.y - before.top()) * (after.size.height / before.size.height),
+                    );
+                assert!((anchor.x - pointer.x).abs() <= px(1.));
+                assert!((anchor.y - pointer.y).abs() <= px(1.));
+                assert_eq!(window.find("zoom-value").label(), Some("100.0%"));
+                window.drag(
+                    pointer,
+                    pointer - point(viewport.size.width, px(0.)),
+                    cx,
+                );
+                window.render_frame(cx);
+                for index in 0..count {
+                    let content = window.find(("image-content", index)).bounds();
+                    let viewport = window.find(("image-scroll", index)).bounds();
+                    assert!((content.left() - viewport.left()).abs() <= px(1.));
+                    assert!((content.top() - after.top()).abs() <= px(1.));
+                }
+                assert_eq!(window.find("zoom-value").label(), Some("100.0%"));
+                window.click("fit-image", cx);
+                window.render_frame(cx);
+                for index in 0..count {
+                    let content = window.find(("image-content", index)).bounds();
+                    let viewport = window.find(("image-scroll", index)).bounds();
+                    assert!((content.center().x - viewport.center().x).abs() <= px(1.));
+                }
+                window.within("image-modes").click(1_usize, cx);
+                window.click("actual-size", cx);
+                window.render_frame(cx);
+                assert_eq!(
+                    window.find(("image-content", 1_usize)).bounds().size,
+                    size(px(90.), px(500.))
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
     }
 
     #[cfg(feature = "gui-tests")]

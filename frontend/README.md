@@ -86,7 +86,8 @@ narrow/wide layouts, and axe accessibility checks. They also verify the shared
 logo/favicon bytes, suite-aware titles, and list preview alignment, missing images,
 conditional diff lanes, and long labels.
 Side-by-side crosshair checks cover two- and three-lane comparisons, bounded
-equal-width lanes, synchronized image pixels, unequal dimensions,
+equal-width lanes, a shared maximum-width/maximum-height canvas, synchronized
+image pixels, unequal dimensions,
 inserted/deleted diff bands, zoom-independent strokes, missing/broken images,
 pointer cleanup, and linked native lane scrolling. Band tests cover every source lane, both
 alignment directions, and absent target pixels inside the gap.
@@ -94,7 +95,11 @@ Lane-wide checks hover below images and inside side padding, verify full-viewpor
 one-pixel strokes, and retain guides during stationary-pointer zoom, scrolling,
 and fit changes. The overlay's positioned wrapper sits outside the native scroll
 pane so guides never add image overflow; image-coordinate projection still uses
-the actual image bounds and saved diff alignment.
+the actual image bounds and saved diff alignment. Images retain their individual
+dimensions and share the canvas's top-left origin instead of centering separately.
+Smaller shared canvases start centered and can be dragged left/right together
+until the widest image reaches a lane edge, without changing zoom or creating
+horizontal overflow. Fit controls restore centered placement.
 Delayed-image checks verify explicit dimensions, unchanged fit zoom, and stable
 comparison geometry in every mode, including failed loads. They disable entrance
 animations so measurements isolate image loading.
@@ -111,8 +116,10 @@ scrollbars and reachable image edges, and keep names/controls stationary. Geomet
 tests disable entrance motion; hover offsets use the pane's padding box, excluding
 its border. Crosshair targets must first be scrolled into the source lane.
 Linked-scroll regressions cover both axes from every lane, two/three lanes,
-unequal native limits, keyboard/drag input, pointer zoom, and fit reset. Mirrored
-scroll events and zoom adjustments must not feed back into the source pane.
+exact 3000x1000 shared bounds for differently sized images, keyboard/drag input,
+pointer zoom, and fit reset. Fitted-drag checks cover both edge limits, every source
+lane, resizing, retained vertical scrolling, and anchoring after horizontal movement.
+Mirrored scroll events and zoom adjustments must not feed back into the source pane.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Footer checks cover short, filtered, and not-found pages, plus long content in

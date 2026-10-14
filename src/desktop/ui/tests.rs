@@ -12314,8 +12314,8 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
     std::fs::create_dir_all(suite.join("html_report")).unwrap();
     std::fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
     for (path, width, height) in [
-        (suite.join("bitmaps_reference/home.png"), 1600, 2200),
-        (run.join("home.png"), 1280, 1800),
+        (suite.join("bitmaps_reference/home.png"), 2000, 1000),
+        (run.join("home.png"), 3000, 500),
     ] {
         lodepng::encode32_file(
             path,
@@ -12364,7 +12364,7 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
         for index in [0_usize, 1] {
             assert_eq!(
                 window.find(("image-content", index)).bounds().size,
-                size(px(1600.), px(2200.))
+                size(px(3000.), px(1000.))
             );
         }
         window.scroll(
@@ -12382,7 +12382,11 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
         );
         window.render_frame(cx);
         assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
-        assert!(offset(window, 1_usize).x < px(-200.) && offset(window, 1_usize).y < px(-400.));
+        let viewport = window.find(("image-scroll", 1_usize)).bounds();
+        assert_eq!(
+            offset(window, 1_usize),
+            gpui_kit::point(px(-210.), -px(430.).min(px(1000.) - viewport.size.height))
+        );
         for index in [0_usize, 1] {
             window.scroll(
                 ("image-scroll", index),

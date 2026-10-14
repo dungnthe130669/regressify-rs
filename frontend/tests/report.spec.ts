@@ -2005,7 +2005,7 @@ for (const [mode, unavailable] of [
     const visibleRoles =
       mode === "side" ? roles : mode === "wipe" || mode === "overlay" ? roles.slice(0, 2) : [mode];
     const size = {
-      width: mode === "side" ? 1008 : mode === "test" ? 200 : 320,
+      width: mode === "test" ? 200 : 320,
       height: mode === "reference" ? 180 : 720,
     };
     const paths = Object.fromEntries(
@@ -2050,7 +2050,7 @@ for (const [mode, unavailable] of [
           elements.every((element) => (element as HTMLImageElement).naturalWidth === 0),
         ),
       ).toBe(true);
-      const reservedSizes = mode === "side" ? roles.map((role) => imageSizes[role]) : [size];
+      const reservedSizes = mode === "side" ? roles.map(() => size) : [size];
       await expect(page.locator(".image-world")).toHaveCount(reservedSizes.length);
       for (const [index, dimensions] of reservedSizes.entries()) {
         await expect(page.locator(".image-world").nth(index)).toHaveCSS(
@@ -2387,6 +2387,31 @@ test("image viewer anchors wheel zoom to the pixel in each side-by-side lane", a
   }
 });
 
+async function mockComparisonImages(
+  page: Page,
+  imageSizes: Record<"reference" | "test" | "diff", { width: number; height: number }>,
+  hasDiff: boolean,
+) {
+  const roles = ["reference", "test", "diff"] as const;
+  const paths = Object.fromEntries(
+    roles.map((role) => [role, `_snapshot/images/shared-canvas-${role}.png?v=${"a".repeat(20)}`]),
+  );
+  await page.route("**/_snapshot/data/suites/workspace-overview.json?*", async (route) => {
+    const response = await route.fetch();
+    const report = await response.json();
+    Object.assign(report.tests[0], paths, { imageSizes, diff: hasDiff ? paths.diff : null });
+    delete report.tests[0].alignment;
+    await route.fulfill({ response, json: report });
+  });
+  await page.route("**/_snapshot/images/shared-canvas-*.png?*", async (route) => {
+    const role = roles.find((role) => route.request().url().includes(`shared-canvas-${role}.png`));
+    if (!role) throw new Error("Unexpected shared canvas fixture image");
+    const image = new PNG(imageSizes[role]);
+    image.data.fill(255);
+    await route.fulfill({ contentType: "image/png", body: PNG.sync.write(image) });
+  });
+}
+
 for (const hasDiff of [false, true]) {
   test(`image viewer keeps ${hasDiff ? "three" : "two"} lanes bounded with native scrollbars`, async ({
     page,
@@ -2456,19 +2481,16 @@ for (const hasDiff of [false, true]) {
     );
   });
 
-  test(`image viewer synchronizes ${hasDiff ? "three" : "two"} unequal lanes without scroll feedback`, async ({
+  test(`image viewer synchronizes ${hasDiff ? "three" : "two"} unequal lanes on the maximum canvas`, async ({
     page,
   }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.route("**/_snapshot/data/suites/**", async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      if (data.id === "workspace-overview") {
-        data.tests[0].reference = data.tests[1].reference;
-        if (!hasDiff) data.tests[0].diff = null;
-      }
-      await route.fulfill({ response, json: data });
-    });
+    const imageSizes = {
+      reference: { width: 2000, height: 1000 },
+      test: { width: 3000, height: 500 },
+      diff: { width: 2500, height: 800 },
+    };
+    await mockComparisonImages(page, imageSizes, hasDiff);
     await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
     const lanes = page.locator(".comparison-lane");
     await expect(lanes).toHaveCount(hasDiff ? 3 : 2);
@@ -2482,6 +2504,24 @@ for (const hasDiff of [false, true]) {
       )
       .toBe(true);
     await page.getByRole("button", { name: "Actual size", exact: true }).click();
+    const expectCanvas = async () => {
+      expect(
+        await lanes.evaluateAll((elements) =>
+          elements.map((element) => ({
+            width: element.scrollWidth,
+            height: element.scrollHeight,
+          })),
+        ),
+      ).toEqual(Array.from({ length: hasDiff ? 3 : 2 }, () => ({ width: 3000, height: 1000 })));
+    };
+    await expectCanvas();
+    for (const [index, dimensions] of Object.values(imageSizes)
+      .slice(0, hasDiff ? 3 : 2)
+      .entries()) {
+      const image = lanes.nth(index).locator("img");
+      await expect(image).toHaveCSS("width", `${dimensions.width}px`);
+      await expect(image).toHaveCSS("height", `${dimensions.height}px`);
+    }
     const limits = await lanes.evaluateAll((elements) =>
       elements.map((element) => {
         element.scrollTo(element.scrollWidth, element.scrollHeight);
@@ -2493,7 +2533,10 @@ for (const hasDiff of [false, true]) {
     const source = lanes.nth(1);
     const sourceLimit = limits[1];
     if (!sourceLimit || !limits[0]) throw new Error("Comparison lanes are unavailable");
-    expect(sourceLimit.left).toBeGreaterThan(limits[0].left);
+    for (const limit of limits) {
+      expect(Math.abs(limit.left - sourceLimit.left)).toBeLessThanOrEqual(1);
+      expect(limit.top).toBe(sourceLimit.top);
+    }
     const expectPosition = async (position: { left: number; top: number }) => {
       await expect
         .poll(() =>
@@ -2514,8 +2557,30 @@ for (const hasDiff of [false, true]) {
           })),
         );
     };
-    await source.evaluate((element) => element.scrollTo(element.scrollWidth, element.scrollHeight));
-    await expectPosition(sourceLimit);
+    for (const [index, lane] of (await lanes.all()).entries()) {
+      await lane.evaluate((element) => element.scrollTo(element.scrollWidth, element.scrollHeight));
+      await expectPosition(limits[index] ?? sourceLimit);
+      const pointer = await lane.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const image = element.querySelector("img")?.getBoundingClientRect();
+        if (!image) throw new Error("Comparison image is unavailable");
+        return {
+          x: Math.floor(bounds.left + element.clientLeft + element.clientWidth - 20),
+          y: Math.floor(bounds.top + element.clientTop + element.clientHeight - 20),
+          right: image.right,
+          bottom: image.bottom,
+        };
+      });
+      expect(pointer.x > pointer.right || pointer.y > pointer.bottom).toBe(true);
+      await page.mouse.move(pointer.x, pointer.y);
+      await expect(page.locator(".comparison-crosshair")).toHaveCount(hasDiff ? 3 : 2);
+      const guide = await lane.locator(".crosshair-horizontal").boundingBox();
+      if (!guide) throw new Error("Blank canvas must retain its crosshair");
+      expect(Math.abs(guide.y + guide.height / 2 - pointer.y)).toBeLessThan(1);
+      await expectCanvas();
+      await lane.evaluate((element) => element.scrollTo(0, 0));
+      await expectPosition({ left: 0, top: 0 });
+    }
     await source.evaluate((element) => element.scrollTo(160, 80));
     await expectPosition({ left: 160, top: 80 });
     await source.focus();
@@ -2562,6 +2627,158 @@ for (const hasDiff of [false, true]) {
     }
     await page.getByRole("button", { name: "Fit to window", exact: true }).click();
     await expectPosition({ left: 0, top: 0 });
+  });
+
+  test(`image viewer drags ${hasDiff ? "three" : "two"} fitted lanes together within their edges`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await mockComparisonImages(
+      page,
+      {
+        reference: { width: 60, height: 1000 },
+        test: { width: 90, height: 500 },
+        diff: { width: 75, height: 800 },
+      },
+      hasDiff,
+    );
+    await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+    const lanes = page.locator(".comparison-lane");
+    await expect(lanes.locator("img")).toHaveCount(hasDiff ? 3 : 2);
+    await expect
+      .poll(() =>
+        lanes
+          .locator("img")
+          .evaluateAll((images) =>
+            images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+          ),
+      )
+      .toBe(true);
+    const placement = () =>
+      lanes.evaluateAll((elements) =>
+        elements.map((element) => {
+          const bounds = element.getBoundingClientRect();
+          const surface = element.querySelector(".image-surface")?.getBoundingClientRect();
+          if (!surface) throw new Error("Comparison canvas is unavailable");
+          return {
+            left: surface.left - bounds.left - element.clientLeft,
+            right: bounds.left + element.clientLeft + element.clientWidth - surface.right,
+            overflow: element.scrollWidth - element.clientWidth,
+          };
+        }),
+      );
+    for (const fit of ["Fit to window", "Fit images", "Actual size", "Zoom in"]) {
+      await page.getByRole("button", { name: fit, exact: true }).click();
+      const zoom = await page.getByLabel("Zoom level").innerText();
+      const initial = await placement();
+      for (const pane of initial) {
+        expect(pane.left + pane.right).toBeGreaterThan(0);
+        if (fit === "Fit to window" || fit === "Fit images")
+          expect(Math.abs(pane.left - pane.right)).toBeLessThan(1);
+        expect(pane.overflow).toBe(0);
+      }
+      for (const [index, lane] of (await lanes.all()).entries()) {
+        for (const direction of [-1, 1]) {
+          const pointer = await lane.evaluate((element) => {
+            const pane = element.getBoundingClientRect();
+            const surface = element.querySelector(".image-surface")?.getBoundingClientRect();
+            if (!surface) throw new Error("Comparison canvas is unavailable");
+            return {
+              x: Math.round(surface.left + surface.width / 2),
+              y: Math.round(pane.top + element.clientTop + 20),
+              distance: element.clientWidth,
+            };
+          });
+          await page.mouse.move(pointer.x, pointer.y);
+          await page.mouse.down();
+          try {
+            await page.mouse.move(pointer.x + direction * pointer.distance, pointer.y, {
+              steps: 4,
+            });
+          } finally {
+            await page.mouse.up();
+          }
+          await expect
+            .poll(async () =>
+              Math.max(
+                ...(await placement()).map((pane) =>
+                  Math.abs(direction < 0 ? pane.left : pane.right),
+                ),
+              ),
+            )
+            .toBeLessThan(1);
+          expect((await placement()).every((pane) => pane.overflow === 0)).toBe(true);
+          await expect(page.getByLabel("Zoom level")).toHaveText(zoom);
+          await expect(lanes).toHaveCount(hasDiff ? 3 : 2);
+          await lane.focus();
+          if (fit !== "Fit to window") {
+            await lane.press("ArrowDown");
+            await expect
+              .poll(() => lanes.nth(index).evaluate((element) => element.scrollTop))
+              .toBeGreaterThan(0);
+          }
+        }
+      }
+    }
+    const viewport = page.viewportSize();
+    if (!viewport) throw new Error("Comparison viewport is unavailable");
+    for (const width of [viewport.width + 80, viewport.width]) {
+      await page.setViewportSize({ ...viewport, width });
+      await expect
+        .poll(async () => Math.max(...(await placement()).map((pane) => Math.abs(pane.right))))
+        .toBeLessThan(1);
+      expect((await placement()).every((pane) => pane.overflow === 0)).toBe(true);
+    }
+    const source = lanes.first();
+    const image = source.locator("img");
+    const before = await image.boundingBox();
+    const pane = await source.boundingBox();
+    if (!before || !pane) throw new Error("Comparison image is unavailable");
+    const pointer = {
+      x: Math.round(before.x + before.width / 2),
+      y: Math.round(pane.y + 30),
+    };
+    const pixel = {
+      x: (pointer.x - before.x) / before.width,
+      y: (pointer.y - before.y) / before.height,
+    };
+    await page.mouse.move(pointer.x, pointer.y);
+    await page.keyboard.down("Control");
+    try {
+      await page.mouse.wheel(0, 100);
+      await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+      await expect
+        .poll(() =>
+          image.evaluate(
+            (element, { pointer, pixel }) => {
+              const bounds = element.getBoundingClientRect();
+              return Math.max(
+                Math.abs(bounds.left + pixel.x * bounds.width - pointer.x),
+                Math.abs(bounds.top + pixel.y * bounds.height - pointer.y),
+              );
+            },
+            { pointer, pixel },
+          ),
+        )
+        .toBeLessThan(2);
+    } finally {
+      await page.keyboard.up("Control");
+    }
+    await page.mouse.down();
+    try {
+      await page.mouse.move(pointer.x - pane.width, pointer.y, { steps: 4 });
+    } finally {
+      await page.mouse.up();
+    }
+    await expect
+      .poll(async () => Math.max(...(await placement()).map((pane) => Math.abs(pane.left))))
+      .toBeLessThan(1);
+    expect((await placement()).every((pane) => pane.overflow === 0)).toBe(true);
+    await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+    await page.getByRole("button", { name: "Fit to window", exact: true }).click();
+    for (const pane of await placement()) {
+      expect(Math.abs(pane.left - pane.right)).toBeLessThan(1);
+    }
   });
 }
 
@@ -2984,15 +3201,15 @@ for (const hasDiff of [false, true]) {
     page,
   }, info) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.route("**/_snapshot/data/suites/**", async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      if (data.id === "workspace-overview") {
-        data.tests[0].reference = data.tests[1].reference;
-        if (!hasDiff) data.tests[0].diff = null;
-      }
-      await route.fulfill({ response, json: data });
-    });
+    await mockComparisonImages(
+      page,
+      {
+        reference: { width: 60, height: 100 },
+        test: { width: 90, height: 50 },
+        diff: { width: 75, height: 80 },
+      },
+      hasDiff,
+    );
     await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
     const lanes = page.locator(".comparison-lane");
     await expect(lanes).toHaveCount(hasDiff ? 3 : 2);
@@ -3059,6 +3276,8 @@ for (const hasDiff of [false, true]) {
     }
     await lanes.first().focus();
     await lanes.first().press("1");
+    for (let step = 0; step < 11; step++) await lanes.first().press("+");
+    await expect(page.getByLabel("Zoom level")).toHaveText("800%");
     await lanes.first().press("ArrowDown");
     await expect
       .poll(() => lanes.first().evaluate((element) => element.scrollTop))
@@ -3207,20 +3426,26 @@ test("comparison images are centered without labels and oversized images stay re
       expect(Math.abs(layout.span - layout.available)).toBeLessThan(1);
       expect(layout.widthDifference).toBeLessThan(1);
       for (const lane of await page.locator(".comparison-lane").all()) {
-        const difference = await lane.evaluate((element) => {
+        const geometry = await lane.evaluate((element) => {
           const bounds = element.getBoundingClientRect();
+          const surface = element.querySelector(".image-surface")?.getBoundingClientRect();
           const image = element.querySelector("img")?.getBoundingClientRect();
-          return image
-            ? Math.abs(
-                image.left +
-                  image.width / 2 -
-                  bounds.left -
-                  element.clientLeft -
-                  element.clientWidth / 2,
-              )
-            : Number.POSITIVE_INFINITY;
+          if (!surface || !image) throw new Error("Comparison canvas is unavailable");
+          return {
+            center: Math.abs(
+              surface.left +
+                surface.width / 2 -
+                bounds.left -
+                element.clientLeft -
+                element.clientWidth / 2,
+            ),
+            imageLeft: image.left - surface.left,
+            imageTop: image.top - surface.top,
+          };
         });
-        expect(difference).toBeLessThan(1);
+        expect(geometry.center).toBeLessThan(1);
+        expect(geometry.imageLeft).toBe(0);
+        expect(geometry.imageTop).toBe(0);
       }
       await screenshot(page, info.project.name, "comparison-centered");
     }

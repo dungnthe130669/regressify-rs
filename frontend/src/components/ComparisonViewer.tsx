@@ -35,6 +35,8 @@ type Fit = "width" | "area" | "manual";
 type View = {
   fit: Fit;
   scale: number;
+  // A fraction of unused lane width keeps fitted dragging bounded after resize.
+  horizontalPosition?: number;
   padding?: { left: number; top: number; right: number; bottom: number }[];
 };
 const fallback: Size = { width: 640, height: 400 };
@@ -168,6 +170,8 @@ export function ComparisonViewer({
     y: number;
     left: number;
     top: number;
+    imageLeft: number;
+    horizontalSpace: number;
     moved: boolean;
     scroll: HTMLElement;
   } | null>(null);
@@ -344,7 +348,7 @@ export function ComparisonViewer({
     for (const pane of canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []) {
       if (pane === source) continue;
       pane.scrollTo({ left, top, behavior: "instant" });
-      // Record clamped offsets so a smaller image cannot scroll its peers back.
+      // Record native clamping so mirrored events cannot scroll their source back.
       scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
     }
   };
@@ -374,7 +378,7 @@ export function ComparisonViewer({
       const selectedBounds = selected.getBoundingClientRect();
       padding = Array.from(
         canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? [],
-        (scroll, index) => {
+        (scroll) => {
           const source = scroll.querySelector<HTMLElement>(".image-surface");
           const stage = scroll.querySelector<HTMLElement>(".comparison-stage");
           if (!source || !stage) return { left: 0, top: 0, right: 0, bottom: 0 };
@@ -387,7 +391,6 @@ export function ComparisonViewer({
           };
           const imageX = (position.x - image.left) / scale;
           const imageY = (position.y - image.top) / scale;
-          const dimensions = panes[index]?.size ?? size;
           const originX = surface.left + scroll.scrollLeft;
           const originY = surface.top + scroll.scrollTop;
           const left = position.x - originX - imageX * next;
@@ -399,17 +402,22 @@ export function ComparisonViewer({
             top: Math.max(0, top),
             right: Math.max(
               0,
-              bounds.right - scroll.clientLeft - originX - left - dimensions.width * next,
+              bounds.right - scroll.clientLeft - originX - left - size.width * next,
             ),
             bottom: Math.max(
               0,
-              bounds.bottom - scroll.clientTop - originY - top - dimensions.height * next,
+              bounds.bottom - scroll.clientTop - originY - top - size.height * next,
             ),
           };
         },
       );
     }
-    setView({ fit: "manual", scale: next, padding });
+    setView({
+      fit: "manual",
+      scale: next,
+      horizontalPosition: point ? undefined : view?.horizontalPosition,
+      padding,
+    });
   };
   const setFit = (next: "width" | "area") => {
     anchors.current = [];
@@ -419,6 +427,7 @@ export function ComparisonViewer({
       scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
     }
   };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Layout inputs change the DOM bounds and native scroll clamping read here.
   useLayoutEffect(() => {
     const pending = view?.fit === "manual" ? anchors.current : [];
     anchors.current = [];
@@ -434,7 +443,7 @@ export function ComparisonViewer({
       scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
     }
     refreshCrosshairLayout();
-  }, [scale, view?.fit]);
+  }, [scale, view?.fit, view?.horizontalPosition, viewport.width, size.width, size.height]);
   const wheelZoom = useEffectEvent((event: WheelEvent) => {
     if ((!event.ctrlKey && !event.metaKey) || !Number.isFinite(event.deltaY) || event.deltaY === 0)
       return;
@@ -629,12 +638,16 @@ export function ComparisonViewer({
             return;
           event.preventDefault();
           scroll.focus({ preventScroll: true });
+          const image = scroll.querySelector(".image-surface")?.getBoundingClientRect();
           pan.current = {
             pointer: event.pointerId,
             x: event.clientX,
             y: event.clientY,
             left: scroll.scrollLeft,
             top: scroll.scrollTop,
+            imageLeft: image ? image.left - bounds.left - scroll.clientLeft : 0,
+            horizontalSpace:
+              mode === "side" && image ? Math.max(0, viewport.width - image.width) : 0,
             moved: false,
             scroll,
           };
@@ -653,7 +666,26 @@ export function ComparisonViewer({
             drag.moved = true;
             setPanning(true);
             setCrosshair(null);
-            drag.scroll.scrollTo({ left: drag.left - deltaX, top: drag.top - deltaY });
+            if (drag.horizontalSpace > 0) {
+              const horizontalPosition = Math.max(
+                0,
+                Math.min(1, (drag.imageLeft + deltaX) / drag.horizontalSpace),
+              );
+              setZoom((current) => {
+                const views = current?.capture === capture ? current.views : {};
+                return {
+                  capture,
+                  views: {
+                    ...views,
+                    [mode]: { fit, scale, ...views[mode], horizontalPosition },
+                  },
+                };
+              });
+            }
+            drag.scroll.scrollTo({
+              left: drag.horizontalSpace > 0 ? 0 : drag.left - deltaX,
+              top: drag.top - deltaY,
+            });
             return;
           }
           if (mode !== "wipe" || event.pointerType === "touch" || event.buttons !== 0) return;
@@ -713,7 +745,17 @@ export function ComparisonViewer({
         }}
       >
         {panes.map((lane, index) => {
-          const padding = view?.padding?.[index];
+          const horizontalPosition = mode === "side" ? view?.horizontalPosition : undefined;
+          const horizontalSpace = Math.max(0, viewport.width - size.width * scale);
+          const anchorPadding = view?.padding?.[index];
+          const padding =
+            anchorPadding && horizontalPosition !== undefined
+              ? {
+                  ...anchorPadding,
+                  left: horizontalSpace * horizontalPosition,
+                  right: horizontalSpace * (1 - horizontalPosition),
+                }
+              : anchorPadding;
           const guide =
             crosshair?.capture === capture && crosshair.scale === scale
               ? crosshair.positions[index]
@@ -739,9 +781,7 @@ export function ComparisonViewer({
                 <div
                   className="comparison-stage"
                   style={{
-                    width: padding
-                      ? lane.size.width * scale + padding.left + padding.right
-                      : undefined,
+                    width: padding ? size.width * scale + padding.left + padding.right : undefined,
                     paddingLeft: padding?.left,
                     paddingTop: padding?.top,
                     paddingRight: padding?.right,
@@ -750,14 +790,21 @@ export function ComparisonViewer({
                 >
                   <div
                     className="image-surface"
-                    style={{ width: lane.size.width * scale, height: lane.size.height * scale }}
+                    style={{
+                      width: size.width * scale,
+                      height: size.height * scale,
+                      marginLeft:
+                        !padding && horizontalPosition !== undefined
+                          ? horizontalSpace * horizontalPosition
+                          : undefined,
+                    }}
                   >
                     <div
                       ref={index === 0 ? world : undefined}
                       className="image-world"
                       style={{
-                        width: lane.size.width,
-                        height: lane.size.height,
+                        width: size.width,
+                        height: size.height,
                         transform: `scale(${scale})`,
                         transformOrigin: "top left",
                       }}

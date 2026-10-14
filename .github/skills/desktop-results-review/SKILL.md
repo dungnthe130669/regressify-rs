@@ -29,8 +29,9 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 1. Capture rows use Kit List/ListItem with application-owned preview navigation and the toolkit scroll handle. Keep selection single-item through `select_capture`, clear pending approval on refresh/change, and leave search keys scoped to its input. Restore only unique keys in the same report; duplicate-key row IDs are catalog-scoped and old click callbacks reject a changed catalog. `flat_collection_capture_` covers reordered and duplicate keys.
 1. Fit-mode zoom readouts use current laid-out image bounds, not the stored manual zoom. Show one decimal place and cover both fit modes, image tabs, capture changes, and preview resizing with the `image_previews_` GUI tests.
 1. Side-by-side FitWidth uses the approved public canvas measurement adapter to align pane widths to device pixels before aspect-ratio layout; fractional widths can amplify height error in tall images. Preserve one-pixel GUI tolerances, no-upscaling, fit-area/manual policies and native pan/zoom/scroll checks.
+1. Side-by-side lanes share maximum image width/height, scale, and top-left origin; never stretch or independently center smaller images. Underfilled canvases drag horizontally together within the unused lane width, without changing fit/zoom or adding scroll overflow. Keep normalized placement bounded after resize, reset it with fit/capture resets, retain vertical scrolling and pointer anchors, and use weak ownership for pan notifications. `image_previews_` and native Comparison cover both edge limits.
 1. Keep six independent image views: Reference/Test/Diff/Side by side/Wipe/Overlay. Wipe and opacity reuse loaded textures and common source dimensions, exclude error placeholders, and fall back to Side by side if a refreshed source disappears. Retain desktop/web zoom presets through 800%, modifier-wheel anchoring, scoped image keys and double-click. Blend controls use stock Slider with capture-phase focus and a guarded keyboard adapter; slider thumbs consume mouse down. `image_previews_` covers all modes and controls; native Comparison checks exact source pixels at both blend endpoints in both themes/sizes.
-1. Crosshairs convert padded canvas bounds to actual image pixels, then use saved comparison `alignment` to map through virtual diff rows. Reject inconsistent gap heights, placeholders, missing images, empty padding, and target rows within a missing band. Clear geometry/alignment on reset and apply asynchronous metadata only with the matching capture generation. Preserve raw-pixel fallback for legacy reports without alignment.
+1. Crosshairs convert shared canvas bounds to image coordinates, including blank space beyond smaller images, then use saved comparison `alignment` to map through virtual diff rows. Reject inconsistent gap heights, placeholders, missing images, and target rows within a missing band; do not clamp guides to individual image dimensions. Clear geometry/alignment on reset and apply asynchronous metadata only with the matching capture generation. Preserve raw-pixel fallback for legacy reports without alignment.
 
 ## Checks
 
@@ -39,6 +40,7 @@ cargo test --features desktop --lib desktop::results::tests
 cargo test --features desktop --lib snapshot::capture_report::tests
 cargo test --features gui-tests --lib comparison_completion_ -- --test-threads=1
 cargo test --features gui-tests --lib crosshairs_ -- --test-threads=1
+cargo test --features gui-tests --lib -- image_previews_ side_by_side_scrolls --test-threads=1
 cargo test --features gui-tests --lib desktop::ui::tests -- --test-threads=1
 ```
 

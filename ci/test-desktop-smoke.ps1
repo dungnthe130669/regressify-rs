@@ -66,7 +66,7 @@ foreach ($sizingCase in @(
     @{ Flow = 'Test-DefaultFlows'; Compact = @('1080x720') },
     @{ Flow = 'Test-SchemaFlows'; Compact = @('1000x720', '1000x720', '1000x720') },
     @{ Flow = 'Test-GitFlows'; Compact = @('1080x720', '1080x720', '1080x720', '') },
-    @{ Flow = 'Test-ComparisonFlows'; Compact = @('1080x720') },
+    @{ Flow = 'Test-ComparisonFlows'; Compact = @('', '1080x720') },
     @{ Flow = 'Test-ErrorImageFlows'; Compact = @('1080x720') },
     @{ Flow = 'Test-ArtifactFlows'; Compact = @('') },
     @{ Flow = 'Test-PublishingFlows'; Compact = @('1080x720') },

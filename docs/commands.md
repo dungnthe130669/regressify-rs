@@ -424,8 +424,11 @@ stay outside image overflow. Each image has a bounded viewport with native
 scrollbars when needed. Unmodified wheel/trackpad and touch scroll the hovered
 lane; left-drag and arrow keys pan the active lane. In side-by-side mode, scrolling
 either axis in any lane automatically scrolls the other lanes to the same offset.
-Each image clamps at its own bounds without pulling larger images back; native
-scrollbars, wheel/touch, drag, and arrow-key movement all stay linked.
+Each lane uses the same canvas: the maximum image width and maximum image height,
+at the current zoom. For example, images sized 2000x1000, 3000x500, and 2500x800
+all use a 3000x1000 canvas at 100%. Images retain their own dimensions and share
+the canvas's top-left origin. Native scrollbars, wheel/touch, drag, and arrow-key
+movement all stay linked, including through blank space beyond smaller images.
 Ctrl/Cmd+wheel zooms around the pointer.
 The pixel under the pointer stays fixed even when the image fits inside the
 viewport. Modifier-wheel gestures over empty viewer space or at the zoom limit
@@ -436,7 +439,11 @@ keys pan (Shift moves farther). Escape cancels a drag. Mode changes retain their
 own zoom; capture changes reset it. Fit modes never upscale small images.
 Side-by-side divides the visible viewer width into two equal lanes, or three when
 a Diff image exists. Lanes never grow with zoom: oversized images scroll inside
-their lanes, while smaller images stay centered. Reference and Test remain separate even
+their lanes, while smaller shared canvases start centered. When every image is
+narrower than its lane, left-drag moves all canvases horizontally together,
+stopping when the widest image touches either lane edge. This does not change
+zoom or add horizontal overflow; fit controls restore centered placement.
+Reference and Test remain separate even
 at small zoom levels; Diff adds a third lane when available. Hovering anywhere in
 a lane with a loaded image, including empty space around it, shows synchronized
 crosshairs at matching image coordinates in the other lanes, whether or not a
