@@ -103,12 +103,14 @@ Issues identified during adversarial review that remain after the September 2026
   both axes from any lane, including drag and keyboard movement. Lanes share
   maximum-width/maximum-height canvas bounds, and zoom anchoring remains intact.
   Desktop/mobile browser regressions cover two/three lanes and unequal sizes.
-- Follow-up resolved in source (2026-10-14): frontend crosshairs cover the entire
-  hovered lane, including empty space and small-image padding. They stay visible
-  through scrolling, zoom, and fit changes without enlarging image scroll ranges.
-  Tests retain diff-band mapping, unavailable-image exclusions, and gesture cleanup.
-- Follow-up resolved in source (2026-10-14): desktop guides also remain visible
-  in shared-canvas space beyond smaller images. Both viewers allow synchronized
+- Follow-up resolved in source (2026-10-14): desktop and frontend crosshairs span
+  the full corresponding visible lanes, including empty space around the shared
+  canvas and small-image padding. Stationary overlays retain image-coordinate
+  mapping without enlarging scroll ranges. Regression checks cover blank-lane
+  hover, full-lane bounds, scrolling, diff bands, and unavailable images. The
+  embedded frontend bundle is rebuilt; existing published reports need snapshot
+  regeneration and redeployment, not recapture.
+- Follow-up resolved in source (2026-10-14): both viewers allow synchronized
   horizontal and vertical dragging of fitted canvases, bounded by the widest or
   tallest image reaching a lane edge, without changing scale or creating overflow. GUI and
   browser regressions cover both edges, resize, fit reset, and pointer anchoring;

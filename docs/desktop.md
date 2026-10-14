@@ -1982,12 +1982,14 @@ lane edge. When every image is shorter than its lane, dragging moves all canvase
 vertically together until the tallest image touches the top or bottom edge.
 Both axes can move together. Dragging preserves zoom and fit mode without adding
 scroll overflow; fit controls restore horizontally centered, top-aligned placement.
-Moving the pointer over the shared canvas, including blank space beyond a
-smaller image, draws horizontal and vertical guides
-at corresponding image pixels in all comparison panes. For an aligned insertion
+Moving the pointer anywhere in a comparison lane, including blank space around
+the shared canvas or beyond a smaller image, draws horizontal and vertical guides
+at corresponding image pixels in all comparison panes. Each guide spans the full
+visible width or height of its lane, stays clipped to that lane, and does not
+enlarge the image's scroll range. For an aligned insertion
 or deletion, guides account for the saved band position and height; points inside
 the band have no counterpart in the shorter image. Unavailable images have no
-guides. Guides disappear when the pointer leaves the canvas, and selecting another
+guides. Guides disappear when the pointer leaves the lane, and selecting another
 capture resets the shared scroll position and
 alignment. Older reports without alignment metadata retain ordinary image-pixel
 coordinates. Rerun Compare for their saved run to add alignment without recapturing.
@@ -2115,8 +2117,8 @@ light/dark windows at 1600x1000 and 1080x720 and restores user preferences.
 Use `./ci/desktop-smoke.ps1 -ComparisonFlows` for native Results acceptance without
 browser capture. It verifies the information popup and URL clipboard contents,
 including distinct URLs and Same URL, image context menus, header-only controls,
-fit/zoom, drag panning, linked scrolling, and crosshair pixels in both themes at
-1600x1000 and 1080x720. Image navigation uses the continuous capture list.
+fit/zoom, drag panning, linked scrolling, and full-lane crosshair pixels in both
+themes at 1000x640, 1600x1000, and 1080x720. Image navigation uses the continuous capture list.
 All smoke modes also check the title-bar version, File workspace-opening items,
 and Help > About. External launch items are checked without opening other apps;
 URL copy tests restore the clipboard afterward.

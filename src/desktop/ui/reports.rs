@@ -223,21 +223,14 @@ impl PointerGuides {
         let target = self.bounds.get(index)?.get()?;
         let source_geometry = self.geometry.get(active)?.get()?;
         let target_geometry = self.geometry.get(index)?.get()?;
-        if source.size.width <= px(0.) || source.size.height <= px(0.) || !source.contains(&mouse) {
+        if source.size.width <= px(0.) || source.size.height <= px(0.) {
             return None;
         }
         let column =
             (mouse.x - source.origin.x) / source.size.width * source_geometry.canvas.0 as f32;
         let row =
             (mouse.y - source.origin.y) / source.size.height * source_geometry.canvas.1 as f32;
-        if column < 0.
-            || column >= source_geometry.canvas.0 as f32
-            || row < 0.
-            || row >= source_geometry.canvas.1 as f32
-        {
-            return None;
-        }
-        // Shared canvas coordinates remain inspectable beyond each image's own edges.
+        // Lane hover includes blank space on every side of the shared image canvas.
         let aligned_row = source_geometry
             .gap
             .map_or(row, |gap| gap.to_aligned_row(row));
@@ -261,11 +254,10 @@ struct PointerLayer {
 impl Render for PointerLayer {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let index = self.index;
-        let geometry = self.guides.clone();
         let guides = self.guides.clone();
         let owner = self.owner.clone();
         canvas(
-            move |bounds, _, _| geometry.bounds[index].set(Some(bounds)),
+            |_, _, _| (),
             move |bounds, _, window, _| {
                 let panning = guides.clone();
                 window.on_mouse_event(
@@ -1872,6 +1864,7 @@ impl ResultsPanel {
                         );
                     }
                 }
+                let geometry = self.pointer_guides.clone();
                 let display = div()
                     .id(("image-content", index))
                     .role(if self.image_mode == 3 {
@@ -1983,31 +1976,16 @@ impl ResultsPanel {
                                     this.blend.update(cx, |state, cx| state.set_value(value, window, cx));
                                 }
                             }
-                            this.pointer_guides.active.set((this.image_mode == 3
-                                && this.pointer_guides.pan.borrow().is_none()).then_some(index));
-                            for layer in &this.pointer_layers {
-                                layer.update(cx, |_, cx| cx.notify());
-                            }
                     }))
-                    .on_hover({
-                        let guides = self.pointer_guides.clone();
-                        let layers = self.pointer_layers.clone();
-                        move |hovered, _, cx| {
-                            let active = guides.active.get().filter(|active| *hovered || *active != index);
-                            if guides.active.replace(active) != active {
-                                for layer in &layers {
-                                    layer.update(cx, |_, cx| cx.notify());
-                                }
-                            }
-                        }
-                    })
                     .child(
-                        div()
+                        canvas(
+                            move |bounds, _, _| geometry.bounds[index].set(Some(bounds)),
+                            |_, _, _, _| {},
+                        )
                             .absolute()
                             .top_0()
                             .left_0()
-                            .size_full()
-                            .child(self.pointer_layers[index].clone()),
+                            .size_full(),
                     );
                 let display = if view.mode == ZoomMode::FitArea {
                     div().size_full().child(
@@ -2116,6 +2094,34 @@ impl ResultsPanel {
                     })
                     .track_scroll(scroll)
                     .bg(cx.theme().muted)
+                    .on_mouse_move(cx.listener(
+                        move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                            this.pointer_guides.active.set(
+                                (this.image_mode == 3
+                                    && event.pressed_button.is_none()
+                                    && this.pointer_guides.pan.borrow().is_none())
+                                .then_some(index),
+                            );
+                            for layer in &this.pointer_layers {
+                                layer.update(cx, |_, cx| cx.notify());
+                            }
+                        },
+                    ))
+                    .on_hover({
+                        let guides = self.pointer_guides.clone();
+                        let layers = self.pointer_layers.clone();
+                        move |hovered, _, cx| {
+                            let active = guides
+                                .active
+                                .get()
+                                .filter(|active| *hovered || *active != index);
+                            if guides.active.replace(active) != active {
+                                for layer in &layers {
+                                    layer.update(cx, |_, cx| cx.notify());
+                                }
+                            }
+                        }
+                    })
                     .capture_any_mouse_down({
                         let guides = self.pointer_guides.clone();
                         move |event, window, _| {
@@ -2178,6 +2184,17 @@ impl ResultsPanel {
                             .test_support()
                             .size_full()
                             .child(viewport),
+                    )
+                    .child(
+                        div()
+                            .id(("image-pointer-layer", index))
+                            .test_support()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .overflow_hidden()
+                            .child(self.pointer_layers[index].clone()),
                     )
                     .scrollbar(scroll, scroll::ScrollbarAxis::Both)
                     .into_any_element()
@@ -3256,9 +3273,42 @@ mod pointer_tests {
             guides.position(1, point(px(150.), px(300.))),
             Some(point(px(725.), px(260.)))
         );
-        assert!(guides.position(1, point(px(-101.), px(300.))).is_none());
+        assert_eq!(
+            guides.position(1, point(px(-101.), px(300.))),
+            Some(point(px(599.5), px(260.)))
+        );
         guides.active.set(None);
         assert!(guides.position(1, point(px(150.), px(300.))).is_none());
+    }
+
+    #[test]
+    fn crosshairs_project_empty_lane_space_without_clamping_to_images() {
+        let guides = PointerGuides::default();
+        for index in 0..2 {
+            guides.geometry[index].set(Some(PointerGeometry {
+                canvas: (200, 300),
+                gap: None,
+            }));
+            guides.bounds[index].set(Some(Bounds::new(
+                point(px(100. + index as f32 * 300.), px(50.)),
+                size(px(100.), px(150.)),
+            )));
+        }
+        for source in 0..2 {
+            guides.active.set(Some(source));
+            let source_bounds = guides.bounds[source].get().unwrap();
+            for offset in [point(px(-30.), px(-20.)), point(px(140.), px(180.))] {
+                let mouse = source_bounds.origin + offset;
+                for target in 0..2 {
+                    let expected = guides.bounds[target].get().unwrap().origin + offset;
+                    let actual = guides
+                        .position(target, mouse)
+                        .expect("Blank lane space must retain its crosshair");
+                    assert!((actual.x - expected.x).abs() < px(0.01));
+                    assert!((actual.y - expected.y).abs() < px(0.01));
+                }
+            }
+        }
     }
 
     #[test]
@@ -4755,6 +4805,10 @@ mod pointer_tests {
                                 Some(row)
                             };
                             let actual = guides.position(target, window.mouse_position());
+                            assert_eq!(
+                                window.find(("image-pointer-layer", target)).bounds(),
+                                window.find(("image-scroll", target)).bounds()
+                            );
                             if let Some(row) = expected_row {
                                 let bounds = guides.bounds[target].get().unwrap();
                                 let expected = bounds.origin
@@ -4875,6 +4929,10 @@ mod pointer_tests {
                 );
                 window.render_frame(cx);
                 assert_eq!(window.mouse_position(), mouse);
+                assert_eq!(
+                    window.find(("image-pointer-layer", index)).bounds(),
+                    window.find(("image-scroll", index)).bounds()
+                );
                 let source = guides.bounds[index].get().unwrap();
                 let target = guides.bounds[1 - index].get().unwrap();
                 assert_position(
@@ -4958,6 +5016,56 @@ mod pointer_tests {
                 assert_eq!(
                     guides.position(1 - index, mouse),
                     Some(mouse - source.origin + target.origin)
+                );
+            }
+            results.update(cx, |panel, cx| {
+                panel.preview_views[3] = super::PreviewView {
+                    mode: super::ZoomMode::Manual,
+                    zoom: 0.1,
+                    horizontal_position: Some(0.5),
+                    vertical_position: Some(0.5),
+                    ..Default::default()
+                };
+                panel.comparison_scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            for index in [0_usize, 1] {
+                let viewport = window.find(("image-scroll", index)).bounds();
+                assert_eq!(
+                    window.find(("image-pointer-layer", index)).bounds(),
+                    viewport
+                );
+                for mouse in [
+                    viewport.origin + point(px(12.), px(12.)),
+                    viewport.bottom_right() - point(px(12.), px(12.)),
+                ] {
+                    let source = window.find(("image-content", index)).bounds();
+                    assert!(!source.contains(&mouse));
+                    window.dispatch_event(
+                        gpui_kit::MouseMoveEvent {
+                            position: mouse,
+                            ..Default::default()
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    let guides = results.read(cx).pointer_guides.clone();
+                    assert_eq!(guides.active.get(), Some(index));
+                    for target in 0..2 {
+                        let bounds = window.find(("image-content", target)).bounds();
+                        let expected = mouse - source.origin + bounds.origin;
+                        let actual = guides
+                            .position(target, mouse)
+                            .expect("Blank lane space must retain its crosshair");
+                        assert!((actual.x - expected.x).abs() < px(0.01));
+                        assert!((actual.y - expected.y).abs() < px(0.01));
+                    }
+                }
+                assert_eq!(
+                    results.read(cx).comparison_scroll.max_offset(),
+                    point(px(0.), px(0.))
                 );
             }
             window.hover("actual-size", cx);

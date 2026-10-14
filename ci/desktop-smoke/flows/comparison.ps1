@@ -81,6 +81,10 @@ public static class RegressifySmokeZoomKeys {
             $preview = Get-ComparisonBounds $_
             [System.Drawing.RectangleF]::new($preview.Left - $native.Left, $preview.Top - $native.Top, $preview.Width, $preview.Height)
         }
+        $lanes = @('Reference', 'Test', 'Diff') | ForEach-Object {
+            $preview = (Wait-Control "$_ image preview").Current.BoundingRectangle
+            [System.Drawing.RectangleF]::new($preview.Left - $native.Left, $preview.Top - $native.Top, $preview.Width, $preview.Height)
+        }
         if ($HideGuides) {
             $header = (Wait-Control 'Results').Current.BoundingRectangle
             [RegressifySmokePointer]::SetPhysicalCursorPos([int]($header.Left + $header.Width / 2), [int]($header.Top + $header.Height / 2)) | Out-Null
@@ -89,10 +93,13 @@ public static class RegressifySmokeZoomKeys {
         Capture-Window $Name
         $bitmap = [System.Drawing.Bitmap]::FromFile((Join-Path $artifacts "$Name.png"))
         try {
-            foreach ($preview in $bounds) {
+            for ($index = 0; $index -lt $bounds.Count; $index++) {
+                $preview = if ($HideGuides) { $bounds[$index] } else { $lanes[$index] }
+                $horizontal = $pointer[0] + $bounds[$index].Left - $preview.Left
+                $vertical = $pointer[1] + $bounds[$index].Top - $preview.Top
                 foreach ($across in @($false, $true)) {
-                    $visible = Test-GuideLine $bitmap $preview $pointer[0] $pointer[1] $across
-                    if ($visible -eq $HideGuides.IsPresent) { throw "Pointer guide visibility is incorrect in '$Name' (horizontal: $across)." }
+                    $visible = Test-GuideLine $bitmap $preview $horizontal $vertical $across
+                    if ($visible -eq $HideGuides.IsPresent) { throw "Pointer guide visibility is incorrect in lane $index of '$Name' (horizontal: $across)." }
                 }
             }
             $matches = 0
