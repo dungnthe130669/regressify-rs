@@ -103,7 +103,7 @@ test("diagnostic and hook guidance is discoverable without workspace uploads", a
   assert.ok(catalog.guides.files.content.includes("AGENTS.md"));
 });
 
-test("consumer site memory guidance reaches instructions, tools, resources, and prompts", async () => {
+test("consumer memory and suite capture guidance reaches instructions, tools, resources, and prompts", async () => {
   const guide = await client.callTool({ name: "get_authoring_guide", arguments: {} });
   const { resources } = await client.listResources();
   const overview = resources.find((resource) => resource.name === "guide-overview");
@@ -120,8 +120,17 @@ test("consumer site memory guidance reaches instructions, tools, resources, and 
       "60 lines",
       "one site and one specific behavior",
       "Split long or broad notes",
+      "Whenever you create or edit a test suite",
+      "must run",
+      "regressify ref --test-suite <suite-name>",
+      "installed together",
+      "PATH",
+      "all intended screenshots",
+      "exit code zero",
+      "updates successful references",
+      "report the blocker",
     ]) {
-      assert.ok(text.includes(instruction), `Missing consumer memory instruction: ${instruction}`);
+      assert.ok(text.includes(instruction), `Missing authoring instruction: ${instruction}`);
     }
   }
 });

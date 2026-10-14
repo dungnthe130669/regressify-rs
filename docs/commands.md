@@ -333,6 +333,17 @@ selections and the documented zero-timeout fallbacks. Guides/schemas are also MC
 require explicit selection of resources or prompts rather than loading them
 automatically.
 
+After every suite creation or edit, the MCP instructions require agents to run
+`regressify ref --test-suite <suite-name>` for each changed suite from the consumer
+workspace using authorized local terminal tools. The CLI and desktop app are
+installed together on each user's `PATH`; no source checkout or build is needed.
+Verification covers all intended screenshots across the suite's configured
+scenarios and viewports using the fresh run's results and PNGs, not just exit code
+zero or old references. Agents fix capture failures and rerun before declaring
+the suite verified. `ref` updates successful references, so target-page and
+baseline-write authorization remain required. Missing permissions or execution
+prerequisites must be reported as incomplete verification, not silently skipped.
+
 Startup instructions, the overview guide/resource, and the authoring prompt carry
 the same [small site-memory policy](#workspace-initialization) as generated agent
 guidance. The agent maintains notes locally with its authorized tools; the Worker

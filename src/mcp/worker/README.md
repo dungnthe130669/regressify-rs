@@ -16,6 +16,14 @@ scripts, and `troubleshooting` for local reports, logs, configuration/capture
 failures, and MCP connection problems.
 Diagnostic lookups never upload workspace contents or private logs.
 
+After creating or editing a suite, agents must run
+`regressify ref --test-suite <suite-name>` using their authorized terminal tools.
+The CLI is installed alongside the desktop app on each user's `PATH`; no source
+checkout or build is needed. Agents verify all intended screenshots in the fresh
+run's results and PNGs, not just the exit code or old references. Because `ref`
+updates successful references, page and baseline-write authorization still apply.
+Blocked verification must be reported as incomplete.
+
 The startup instructions, overview, and authoring prompt tell agents to read and
 maintain the consumer project's `.ai/memory/` using their authorized local tools.
 Each topic note covers one specific behavior or issue on one site and is at most

@@ -236,6 +236,19 @@ pub(super) fn build() -> Result<Value> {
             "recipes for complete common-page patterns. Use topic troubleshooting for failed tests, ",
             "reports, logs, or setup issues, and topic hooks before writing injected browser scripts. ",
             "Use get_schema for exact fields and get_example for synthetic templates. ",
+            "Whenever you create or edit a test suite, you must run ",
+            "regressify ref --test-suite <suite-name> for each changed suite after the final edit, ",
+            "from the consumer workspace using the client's authorized terminal tools. The CLI and ",
+            "desktop app are installed together and added to each user's PATH; invoke regressify ",
+            "directly without a source checkout or local build. Use the suite's CLI selection name, ",
+            "not its display name, and do not narrow verification with --scenario. Verify from the ",
+            "fresh run's results and PNGs that all intended screenshots were captured across the ",
+            "suite's configured scenarios and viewports; exit code zero alone is not proof. ",
+            "Fix capture failures and rerun before declaring the suite verified. ",
+            "ref updates successful references, so respect authorization for target pages and baseline writes. ",
+            "If authorization, the CLI, Chromium, credentials, or the target site is unavailable, ",
+            "report the blocker and state that capture verification is incomplete; ",
+            "do not substitute schema validation. ",
             "Before finishing, record reusable, verified lessons from trial and error, corrections, ",
             "or time-consuming investigation in the consumer project's .ai/memory/: failed approaches, ",
             "why they failed, working fixes, and verification evidence. Create an index and topic notes ",
@@ -645,6 +658,35 @@ mod tests {
                 overview.contains(contract),
                 "Missing memory rule: {contract}"
             );
+        }
+    }
+
+    #[test]
+    fn suite_edits_require_reference_capture_verification() {
+        let catalog = build().unwrap();
+        for (surface, guidance) in [
+            ("instructions", catalog["instructions"].as_str().unwrap()),
+            (
+                "overview",
+                catalog["guides"]["overview"]["content"].as_str().unwrap(),
+            ),
+        ] {
+            for contract in [
+                "Whenever you create or edit a test suite",
+                "must run",
+                "regressify ref --test-suite <suite-name>",
+                "installed together",
+                "PATH",
+                "all intended screenshots",
+                "exit code zero",
+                "updates successful references",
+                "report the blocker",
+            ] {
+                assert!(
+                    guidance.contains(contract),
+                    "Missing suite capture verification guidance in {surface}: {contract}"
+                );
+            }
         }
     }
 

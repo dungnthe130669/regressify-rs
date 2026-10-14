@@ -92,6 +92,12 @@ troubleshooting topic explains local reports/logs and focused diagnostic command
 default Worker is public and read-only: it cannot read local files, run captures,
 accept private logs, or approve references. See [the command guide](docs/commands.md#mcp-authoring-worker).
 
+After creating or editing a suite, agents must run
+`regressify ref --test-suite <suite-name>` with the CLI installed alongside desktop
+on the user's `PATH`, then verify all intended screenshots in the fresh run.
+This updates successful references, so target-page and baseline-write permissions
+still apply; blocked verification must be reported as incomplete.
+
 The MCP guidance and generated `AGENTS.md` direct agents to reuse and record
 site-specific lessons in the consumer project's `.ai/memory/`: one behavior or
 issue on one site per file, at most 60 lines, with a compact linked index. Notes

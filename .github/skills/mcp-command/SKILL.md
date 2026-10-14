@@ -25,7 +25,15 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
    is at most 60 lines and covers one behavior or issue on one site; keep a compact
    linked index, record verified lessons/failed approaches/evidence, and correct
    stale advice. Exclude secrets and raw logs; never upload memory to the Worker.
-   Keep CLI/desktop managed-file behavior current. The troubleshooting topic must
+   Keep CLI/desktop managed-file behavior current. After each consumer suite edit
+   or creation, require `regressify ref --test-suite <suite-name>` for each changed
+   suite using authorized client terminal tools. The CLI and desktop app are
+   installed together on each user's PATH; no source checkout or build is needed.
+   Require all intended screenshots in fresh results/PNGs, not just exit code zero
+   or old references. Preserve target-page and baseline-write authorization;
+   report blocked verification as incomplete. Cover this in startup instructions,
+   the overview, and non-overview prompts.
+   The troubleshooting topic must
    give local evidence paths, focused commands, failure/health interpretation,
    and safe repairs without asking clients to upload logs or private data.
    Verify guide and doc-comment claims against runtime source, not user docs:
@@ -70,6 +78,8 @@ Catalog checks also require direct/referenced property help and standalone
 diagnostic/hook contracts. Script-stub checks do not replace live hook fixtures.
 Check consumer memory guidance through startup instructions, the overview tool
 and resource, and a non-overview prompt, including the file-size/topic limits.
+Check required suite-scoped `ref` verification through those same surfaces,
+including the installed CLI/PATH, intended captures, reference writes, and blockers.
 
 ## Maintain
 

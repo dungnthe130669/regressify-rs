@@ -77,12 +77,25 @@ server's version; do not assume newer fields work in an older installed CLI.
 1. Check parsing, file references, IDs, viewport labels, dependencies, and action
    requirements. JSON Schema alone cannot validate cross-file dependencies,
    filesystem containment, credentials, CSS selectors, or live website behavior.
-1. Run captures only against authorized pages. Inspect reports as well as the
-   process exit code: website/action/visual failures are report results and may
-   have exit code zero; configuration, infrastructure, and artifact errors fail
-   the command. Failed actions stop their scenario, not sibling scenarios.
-   For a failure, load the troubleshooting guide before changing timeouts,
-   selectors, thresholds, state, or baselines.
+1. Whenever you create or edit a test suite, you must run
+  `regressify ref --test-suite <suite-name>` for each changed suite after the
+  final edit, using the client's authorized terminal tools from the consumer
+  workspace. Use the suite's CLI selection name, not its display name, and do
+  not narrow verification with `--scenario`. `ref` updates successful references:
+  run only against authorized pages and with permission to update baselines.
+  If authorization, the CLI, Chromium, credentials, or the target site is
+  unavailable, report the blocker and mark capture verification incomplete;
+  schema validation is not a substitute.
+1. Verify all intended screenshots in the fresh run's results and PNGs across
+  the suite's configured scenarios and viewports, including intermediate `save`
+  captures and intended final/selector captures. Do not rely on old reference
+  files: failed captures can leave them unchanged. Inspect reports as well as
+  the process exit code: website/action/visual failures are report results and
+  may have exit code zero; configuration, infrastructure, and artifact errors
+  fail the command. Failed actions stop their scenario, not sibling scenarios.
+  For a failure, load the troubleshooting guide, fix the capture problem, and
+  rerun the same suite-scoped `ref` command. Before declaring the suite verified,
+  report the command, capture results, and any missing screenshots or blockers.
 1. Approve changed references only after explicit user review and authorization.
 1. Before finishing, update project memory with reusable findings so later work
   does not repeat the same investigation or mistakes.
@@ -128,8 +141,10 @@ not authorize running captures, approving baselines, committing, or publishing.
 
 ## CLI Workflow
 
-Use a published Regressify CLI installed for the local platform. An installed
-CLI does not require this source repository. Captures require managed Chromium;
+The Regressify CLI and desktop app are installed together and added to each user's
+`PATH`. Invoke `regressify` directly from the consumer workspace; no source
+checkout or local build is needed. If the current terminal cannot find it, reopen
+the terminal to pick up the user's updated `PATH`. Captures require managed Chromium;
 `regressify install` prepares its shared per-user cache and may download it.
 Actions, CSS, and all script hooks run directly in Chromium; Node and Playwright
 installations are not required for captures.

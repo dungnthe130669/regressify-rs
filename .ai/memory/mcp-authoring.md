@@ -1,6 +1,6 @@
 # MCP Authoring Export
 
-Verified: 2026-10-13
+Verified: 2026-10-14
 
 - [The CLI exporter](../../src/mcp/mod.rs) embeds its guides and Worker template;
   it does not scan the current workspace or need a source checkout. Output is a
@@ -42,6 +42,13 @@ Verified: 2026-10-13
   verified lessons, failed approaches, fixes, and evidence; split/update notes and
   exclude private data. The server never reads or stores memory. Catalog and
   Worker regressions cover startup, tool/resource, and non-overview prompt delivery.
+- Startup instructions and the overview require agents to run the installed
+  `regressify ref --test-suite <suite-name>` after every consumer suite edit or
+  creation. CLI and desktop are installed together on the user's PATH. Catalog
+  and Worker regressions cover fresh intended screenshots, not exit code zero or
+  old references, plus reference-write authorization and incomplete verification
+  when blocked. [Reference execution](../../src/test/test_suites.rs) preserves
+  old references on capture failure and can exit zero after page failures.
 - Hook examples and a companion suite use classic browser scripts at `.js` target
   paths. [Worker tests](../../src/mcp/worker/tests/worker.test.mjs.template) evaluate
   the exported scripts with DOM stubs; this is not browser coverage or a capture
