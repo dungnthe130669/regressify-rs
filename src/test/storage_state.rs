@@ -4,7 +4,9 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use chromiumoxide::{Browser, Page};
+#[cfg(test)]
+use chromiumoxide::Browser;
+use chromiumoxide::Page;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -78,8 +80,19 @@ pub(super) struct StorageState {
 }
 
 impl StorageState {
+    #[cfg(test)]
     pub async fn install(
         browser: &Browser,
+        page: &Page,
+        needs: Option<&Needs>,
+        initial_url: &str,
+    ) -> Result<Self> {
+        let client = Client::connect(browser).await?;
+        Self::install_with_client(client, page, needs, initial_url).await
+    }
+
+    pub(super) async fn install_with_client(
+        client: Client,
         page: &Page,
         needs: Option<&Needs>,
         initial_url: &str,
@@ -110,11 +123,20 @@ impl StorageState {
                 }
             }
         }
-        Self::install_origins(browser, page, origins).await
+        Self::install_origins_with_client(client, page, origins).await
     }
 
-    async fn install_origins(browser: &Browser, page: &Page, mut origins: Origins) -> Result<Self> {
+    #[cfg(test)]
+    async fn install_origins(browser: &Browser, page: &Page, origins: Origins) -> Result<Self> {
         let client = Client::connect(browser).await?;
+        Self::install_origins_with_client(client, page, origins).await
+    }
+
+    async fn install_origins_with_client(
+        client: Client,
+        page: &Page,
+        mut origins: Origins,
+    ) -> Result<Self> {
         let mut events = client.subscribe();
         let sessions = Arc::new(Mutex::new(BTreeSet::new()));
         let watched_sessions = sessions.clone();
@@ -197,23 +219,37 @@ impl StorageState {
             .map_err(|_| anyhow!("State tracker stopped"))?;
         response.await.map_err(|_| anyhow!("State tracker stopped"))
     }
+    #[cfg(test)]
 
     pub async fn capture(&self, page: &Page) -> Result<Value> {
-        let current: Value = page
-            .evaluate(
-                r#"(() => ({origin: location.origin, items: Object.entries(localStorage)}))()"#,
-            )
+        self.capture_with_target(page, None).await
+    }
+
+    pub async fn capture_with_target(
+        &self,
+        page: &Page,
+        target: Option<&super::runtime::Target>,
+    ) -> Result<Value> {
+        const READ_STORAGE_JS: &str =
+            r#"(() => ({origin: location.origin, items: Object.entries(localStorage)}))()"#;
+        let current: Value = super::runtime::evaluate_main_document(page, READ_STORAGE_JS)
             .await?
             .into_value()?;
+        let frame_current: Option<Value> = match target.filter(|target| target.has_frames()) {
+            Some(target) => Some(target.evaluate(READ_STORAGE_JS).await?.into_value()?),
+            None => None,
+        };
         let mut origins = self.origins().await?;
-        if let (Some(origin), Some(items)) =
-            (current["origin"].as_str(), current["items"].as_array())
-        {
-            let storage = origins.entry(origin.to_string()).or_default();
-            storage.clear();
-            for item in items {
-                if let (Some(name), Some(value)) = (item[0].as_str(), item[1].as_str()) {
-                    storage.insert(name.into(), value.into());
+        for snapshot in std::iter::once(&current).chain(frame_current.iter()) {
+            if let (Some(origin), Some(items)) =
+                (snapshot["origin"].as_str(), snapshot["items"].as_array())
+            {
+                let storage = origins.entry(origin.to_string()).or_default();
+                storage.clear();
+                for item in items {
+                    if let (Some(name), Some(value)) = (item[0].as_str(), item[1].as_str()) {
+                        storage.insert(name.into(), value.into());
+                    }
                 }
             }
         }

@@ -17,8 +17,8 @@ use crate::{
             focus_element, get_frame_selectors, scroll_into_view, wait_for_selector,
         },
         capture::{
-            artifact_write_error, save_screenshot, state_path, validate_screenshot_selector,
-            validate_screenshot_step_name, validate_state_name,
+            artifact_write_error, save_screenshot_with_target, state_path,
+            validate_screenshot_selector, validate_screenshot_step_name, validate_state_name,
         },
     },
     types::{
@@ -382,16 +382,98 @@ async fn exec_test_action_inner(
         log_prefix,
     } = ctx;
     let ac = actionability_config(config);
+    match action {
+        TestAction::SwitchTab(_) => {
+            anyhow::bail!("Tab selection must run through the scenario page manager");
+        }
+        TestAction::Persist(PersistAction { persist, frame, .. }) => {
+            validate_state_name(persist)?;
+            let target = match frame {
+                Some(_) => Some(
+                    runtime
+                        .target(frame, Duration::from_millis(ac.element_timeout_ms))
+                        .await?,
+                ),
+                None => None,
+            };
+            let state = actionability::cdp_with_timeout(
+                action_timeout(&ac),
+                "capturing browser storage state",
+                storage.capture_with_target(main_page, target.as_ref()),
+            )
+            .await?;
+
+            let state_path = state_path(persist)?;
+            if let Some(state_dir) = state_path.parent() {
+                std::fs::create_dir_all(state_dir).map_err(|error| {
+                    artifact_write_error("Failed to create persisted-state directory", error)
+                })?;
+            }
+            return write_persisted_state(&state_path, &state);
+        }
+        TestAction::Save(SaveAction {
+            save,
+            selector,
+            frame,
+            ..
+        }) => {
+            validate_screenshot_step_name(save)?;
+            validate_screenshot_selector(selector.as_deref())?;
+            let target = match frame {
+                Some(_) => Some(
+                    runtime
+                        .target(frame, Duration::from_millis(ac.element_timeout_ms))
+                        .await?,
+                ),
+                None => None,
+            };
+            super::page_stability::prepare_screenshot(main_page, config, log_prefix).await?;
+
+            return save_screenshot_with_target(
+                test_suite,
+                scenario,
+                main_page,
+                target.as_ref(),
+                ScreenshotType::Step(save.to_string()),
+                viewport_label,
+                selector.as_deref(),
+            )
+            .await;
+        }
+        TestAction::Wait(WaitAction {
+            wait: Wait::Number(milliseconds),
+            url: None,
+            frame: None,
+            ..
+        }) => {
+            tokio::time::sleep(std::time::Duration::from_millis(*milliseconds)).await;
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let target = runtime
         .target(action.frame(), Duration::from_millis(ac.element_timeout_ms))
         .await?;
     let page = &target;
     let frame = &None;
-    let navigation = page.navigation_watch().await?;
+    let navigation = if matches!(
+        action,
+        TestAction::Click(_)
+            | TestAction::Check(_)
+            | TestAction::Uncheck(_)
+            | TestAction::Press(_)
+            | TestAction::Input(_)
+            | TestAction::Select(_)
+    ) {
+        Some(page.navigation_watch().await?)
+    } else {
+        None
+    };
 
     match action {
-        TestAction::SwitchTab(_) => {
-            anyhow::bail!("Tab selection must run through the scenario page manager");
+        TestAction::SwitchTab(_) | TestAction::Persist(_) | TestAction::Save(_) => {
+            unreachable!("handled before target resolution")
         }
         TestAction::Check(CheckAction { check, .. }) => {
             let frame_selectors = get_frame_selectors(frame);
@@ -470,36 +552,24 @@ async fn exec_test_action_inner(
             // of silently leaving the element visible.
             ensure_exists(page, hide, frame, &ac).await?;
             let frame_selectors = get_frame_selectors(frame);
-            let css_escaped = escape_css_rule(hide);
-
-            if let Some(selectors) = &frame_selectors {
-                let doc = build_frame_document_js(selectors);
-                let script = format!(
-                    "(() => {{
-                        var d = {doc};
-                        var style = d.createElement('style');
-                        style.type = 'text/css';
-                        style.innerHTML = '{sel} {{ visibility: hidden !important; }}';
-                        d.head.appendChild(style);
-                    }})()",
-                    doc = doc,
-                    sel = css_escaped
-                );
-                let _: serde_json::Value =
-                    evaluate_action(page, script, &ac, "hiding the requested element").await?;
-            } else {
-                let script = format!(
-                    "(() => {{
-                        var style = document.createElement('style');
-                        style.type = 'text/css';
-                        style.innerHTML = '{sel} {{ visibility: hidden !important; }}';
-                        document.head.appendChild(style);
-                    }})()",
-                    sel = css_escaped
-                );
-                let _: serde_json::Value =
-                    evaluate_action(page, script, &ac, "hiding the requested element").await?;
-            }
+            let rule = serde_json::to_string(&format!(
+                "{} {{ visibility: hidden !important; }}",
+                escape_css_rule(hide)
+            ))?;
+            let doc = frame_selectors
+                .as_ref()
+                .map(|selectors| build_frame_document_js(selectors))
+                .unwrap_or_else(|| "document".to_string());
+            let script = format!(
+                "(() => {{
+                    const d = {doc};
+                    const style = d.createElement('style');
+                    style.textContent = {rule};
+                    (d.head || d.documentElement).appendChild(style);
+                }})()"
+            );
+            let _: serde_json::Value =
+                evaluate_action(page, script, &ac, "hiding the requested element").await?;
         }
 
         TestAction::Hover(HoverAction { hover, .. }) => {
@@ -628,24 +698,6 @@ async fn exec_test_action_inner(
             }
         }
 
-        TestAction::Persist(PersistAction { persist, .. }) => {
-            validate_state_name(persist)?;
-            let state = actionability::cdp_with_timeout(
-                action_timeout(&ac),
-                "capturing browser storage state",
-                storage.capture(main_page),
-            )
-            .await?;
-
-            let state_path = state_path(persist)?;
-            if let Some(state_dir) = state_path.parent() {
-                std::fs::create_dir_all(state_dir).map_err(|error| {
-                    artifact_write_error("Failed to create persisted-state directory", error)
-                })?;
-            }
-            write_persisted_state(&state_path, &state)?;
-        }
-
         TestAction::Press(PressAction { press, key, .. }) => {
             ensure_focusable(page, press, frame, &ac).await?;
             focus_element(page, press, frame, &ac).await?;
@@ -659,52 +711,24 @@ async fn exec_test_action_inner(
             // fails clearly instead of silently leaving the element in the capture.
             ensure_exists(page, remove, frame, &ac).await?;
             let frame_selectors = get_frame_selectors(frame);
-            let css_escaped = escape_css_rule(remove);
-
-            if let Some(selectors) = &frame_selectors {
-                let doc = build_frame_document_js(selectors);
-                let script = format!(
-                    "(() => {{
-                        var d = {doc};
-                        var style = d.createElement('style');
-                        style.type = 'text/css';
-                        style.innerHTML = '{sel} {{ display: none !important; }}';
-                        d.head.appendChild(style);
-                    }})()",
-                    doc = doc,
-                    sel = css_escaped
-                );
-                let _: serde_json::Value =
-                    evaluate_action(page, script, &ac, "removing the requested element").await?;
-            } else {
-                let script = format!(
-                    "(() => {{
-                        var style = document.createElement('style');
-                        style.type = 'text/css';
-                        style.innerHTML = '{sel} {{ display: none !important; }}';
-                        document.head.appendChild(style);
-                    }})()",
-                    sel = css_escaped
-                );
-                let _: serde_json::Value =
-                    evaluate_action(page, script, &ac, "removing the requested element").await?;
-            }
-        }
-
-        TestAction::Save(SaveAction { save, selector, .. }) => {
-            validate_screenshot_step_name(save)?;
-            validate_screenshot_selector(selector.as_deref())?;
-            super::page_stability::prepare_screenshot(main_page, config, log_prefix).await?;
-
-            save_screenshot(
-                test_suite,
-                scenario,
-                main_page,
-                ScreenshotType::Step(save.to_string()),
-                viewport_label,
-                selector.as_deref(),
-            )
-            .await?
+            let rule = serde_json::to_string(&format!(
+                "{} {{ display: none !important; }}",
+                escape_css_rule(remove)
+            ))?;
+            let doc = frame_selectors
+                .as_ref()
+                .map(|selectors| build_frame_document_js(selectors))
+                .unwrap_or_else(|| "document".to_string());
+            let script = format!(
+                "(() => {{
+                    const d = {doc};
+                    const style = d.createElement('style');
+                    style.textContent = {rule};
+                    (d.head || d.documentElement).appendChild(style);
+                }})()"
+            );
+            let _: serde_json::Value =
+                evaluate_action(page, script, &ac, "removing the requested element").await?;
         }
 
         TestAction::Scroll(ScrollAction { scroll, .. }) => {
@@ -878,15 +902,7 @@ async fn exec_test_action_inner(
             }
         }
     }
-    if matches!(
-        action,
-        TestAction::Click(_)
-            | TestAction::Check(_)
-            | TestAction::Uncheck(_)
-            | TestAction::Press(_)
-            | TestAction::Input(_)
-            | TestAction::Select(_)
-    ) {
+    if let Some(navigation) = navigation {
         page.finish_navigation(navigation, Duration::from_millis(ac.element_timeout_ms))
             .await?;
     }

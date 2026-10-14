@@ -241,9 +241,11 @@ impl Tabs {
             .get_page(target.clone().into())
             .await
             .map_err(|_| anyhow!("The requested tab is closed or unavailable"))?;
-        let runtime = Runtime::new(browser, &page).await.map_err(|error| {
-            anyhow!("Cannot attach to requested tab; it may have closed: {error}")
-        })?;
+        let runtime = Runtime::with_client(self.client.clone(), &page)
+            .await
+            .map_err(|error| {
+                anyhow!("Cannot attach to requested tab; it may have closed: {error}")
+            })?;
         runtime
             .target(&None, self.timeout)
             .await?

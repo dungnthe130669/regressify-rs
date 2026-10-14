@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-10-13
+Verified: 2026-10-14
 
 - [Script hooks](../../src/test/hooks.rs) run entirely in Chromium: document-start
   `onBeforeScript`, then CSS/`jsOnReadyPath`/`onReadyScript` after readiness and
@@ -10,12 +10,13 @@ Verified: 2026-10-13
   preservation. The Node runner and Playwright attachment were removed.
 - User files need classic expression evaluation, not `Page::evaluate`'s function
   heuristic, which invoked a leading declaration in a multi-statement script.
-  DOM readiness and hooks now use [current-document evaluation](../../src/test/runtime.rs)
-  without a cached context ID: even `Page::evaluate_expression` can reuse a
-  context destroyed by navigation. `hooks_do_not_reuse_destroyed_execution_contexts`
-  in [hook tests](../../src/test/hooks.rs) disables Runtime events during local
-  navigation; it failed before the fix and passes with CSS and both scripts once
-  per document. Existing promises, errors, CSP, and deadline regressions pass.
+  DOM readiness, hooks, [screenshot preparation](../../src/test/page_stability.rs),
+  [selector capture](../../src/test/capture.rs), and [storage capture](../../src/test/storage_state.rs)
+  use [current-document evaluation](../../src/test/runtime.rs) without a cached
+  context ID. `hooks_do_not_reuse_destroyed_execution_contexts` in
+  [hook tests](../../src/test/hooks.rs) disables Runtime events during local
+  navigation and verifies CSS, both scripts, settling, screenshot preparation,
+  and storage capture on each new document.
 - [Action viewport filters](../../src/test/test_scenario.rs) share one predicate
   across the executor, tab-tracker guard, and save inventory. Strict-subset
   [preflight](../../src/test/test_suites.rs) validates full consumer/prerequisite

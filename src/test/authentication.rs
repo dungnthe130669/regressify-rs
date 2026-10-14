@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use anyhow::{Result, anyhow};
-use chromiumoxide::{Browser, Page};
+#[cfg(test)]
+use chromiumoxide::Browser;
+use chromiumoxide::Page;
 use serde_json::{Value, json};
 
 use crate::{config::basic_auth, types::BasicAuth};
@@ -13,6 +15,7 @@ pub(super) struct Authentication {
 }
 
 impl Authentication {
+    #[cfg(test)]
     pub async fn install(
         browser: &Browser,
         page: &Page,
@@ -22,6 +25,17 @@ impl Authentication {
             return Ok(None);
         }
         let client = Client::connect(browser).await?;
+        Self::install_with_client(client, page, entries).await
+    }
+
+    pub(super) async fn install_with_client(
+        client: Client,
+        page: &Page,
+        entries: &[BasicAuth],
+    ) -> Result<Option<Self>> {
+        if entries.is_empty() {
+            return Ok(None);
+        }
         let session = client.attach(page.target_id().as_ref()).await?;
         let authentication = Self::prepare_session(client.clone(), &session, entries)?;
         client
@@ -57,13 +71,17 @@ impl Authentication {
                 }
                 match event.method.as_str() {
                     "Fetch.requestPaused" => {
-                        client
+                        if let Err(error) = client
                             .call(
                                 Some(&session),
                                 "Fetch.continueRequest",
                                 json!({"requestId": event.params["requestId"]}),
                             )
-                            .await?;
+                            .await
+                            && !is_canceled_request_error(&error)
+                        {
+                            return Err(error);
+                        }
                     }
                     "Fetch.authRequired" => {
                         let request_id = event.params["requestId"]
@@ -82,13 +100,17 @@ impl Authentication {
                             challenge,
                             attempted.insert(request_id.to_string()),
                         );
-                        client
+                        if let Err(error) = client
                             .call(
                                 Some(&session),
                                 "Fetch.continueWithAuth",
                                 json!({"requestId": request_id, "authChallengeResponse": response}),
                             )
-                            .await?;
+                            .await
+                            && !is_canceled_request_error(&error)
+                        {
+                            return Err(error);
+                        }
                     }
                     _ => {}
                 }
@@ -111,6 +133,13 @@ impl Drop for Authentication {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+fn is_canceled_request_error(error: &anyhow::Error) -> bool {
+    // A subresource request can be aborted by the page (e.g. AbortController or navigation)
+    // while Fetch.requestPaused is in flight. Chromium rejects the stale requestId with a
+    // protocol error, which must not stop the Fetch listener for subsequent requests.
+    error.to_string().starts_with("CDP command failed:")
 }
 
 fn auth_response(entry: Option<&BasicAuth>, challenge: &Value, first_attempt: bool) -> Value {
@@ -159,5 +188,18 @@ mod tests {
         ] {
             assert_eq!(response, json!({"response": "CancelAuth"}));
         }
+    }
+
+    #[test]
+    fn canceled_request_protocol_errors_do_not_abort_authentication_loop() {
+        assert!(is_canceled_request_error(&anyhow!(
+            "CDP command failed: Invalid InterceptionId."
+        )));
+        assert!(!is_canceled_request_error(&anyhow!(
+            "CDP connection closed during Fetch.continueRequest"
+        )));
+        assert!(!is_canceled_request_error(&anyhow!(
+            "Timed out waiting for CDP Fetch.continueRequest"
+        )));
     }
 }

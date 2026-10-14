@@ -206,11 +206,13 @@ pub fn validate_screenshot_step_name(name: &str) -> Result<()> {
         || name.len() > MAX_STEP_NAME_BYTES
         || name.ends_with(['.', ' '])
         || name.ends_with("_diff")
+        || name.contains("__")
         || name.contains(['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'])
         || name.chars().any(char::is_control)
+        || is_windows_reserved_path_component(name)
     {
         anyhow::bail!(
-            "Invalid save name '{}': use a non-empty portable filename component no longer than {} bytes and do not end it with '_diff'",
+            "Invalid save name '{}': use a non-empty portable filename component no longer than {} bytes, without '__', and do not end it with '_diff'",
             name,
             MAX_STEP_NAME_BYTES
         );
@@ -923,6 +925,27 @@ pub async fn save_screenshot(
     viewport_label: Option<&str>,
     selector: Option<&str>,
 ) -> Result<()> {
+    save_screenshot_with_target(
+        test_suite,
+        scenario,
+        page,
+        None,
+        screenshot_type,
+        viewport_label,
+        selector,
+    )
+    .await
+}
+
+pub(crate) async fn save_screenshot_with_target(
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    page: &Page,
+    target: Option<&super::runtime::Target>,
+    screenshot_type: ScreenshotType,
+    viewport_label: Option<&str>,
+    selector: Option<&str>,
+) -> Result<()> {
     use crate::diagnostics::{record::*, runtime as diagnostics};
     let key = final_screenshot_order_key(
         scenario.id.as_deref().unwrap_or_default(),
@@ -939,6 +962,7 @@ pub async fn save_screenshot(
             test_suite,
             scenario,
             page,
+            target,
             screenshot_type,
             viewport_label,
             selector,
@@ -951,6 +975,7 @@ async fn save_screenshot_inner(
     test_suite: &TestSuite,
     scenario: &TestScenario,
     page: &Page,
+    target: Option<&super::runtime::Target>,
     screenshot_type: ScreenshotType,
     viewport_label: Option<&str>,
     selector: Option<&str>,
@@ -959,7 +984,7 @@ async fn save_screenshot_inner(
     let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)
         .map_err(|error| artifact_write_error("Failed to create screenshot output path", error))?;
 
-    let png_bytes = capture_png(page, &screenshot_type, selector).await?;
+    let png_bytes = capture_png(page, target, &screenshot_type, selector).await?;
     let clean_bytes = strip_png_metadata(&png_bytes)?;
     let (width, height) = crate::helpers::png::read_bounded_png_dimensions_from_reader(
         std::io::Cursor::new(&clean_bytes),
@@ -989,6 +1014,7 @@ async fn save_screenshot_inner(
 
 async fn capture_png(
     page: &Page,
+    target: Option<&super::runtime::Target>,
     screenshot_type: &ScreenshotType,
     selector: Option<&str>,
 ) -> Result<Vec<u8>> {
@@ -998,7 +1024,7 @@ async fn capture_png(
     });
     let viewport = match selector {
         Some(selector) if is_viewport_target(selector) => true,
-        Some(selector) => return capture_selector_png(page, selector).await,
+        Some(selector) => return capture_selector_png(page, target, selector).await,
         None => *screenshot_type == ScreenshotType::Viewport,
     };
 
@@ -1029,10 +1055,15 @@ struct SelectorCapture {
     clip: Viewport,
     restore_x: f64,
     restore_y: f64,
+    frame_restore: Option<(f64, f64)>,
 }
 
-async fn capture_selector_png(page: &Page, selector: &str) -> Result<Vec<u8>> {
-    let capture = prepare_selector_capture(page, selector).await?;
+async fn capture_selector_png(
+    page: &Page,
+    target: Option<&super::runtime::Target>,
+    selector: &str,
+) -> Result<Vec<u8>> {
+    let capture = prepare_selector_capture(page, target, selector).await?;
     let params = ScreenshotParams::builder()
         .format(CaptureScreenshotFormat::Png)
         .clip(capture.clip)
@@ -1047,7 +1078,13 @@ async fn capture_selector_png(page: &Page, selector: &str) -> Result<Vec<u8>> {
             error
         )
     });
-    let restore_result = restore_page_scroll(page, capture.restore_x, capture.restore_y).await;
+    let restore_result = async {
+        if let (Some(target), Some((frame_x, frame_y))) = (target, capture.frame_restore) {
+            restore_target_scroll(target, frame_x, frame_y).await?;
+        }
+        restore_page_scroll(page, capture.restore_x, capture.restore_y).await
+    }
+    .await;
 
     match (screenshot_result, restore_result) {
         (Ok(png), Ok(())) => Ok(png),
@@ -1114,14 +1151,47 @@ fn validate_capture_dimensions(width: f64, height: f64, target: &str) -> Result<
     Ok(())
 }
 
-async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<SelectorCapture> {
+async fn prepare_selector_capture(
+    page: &Page,
+    target: Option<&super::runtime::Target>,
+    selector: &str,
+) -> Result<SelectorCapture> {
     let script = selector_capture_script(selector)?;
-    let result = tokio::time::timeout(Duration::from_secs(5), page.evaluate(script))
+    let frame_target = target.filter(|target| target.has_frames());
+    let main_restore = if frame_target.is_some() {
+        Some(read_page_scroll(page).await?)
+    } else {
+        None
+    };
+    if let Some(target) = frame_target {
+        tokio::time::timeout(Duration::from_secs(5), target.scroll_frames())
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "Timed out scrolling parent frames for selector '{}'",
+                    selector
+                )
+            })??;
+    }
+    let value: serde_json::Value = if let Some(target) = frame_target {
+        let evaluated = tokio::time::timeout(Duration::from_secs(5), target.evaluate(script))
+            .await
+            .map_err(|_| anyhow!("Timed out preparing selector '{}' for screenshot", selector))??;
+        evaluated.into_value().unwrap_or(serde_json::Value::Null)
+    } else {
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            super::runtime::evaluate_main_document(page, script),
+        )
         .await
         .map_err(|_| anyhow!("Timed out preparing selector '{}' for screenshot", selector))??;
-    let value: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+        result.into_value().unwrap_or(serde_json::Value::Null)
+    };
 
     if value.get("ok").and_then(|field| field.as_bool()) != Some(true) {
+        if let Some((restore_x, restore_y)) = main_restore {
+            let _ = restore_page_scroll(page, restore_x, restore_y).await;
+        }
         let error = value
             .get("error")
             .and_then(|field| field.as_str())
@@ -1166,6 +1236,33 @@ async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<Selecto
     let height = coordinate("height")?;
     validate_capture_dimensions(width, height, &format!("selector '{}'", selector))?;
 
+    if let (Some(target), Some((main_restore_x, main_restore_y))) = (frame_target, main_restore) {
+        let (frame_x, frame_y) =
+            tokio::time::timeout(Duration::from_secs(5), target.frame_offset())
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "Timed out calculating frame offset for selector '{}'",
+                        selector
+                    )
+                })??;
+        let (scroll_x, scroll_y) = read_page_scroll(page).await?;
+        let left = coordinate("left")?;
+        let top = coordinate("top")?;
+        return Ok(SelectorCapture {
+            clip: Viewport {
+                x: scroll_x + frame_x + left,
+                y: scroll_y + frame_y + top,
+                width,
+                height,
+                scale: 1.0,
+            },
+            restore_x: main_restore_x,
+            restore_y: main_restore_y,
+            frame_restore: Some((coordinate("restoreX")?, coordinate("restoreY")?)),
+        });
+    }
+
     Ok(SelectorCapture {
         clip: Viewport {
             x: coordinate("x")?,
@@ -1176,7 +1273,31 @@ async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<Selecto
         },
         restore_x: coordinate("restoreX")?,
         restore_y: coordinate("restoreY")?,
+        frame_restore: None,
     })
+}
+
+async fn read_page_scroll(page: &Page) -> Result<(f64, f64)> {
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        super::runtime::evaluate_main_document(page, "[window.scrollX, window.scrollY]"),
+    )
+    .await
+    .map_err(|_| anyhow!("Timed out reading page scroll before selector capture"))??;
+    let offsets: (f64, f64) = result.into_value()?;
+    Ok(offsets)
+}
+
+async fn restore_target_scroll(target: &super::runtime::Target, x: f64, y: f64) -> Result<()> {
+    let script = format!(
+        "(() => {{ window.scrollTo({}, {}); return true; }})()",
+        serde_json::to_string(&x)?,
+        serde_json::to_string(&y)?
+    );
+    tokio::time::timeout(Duration::from_secs(5), target.evaluate(script))
+        .await
+        .map_err(|_| anyhow!("Timed out restoring frame scroll after selector capture"))??;
+    Ok(())
 }
 
 async fn restore_page_scroll(page: &Page, x: f64, y: f64) -> Result<()> {
@@ -1185,9 +1306,12 @@ async fn restore_page_scroll(page: &Page, x: f64, y: f64) -> Result<()> {
         serde_json::to_string(&x)?,
         serde_json::to_string(&y)?
     );
-    tokio::time::timeout(Duration::from_secs(5), page.evaluate(script))
-        .await
-        .map_err(|_| anyhow!("Timed out restoring page scroll after selector capture"))??;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        super::runtime::evaluate_main_document(page, script),
+    )
+    .await
+    .map_err(|_| anyhow!("Timed out restoring page scroll after selector capture"))??;
     Ok(())
 }
 
@@ -1198,7 +1322,9 @@ fn selector_capture_problem(
 ) -> (Option<crate::diagnostics::record::SafeValue>, String) {
     use crate::diagnostics::record::SafeValue;
     match error {
-        "invalid_selector" => (
+        "invalidleft: rect.left,
+                top: rect.top,
+                _selector" => (
             None,
             "invalid CSS selector; screenshot selectors accept standard CSS only".into(),
         ),
@@ -1893,6 +2019,8 @@ mod tests {
         assert!(validate_screenshot_step_name(" progress").is_err());
         assert!(validate_screenshot_step_name("progress ").is_err());
         assert!(validate_screenshot_step_name("progress_diff").is_err());
+        assert!(validate_screenshot_step_name("progress__step").is_err());
+        assert!(validate_screenshot_step_name("CON").is_err());
     }
 
     #[test]

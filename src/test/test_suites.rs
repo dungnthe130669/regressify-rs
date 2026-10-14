@@ -1356,7 +1356,7 @@ fn write_capture_run_manifests(
             for order_key in &order_keys {
                 thresholds.push((order_key.clone(), resolved.mis_match_threshold));
                 pixel_thresholds.push((order_key.clone(), resolved.pixel_match_threshold));
-                if let Some(prefix) = order_key.split("__").next() {
+                if let Some((prefix, _)) = order_key.rsplit_once("__") {
                     thresholds.push((prefix.to_string(), resolved.mis_match_threshold));
                     pixel_thresholds.push((prefix.to_string(), resolved.pixel_match_threshold));
                 }
@@ -1484,6 +1484,15 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         }
     }
 
+    // Only infrastructure failures (browser could not be launched or artifact
+    // write failed) fail the capture phase immediately before comparison.
+    if infra_failures > 0 {
+        anyhow::bail!(
+            "Test run failed: {} scenario(s) had browser or artifact failures",
+            infra_failures
+        );
+    }
+
     // Run visual comparison per suite
     let mut comparison_failures = 0usize;
     for (input, suite) in &parsed_suites {
@@ -1516,8 +1525,6 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         });
     }
 
-    generate_snapshot_reports()?;
-
     if page_failures > 0 {
         eprintln!(
             "{} scenario(s) failed due to page errors (e.g. timeout, not found). \
@@ -1530,24 +1537,13 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             "{} suite comparison(s) could not be generated.",
             comparison_failures.to_string().yellow()
         );
-    }
-
-    // Only infrastructure failures (browser could not be launched) fail the
-    // command. Page errors and visual differences are expected results of a
-    // regression run and must not produce a non-zero exit.
-    if infra_failures > 0 {
-        anyhow::bail!(
-            "Test run failed: {} scenario(s) had browser or artifact failures",
-            infra_failures
-        );
-    }
-
-    if comparison_failures > 0 {
         anyhow::bail!(
             "Test run failed: {} suite comparison report(s) could not be generated",
             comparison_failures
         );
     }
+
+    generate_snapshot_reports()?;
 
     Ok(())
 }

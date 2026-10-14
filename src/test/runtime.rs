@@ -133,6 +133,10 @@ pub(crate) struct NavigationWatch {
 impl Runtime {
     pub async fn new(browser: &Browser, page: &Page) -> Result<Self> {
         let client = Client::connect(browser).await?;
+        Self::with_client(client, page).await
+    }
+
+    pub(super) async fn with_client(client: Client, page: &Page) -> Result<Self> {
         let events = client.subscribe();
         let main_session = client.attach(page.target_id().as_ref()).await?;
         client
@@ -146,6 +150,10 @@ impl Runtime {
             main_session,
             cache: Arc::new(Mutex::new(ContextCache::new(events))),
         })
+    }
+
+    pub(super) fn client(&self) -> Client {
+        self.client.clone()
     }
 
     pub(super) async fn evaluate_main_document_with_timeout(
@@ -462,6 +470,7 @@ impl Target {
                     deadline = tokio::time::Instant::now() + timeout;
                 }
                 "Page.navigatedWithinDocument" => return Ok(()),
+                "Page.frameStoppedLoading" if started => return Ok(()),
                 "Page.frameNavigated" => {
                     if frame == Some(watch.main_frame.as_str()) {
                         return self
@@ -661,16 +670,16 @@ impl Target {
         use crate::types::NavigationWait;
         let timeout = navigation_timeout(options);
         crate::diagnostics::runtime::navigation(url, timeout.as_millis() as u64, async {
-            tokio::time::timeout(timeout, async {
+            let mut network_session = None;
+            let result = tokio::time::timeout(timeout, async {
                 let (session, _) = self.runtime.context(&self.realm).await?;
                 let wait = options.wait_until.unwrap_or_default();
                 let mut events = self.runtime.client.subscribe();
-                if wait == NavigationWait::NetworkIdle {
-                    self.runtime
-                        .client
-                        .call(Some(&session), "Network.enable", json!({}))
-                        .await?;
-                }
+                self.runtime
+                    .client
+                    .call(Some(&session), "Network.enable", json!({}))
+                    .await?;
+                network_session = Some(session.clone());
                 let mut parameters = json!({"url": url, "frameId": self.realm.frame});
                 if let Some(referer) = &options.referer {
                     parameters["referrer"] = json!(referer);
@@ -683,52 +692,46 @@ impl Target {
                 if let Some(error) = response["errorText"].as_str() {
                     bail!("Navigation failed: {}", error);
                 }
+                let mut redirects = 0;
                 match wait {
                     NavigationWait::Commit => {}
                     NavigationWait::DomContentLoaded => self.wait_for_ready(timeout).await?,
                     NavigationWait::Load => self.wait_for_load(timeout).await?,
                     NavigationWait::NetworkIdle => {
-                        let mut pending = std::collections::HashSet::new();
-                        let mut redirects = 0;
-                        loop {
-                            let received =
-                                tokio::time::timeout(Duration::from_millis(500), events.recv())
-                                    .await;
-                            match received {
-                                Err(_) if pending.is_empty() => break,
-                                Err(_) => continue,
-                                Ok(Err(_)) => bail!("Network event stream closed or overflowed"),
-                                Ok(Ok(event))
-                                    if event.session_id.as_deref() == Some(session.as_str()) =>
-                                {
-                                    record_navigation_response(
-                                        &event.method,
-                                        &event.params,
-                                        &self.realm.frame,
-                                        &mut redirects,
-                                    );
-                                    if let Some(request) = event.params["requestId"].as_str() {
-                                        match event.method.as_str() {
-                                            "Network.requestWillBeSent" => {
-                                                pending.insert(request.to_string());
-                                            }
-                                            "Network.loadingFinished" | "Network.loadingFailed" => {
-                                                pending.remove(request);
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
+                        wait_for_network_idle(
+                            &mut events,
+                            &session,
+                            &self.realm.frame,
+                            &mut redirects,
+                        )
+                        .await?;
                         self.wait_for_ready(timeout).await?;
+                    }
+                }
+                if wait != NavigationWait::NetworkIdle {
+                    while let Ok(event) = events.try_recv() {
+                        if event.session_id.as_deref() == Some(session.as_str()) {
+                            record_navigation_response(
+                                &event.method,
+                                &event.params,
+                                &self.realm.frame,
+                                &mut redirects,
+                            );
+                        }
                     }
                 }
                 Ok::<_, anyhow::Error>(())
             })
             .await
-            .map_err(|_| anyhow!("Navigation exceeded {}ms", timeout.as_millis()))?
+            .map_err(|_| anyhow!("Navigation exceeded {}ms", timeout.as_millis()));
+            if let Some(session) = network_session {
+                let _ = self
+                    .runtime
+                    .client
+                    .call(Some(&session), "Network.disable", json!({}))
+                    .await;
+            }
+            result?
         })
         .await
     }
@@ -748,8 +751,12 @@ impl Target {
             cache.drain();
             cache.sessions.get(&self.realm.frame).cloned()
         };
-        let Some(session) = session else {
-            return Ok(None);
+        let session = match session {
+            Some(session) => session,
+            None => match self.runtime.context(&self.realm).await {
+                Ok((session, _)) => session,
+                Err(_) => return Ok(None),
+            },
         };
         let tree = self
             .runtime
@@ -815,9 +822,12 @@ impl Target {
                 const frame = document.querySelector({selector});
                 if (!frame) throw new Error('Frame disappeared');
                 const rectangle = frame.getBoundingClientRect();
-                for (let ancestor = frame; ancestor; ancestor = ancestor.parentElement || ancestor.getRootNode().host) {{
+                for (let ancestor = frame; ancestor; ancestor = ancestor.parentElement || ancestor.getRootNode?.()?.host || null) {{
                     const style = getComputedStyle(ancestor);
-                    if (ancestor.inert || style.visibility === 'hidden' || style.display === 'none' || +style.opacity === 0)
+                    if (ancestor.inert === true || ancestor.hasAttribute?.('inert')
+                        || style.visibility === 'hidden' || style.visibility === 'collapse'
+                        || style.display === 'none' || style.contentVisibility === 'hidden'
+                        || +style.opacity === 0)
                         throw new Error('Frame is hidden or inert: ' + {selector});
                 }}
                 if (!rectangle.width || !rectangle.height) throw new Error('Frame has zero size');
@@ -825,7 +835,14 @@ impl Target {
                 const vertical = rectangle.top + frame.clientTop + {vertical};
                 if ({check}) {{
                     const covering = document.elementFromPoint(horizontal, vertical);
-                    if (covering !== frame && !frame.contains(covering))
+                    let inside = false;
+                    for (let current = covering; current; current = current.parentElement || current.getRootNode?.()?.host || null) {{
+                        if (current === frame || frame.contains?.(current)) {{
+                            inside = true;
+                            break;
+                        }}
+                    }}
+                    if (!inside)
                         throw new Error('Frame ' + {selector} + ' is obscured by ' + (covering ? covering.tagName + '#' + covering.id : 'viewport clipping'));
                 }}
                 return {{horizontal, vertical}};
@@ -846,6 +863,46 @@ impl Target {
 
 fn navigation_timeout(options: &crate::types::GotoParameters) -> Duration {
     Duration::from_millis(options.timeout.filter(|value| *value > 0).unwrap_or(60_000))
+}
+
+async fn wait_for_network_idle(
+    events: &mut tokio::sync::broadcast::Receiver<super::cdp::Event>,
+    session: &str,
+    frame: &str,
+    redirects: &mut u64,
+) -> Result<()> {
+    let mut pending = std::collections::HashSet::new();
+    let mut idle_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        let received = if pending.is_empty() {
+            match tokio::time::timeout_at(idle_deadline, events.recv()).await {
+                Ok(result) => result,
+                Err(_) => break,
+            }
+        } else {
+            events.recv().await
+        };
+        let event = received.map_err(|_| anyhow!("Network event stream closed or overflowed"))?;
+        if event.session_id.as_deref() != Some(session) {
+            continue;
+        }
+        record_navigation_response(&event.method, &event.params, frame, redirects);
+        if let Some(request) = event.params["requestId"].as_str() {
+            match event.method.as_str() {
+                "Network.requestWillBeSent" => {
+                    pending.insert(request.to_string());
+                }
+                "Network.loadingFinished" | "Network.loadingFailed" => {
+                    pending.remove(request);
+                    if pending.is_empty() {
+                        idle_deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 fn record_navigation_response(
@@ -949,6 +1006,31 @@ mod tests {
                 Duration::from_millis(timeout)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn network_idle_does_not_reset_quiet_window_on_unrelated_cdp_events() {
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(32);
+        let ticker = sender.clone();
+        let task = tokio::spawn(async move {
+            for _ in 0..8 {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                let _ = ticker.send(super::super::cdp::Event {
+                    method: "Runtime.consoleAPICalled".into(),
+                    session_id: Some("session".into()),
+                    params: serde_json::json!({}),
+                });
+            }
+        });
+        let mut redirects = 0;
+        tokio::time::timeout(
+            Duration::from_millis(850),
+            super::wait_for_network_idle(&mut receiver, "session", "main", &mut redirects),
+        )
+        .await
+        .expect("unrelated CDP events must not stall network idle")
+        .unwrap();
+        task.abort();
     }
 
     #[test]
@@ -1090,6 +1172,7 @@ mod tests {
             frame.scroll_frames().await?;
             frame.check_frame_coverage(30.0, 20.0).await?;
             let config = super::super::actionability::ActionabilityConfig { element_timeout_ms: 2000, actionability_timeout_ms: 1000, poll_interval_ms: 25 };
+            super::super::actionability::ensure_actionable(&root, "#host", &None, &config).await?;
             let position = super::super::actionability::ensure_actionable(&frame, "text=Frame button", &None, &config).await?;
             let offset = frame.frame_offset().await?;
             super::super::actionability::cdp_click(&frame, offset.0 + position.center_x, offset.1 + position.center_y, &config).await?;

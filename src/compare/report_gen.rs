@@ -286,12 +286,10 @@ fn read_report_urls(tests_dir: &Path) -> Result<Option<BTreeMap<String, ReportPa
 }
 
 fn screenshot_prefix(file_name: &str) -> &str {
-    file_name
-        .strip_suffix(".png")
-        .unwrap_or(file_name)
-        .split("__")
-        .next()
-        .unwrap_or("")
+    let key = screenshot_key(file_name);
+    key.rsplit_once("__")
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(key)
 }
 
 fn screenshot_key(file_name: &str) -> &str {
@@ -2406,6 +2404,10 @@ mod tests {
         assert_eq!(
             report_selector("home__SELECTOR-main-hero-abc123.png"),
             "SELECTOR-main-hero-abc123"
+        );
+        assert_eq!(
+            screenshot_prefix("shop__checkout_desktop__$after-login.png"),
+            "shop__checkout_desktop"
         );
     }
 }

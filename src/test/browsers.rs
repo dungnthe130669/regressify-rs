@@ -294,18 +294,7 @@ async fn launch_browser_inner(
     options: LaunchOptions,
 ) -> Result<(Browser, JoinHandle<()>, PathBuf), Box<dyn std::error::Error>> {
     let debug = (common::DEBUG.get_bool() || options.debug) && !common::is_ci();
-
     let resolved = resolve_executable(exe_path)?;
-    let mut config_builder = BrowserConfig::builder().chrome_executable(&resolved);
-
-    if debug {
-        config_builder = config_builder.with_head();
-    }
-
-    // Use a unique user data dir per launch to avoid ProcessSingleton lock conflicts
-    let guid_base64url = general_purpose::URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
-    let user_data_dir = std::env::temp_dir().join(format!("regressify-browser-{}", guid_base64url));
-    config_builder = config_builder.user_data_dir(&user_data_dir);
 
     let mut args = vec![
         // The four explicit args the Node.js version passed to Playwright via
@@ -353,40 +342,50 @@ async fn launch_browser_inner(
     }
 
     let (viewport_width, viewport_height) = options.viewport.unwrap_or((1920, 1080));
-    // Chromiumoxide initializes every popup with this viewport as well as the
-    // first page. Keep it aligned with the capture to avoid a first-load resize.
-    config_builder = config_builder
-        .window_size(1920, 1080)
-        .viewport(Some(Viewport {
-            width: viewport_width,
-            height: viewport_height,
-            device_scale_factor: Some(1.0),
-            emulating_mobile: false,
-            has_touch: false,
-            is_landscape: true,
-        }))
-        .launch_timeout(Duration::from_secs(45))
-        .args(args);
-
-    if debug {
-        config_builder = config_builder.with_head();
-    } else {
-        config_builder = config_builder.new_headless_mode();
-    }
-
-    let config = config_builder
-        .build()
-        .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
 
     let mut last_err = None;
     for attempt in 1..=MAX_LAUNCH_RETRIES {
+        // Use a fresh user data dir per launch attempt to avoid ProcessSingleton lock conflicts
+        // if an earlier attempt left lock files behind before failing.
+        let guid_base64url =
+            general_purpose::URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
+        let user_data_dir =
+            std::env::temp_dir().join(format!("regressify-browser-{}", guid_base64url));
+
+        // Chromiumoxide initializes every popup with this viewport as well as the
+        // first page. Keep it aligned with the capture to avoid a first-load resize.
+        let mut config_builder = BrowserConfig::builder()
+            .chrome_executable(&resolved)
+            .user_data_dir(&user_data_dir)
+            .window_size(1920, 1080)
+            .viewport(Some(Viewport {
+                width: viewport_width,
+                height: viewport_height,
+                device_scale_factor: Some(1.0),
+                emulating_mobile: false,
+                has_touch: false,
+                is_landscape: true,
+            }))
+            .launch_timeout(Duration::from_secs(45))
+            .args(args.clone());
+
+        if debug {
+            config_builder = config_builder.with_head();
+        } else {
+            config_builder = config_builder.new_headless_mode();
+        }
+
+        let config = config_builder
+            .build()
+            .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
+
         diagnostics::event(
             Stage::QueueSetup,
             DiagnosticEvent::Started,
             Severity::Info,
             [(Field::RetryAttempt, FieldValue::Number(attempt as u64))],
         );
-        match Browser::launch(config.clone()).await {
+        match Browser::launch(config).await {
             Ok((browser, mut handler)) => {
                 let data_dir = user_data_dir.clone();
                 let context = diagnostics::current();
@@ -414,6 +413,7 @@ async fn launch_browser_inner(
                 return Ok((browser, handle, user_data_dir));
             }
             Err(e) => {
+                let _ = std::fs::remove_dir_all(&user_data_dir);
                 diagnostics::event(
                     Stage::QueueSetup,
                     DiagnosticEvent::Retry,
@@ -438,9 +438,6 @@ async fn launch_browser_inner(
             }
         }
     }
-
-    // All retries exhausted — clean up the leaked user-data directory before failing.
-    let _ = std::fs::remove_dir_all(&user_data_dir);
 
     Err(anyhow!(
         "Cannot launch browser after {} attempts: {:?}",

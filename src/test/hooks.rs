@@ -67,7 +67,8 @@ impl DocumentHooks {
             (&config.remove_selectors, "display: none !important"),
         ] {
             for selector in selectors {
-                css.push_str(&format!("\n{selector} {{ {declaration}; }}"));
+                let escaped = super::actionability::escape_css_rule(selector);
+                css.push_str(&format!("\n{escaped} {{ {declaration}; }}"));
             }
         }
         let context = serde_json::json!({
@@ -401,6 +402,8 @@ mod tests {
         let config = ResolvedConfig {
             js_on_ready_path: Some("shared.js".into()),
             hide_selectors: vec![".dynamic".into()],
+            delay: Some(0.0),
+            settle_timeout_ms: 1_200,
             ..Default::default()
         };
         let hooks = DocumentHooks::load(workspace.path(), &scenario, &config)?;
@@ -408,6 +411,9 @@ mod tests {
             super::super::browser_tests::launch_browser("hook-context", Default::default()).await?;
         let result: Result<()> = async {
             let page = browser.new_page(site.origin.as_str()).await?;
+            let storage =
+                super::super::storage_state::StorageState::install(&browser, &page, None, &site.origin)
+                    .await?;
             page.evaluate("true").await?;
             // Keep the client's cached context stale while Chromium replaces the document.
             page.execute(DisableParams::default()).await?;
@@ -427,6 +433,15 @@ mod tests {
                     state.result.result.value == Some(serde_json::json!(true)),
                     "hooks must reach the current document exactly once"
                 );
+                let settled = super::super::page_stability::wait_for_page_settle(
+                    &page,
+                    Duration::from_millis(1_200),
+                )
+                .await?;
+                anyhow::ensure!(settled.settled, "settle wait failed with stale context");
+                super::super::page_stability::prepare_screenshot(&page, &config, "hook-context")
+                    .await?;
+                storage.capture(&page).await?;
             }
             Ok(())
         }

@@ -305,6 +305,7 @@ struct ScenarioPage {
     page: chromiumoxide::Page,
     runtime: super::runtime::Runtime,
     storage: Arc<super::storage_state::StorageState>,
+    authentication: Option<super::authentication::Authentication>,
     tabs: Option<super::tabs::Tabs>,
 }
 
@@ -378,6 +379,9 @@ impl ScenarioPage {
         }
         if let Some(tabs) = &self.tabs {
             tabs.check().await?;
+        }
+        if let Some(authentication) = &self.authentication {
+            authentication.check()?;
         }
         hooks.apply(&self.page).await?;
         exec_test_action(
@@ -628,9 +632,12 @@ async fn run_scenario_capture_inner(
     // navigate so layout is computed at the intended size from the first paint.
     let page = browser.new_page("about:blank").await?;
     let runtime = super::runtime::Runtime::new(browser, &page).await?;
-    let authentication =
-        super::authentication::Authentication::install(browser, &page, &resolved.basic_auth)
-            .await?;
+    let authentication = super::authentication::Authentication::install_with_client(
+        runtime.client(),
+        &page,
+        &resolved.basic_auth,
+    )
+    .await?;
     if resolved.bypass_csp {
         let cmd = chromiumoxide::cdp::browser_protocol::page::SetBypassCspParams::builder()
             .enabled(true)
@@ -639,9 +646,13 @@ async fn run_scenario_capture_inner(
         page.execute(cmd).await?;
     }
     apply_viewport(&page, viewport).await?;
-    let storage =
-        super::storage_state::StorageState::install(browser, &page, resolved.state.as_ref(), url)
-            .await?;
+    let storage = super::storage_state::StorageState::install_with_client(
+        runtime.client(),
+        &page,
+        resolved.state.as_ref(),
+        url,
+    )
+    .await?;
 
     // Load cookies before the first navigation so authenticated/session state
     // can affect the initial request.
@@ -672,6 +683,7 @@ async fn run_scenario_capture_inner(
         page,
         runtime,
         storage,
+        authentication,
         tabs,
     };
 
@@ -766,7 +778,10 @@ async fn run_scenario_capture_inner(
     hooks.apply(&active.page).await?;
 
     if screenshot_types.is_empty() {
-        if let Some(authentication) = &authentication {
+        if let Some(tabs) = &active.tabs {
+            tabs.check().await?;
+        }
+        if let Some(authentication) = &active.authentication {
             authentication.check()?;
         }
         return Ok(());
@@ -791,7 +806,7 @@ async fn run_scenario_capture_inner(
         if let Some(tabs) = &active.tabs {
             tabs.check().await?;
         }
-        if let Some(authentication) = &authentication {
+        if let Some(authentication) = &active.authentication {
             authentication.check()?;
         }
         save_screenshot(
@@ -1765,8 +1780,22 @@ mod tests {
             for (label, excluded) in [("desktop", "mobile"), ("mobile", "desktop")] {
                 let page = browser.new_page(site.origin.as_str()).await?;
                 let runtime = super::super::runtime::Runtime::new(&browser, &page).await?;
-                let storage = Arc::new(super::super::storage_state::StorageState::install(&browser, &page, None, &site.origin).await?);
-                let mut active = ScenarioPage { page, runtime, storage, tabs: None };
+                let storage = Arc::new(
+                    super::super::storage_state::StorageState::install(
+                        &browser,
+                        &page,
+                        None,
+                        &site.origin,
+                    )
+                    .await?,
+                );
+                let mut active = ScenarioPage {
+                    page,
+                    runtime,
+                    storage,
+                    authentication: None,
+                    tabs: None,
+                };
                 let viewport = config::viewports::ViewportDef { label: label.into(), width: 800, height: 600 };
                 let context = CaptureContext {
                     is_reference: false,

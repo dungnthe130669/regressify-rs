@@ -117,7 +117,8 @@ async fn prepare_screenshot_inner(
 async fn hide_text_carets(page: &Page) -> Result<()> {
     tokio::time::timeout(
         EVALUATION_TIMEOUT,
-        page.evaluate(
+        super::runtime::evaluate_main_document(
+            page,
             r#"(() => {
                 const styleId = '__regressify_capture_stability__';
                 if (!document.getElementById(styleId)) {
@@ -279,9 +280,13 @@ fn build_lazy_load_script(scroll_delay_ms: u64, timeout_ms: u64) -> String {
                     if (element.naturalWidth === 0 || typeof element.decode !== 'function') return true;
                     let state = decoded.get(element);
                     if (!state || state.source !== source) {
-                        state = { source, ready: false };
-                        decoded.set(element, state);
-                        Promise.resolve().then(() => element.decode()).catch(() => {}).then(() => state.ready = true);
+                        const entry = { source, ready: false, promise: null };
+                        entry.promise = Promise.resolve()
+                            .then(() => element.decode())
+                            .catch(() => {})
+                            .then(() => { entry.ready = true; });
+                        decoded.set(element, entry);
+                        return false;
                     }
                     return state.ready;
                 };
@@ -293,11 +298,24 @@ fn build_lazy_load_script(scroll_delay_ms: u64, timeout_ms: u64) -> String {
                     candidates().forEach(visible);
                     await sleep(Math.min(options.scrollDelay, Math.max(0, deadline - performance.now())));
                     while (performance.now() < deadline) {
-                        const ready = candidates().map(element => {
+                        const checkReady = () => candidates().every(element => {
                             const inView = visible(element);
                             return inView === null ? false : !inView || resourceReady(element);
                         });
-                        if (ready.every(Boolean)) return;
+                        if (checkReady()) return;
+                        const pending = candidates()
+                            .map(element => {
+                                const state = decoded.get(element);
+                                return state && !state.ready ? state.promise : null;
+                            })
+                            .filter(Boolean);
+                        if (pending.length > 0) {
+                            await Promise.race([
+                                Promise.all(pending),
+                                sleep(Math.min(100, Math.max(0, deadline - performance.now()))),
+                            ]);
+                            if (checkReady()) return;
+                        }
                         await sleep(Math.min(100, Math.max(0, deadline - performance.now())));
                     }
                     throw new Error('Timed out waiting for visible lazy-loaded resources');
@@ -346,7 +364,8 @@ fn build_lazy_load_script(scroll_delay_ms: u64, timeout_ms: u64) -> String {
 pub async fn freeze_animations(page: &Page) -> Result<(u64, u64)> {
     let result = tokio::time::timeout(
         EVALUATION_TIMEOUT,
-        page.evaluate(
+        super::runtime::evaluate_main_document(
+            page,
             r#"(() => {
                 let completed = 0;
                 let frozen = 0;
@@ -392,7 +411,7 @@ pub async fn freeze_animations(page: &Page) -> Result<(u64, u64)> {
 pub async fn wait_for_page_settle(page: &Page, timeout: Duration) -> Result<SettleResult> {
     let script = build_settle_script(timeout.as_millis() as u64, SETTLE_QUIET_WINDOW_MS);
     let budget = timeout.saturating_add(Duration::from_secs(2));
-    let result = tokio::time::timeout(budget, page.evaluate(script.as_str()))
+    let result = tokio::time::timeout(budget, super::runtime::evaluate_main_document(page, script))
         .await
         .map_err(|_| anyhow!("Settle wait exceeded {}ms budget", budget.as_millis()))??;
     let value = result.value().unwrap_or(&serde_json::Value::Null);
@@ -410,14 +429,16 @@ pub async fn wait_for_page_settle(page: &Page, timeout: Duration) -> Result<Sett
 }
 
 fn build_settle_script(timeout_ms: u64, quiet_window_ms: u64) -> String {
+    // Use performance.now() rather than Date.now() so pages or ready hooks that
+    // freeze Date.now() for deterministic timestamps cannot stall settling.
     format!(
         r#"(async () => {{
             const SETTLE_TIMEOUT = {timeout_ms};
             const QUIET_WINDOW = {quiet_window_ms};
             const POLL = 100;
-            const start = Date.now();
+            const start = performance.now();
             const deadline = start + SETTLE_TIMEOUT;
-            const remaining = () => Math.max(0, deadline - Date.now());
+            const remaining = () => Math.max(0, deadline - performance.now());
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const waitWithinDeadline = (promise) => new Promise((resolve) => {{
                 const ms = remaining();
@@ -433,7 +454,7 @@ fn build_settle_script(timeout_ms: u64, quiet_window_ms: u64) -> String {
                 Promise.resolve(promise).then(() => finish(true), () => finish(true));
             }});
 
-            let lastMutation = Date.now();
+            let lastMutation = performance.now();
             let resourceGeneration = 0;
             const relevantAttributes = new Set([
                 'class', 'style', 'src', 'srcset', 'href', 'width', 'height', 'hidden', 'open',
@@ -443,7 +464,7 @@ fn build_settle_script(timeout_ms: u64, quiet_window_ms: u64) -> String {
                     mutation.type !== 'attributes' || relevantAttributes.has(mutation.attributeName)
                 );
                 if (relevant) {{
-                    lastMutation = Date.now();
+                    lastMutation = performance.now();
                     resourceGeneration++;
                 }}
             }});
@@ -496,7 +517,7 @@ fn build_settle_script(timeout_ms: u64, quiet_window_ms: u64) -> String {
                 }}
                 await sleep(Math.min(POLL, remaining()));
                 const currentSignature = signature();
-                const quiet = Date.now() - lastMutation >= QUIET_WINDOW;
+                const quiet = performance.now() - lastMutation >= QUIET_WINDOW;
                 if (resourcesReady && currentSignature === lastSignature && quiet) {{
                     stableCount++;
                     if (stableCount >= 2) {{ settled = true; break; }}
@@ -507,7 +528,7 @@ fn build_settle_script(timeout_ms: u64, quiet_window_ms: u64) -> String {
             }}
 
             observer.disconnect();
-            return {{ settled, elapsed: Date.now() - start }};
+            return {{ settled, elapsed: Math.round(performance.now() - start) }};
         }})()"#
     )
 }
@@ -1108,6 +1129,49 @@ mod tests {
             .arg(&script_path)
             .output()
             .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn settle_script_completes_when_date_now_is_frozen() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("settle-frozen-date.js");
+        let settle_script = build_settle_script(600, 100);
+        let harness = format!(
+            r#"Date.now = () => 1700000000000;
+global.MutationObserver = class {{
+    observe() {{}}
+    disconnect() {{}}
+}};
+global.window = {{ innerWidth: 800, innerHeight: 600 }};
+global.document = {{
+    documentElement: {{ scrollWidth: 800, scrollHeight: 600 }},
+    body: {{ scrollWidth: 800, scrollHeight: 600 }},
+    fonts: {{ ready: Promise.resolve() }},
+    images: [],
+}};
+(async () => {{
+    const result = await {settle_script};
+    if (!result.settled || typeof result.elapsed !== 'number') {{
+        throw new Error(JSON.stringify(result));
+    }}
+}})().catch((error) => {{
+    console.error(error);
+    process.exitCode = 1;
+}});
+"#
+        );
+        fs::write(&script_path, harness).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
 
         assert!(
             output.status.success(),

@@ -80,22 +80,72 @@ pub fn escape_js_string(s: &str) -> String {
         .replace('\0', "")
 }
 
-/// Escape a selector for safe insertion into CSS rule `innerHTML`.
-/// Prevents breaking out of CSS context or injecting HTML. Also escapes
-/// control characters (newline/CR/tab/NUL) which would otherwise produce a JS
-/// syntax error when the selector is interpolated into a single-quoted string.
+/// Sanitize a selector for safe insertion into `<selector> { <declaration>; }`
+/// inside a `<style>` element's `textContent`.
+///
+/// Preserves valid CSS syntax (including `>` combinators, attribute quotes, and
+/// CSS escapes) while escaping unquoted `{`, `}`, `;`, `@`, comments (`/*`),
+/// unclosed quotes, and trailing backslashes so a selector cannot break out of
+/// its rule or inject additional CSS rules.
 pub fn escape_css_rule(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('"', "\\\"")
-        .replace('{', "\\{")
-        .replace('}', "\\}")
-        .replace('<', "\\<")
-        .replace('>', "\\>")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
-        .replace('\0', "")
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    let mut in_quote: Option<char> = None;
+    let mut escaped = false;
+
+    while let Some(ch) = chars.next() {
+        if ch == '\0' {
+            continue;
+        }
+        if escaped {
+            match ch {
+                '\n' | '\r' => out.push(' '),
+                _ => out.push(ch),
+            }
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            out.push('\\');
+            escaped = true;
+            continue;
+        }
+        if let Some(quote) = in_quote {
+            match ch {
+                c if c == quote => {
+                    in_quote = None;
+                    out.push(ch);
+                }
+                '\n' => out.push_str("\\a "),
+                '\r' => {}
+                _ => out.push(ch),
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => {
+                in_quote = Some(ch);
+                out.push(ch);
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                out.push_str("/\\*");
+            }
+            '{' | '}' | ';' | '@' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            '\n' | '\r' | '\t' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    if escaped {
+        out.push('\\');
+    }
+    if let Some(quote) = in_quote {
+        out.push(quote);
+    }
+    out
 }
 
 // ─── Frame Helpers ───────────────────────────────────────────────────────────
@@ -377,7 +427,7 @@ fn visibility_script(selector: &str, frame: &Option<Frame>) -> String {
             if (!view) return {{ visible: false, reason: 'no_window' }};
             if (rect.width === 0 || rect.height === 0)
                 return {{ visible: false, reason: 'zero_size' }};
-            for (let current = el; current; current = current.parentElement) {{
+            for (let current = el; current; current = current.parentElement || current.getRootNode?.()?.host || null) {{
                 const style = current.ownerDocument.defaultView.getComputedStyle(current);
                 if (style.visibility === 'hidden' || style.visibility === 'collapse')
                     return {{ visible: false, reason: 'visibility_hidden' }};
@@ -466,7 +516,12 @@ pub async fn scroll_into_view(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    page.scroll_frames().await?;
+    cdp_with_timeout(
+        actionability_timeout(config),
+        "scrolling parent frames into view",
+        page.scroll_frames(),
+    )
+    .await?;
     let frame_selectors = get_frame_selectors(frame);
     let selectors_js = frame_selectors
         .as_deref()
@@ -524,41 +579,7 @@ pub async fn check_not_obscured(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<ElementInfo> {
-    let frame_selectors = get_frame_selectors(frame);
-    let element_js = build_element_js(selector, &frame_selectors);
-
-    // Determine which document to call elementFromPoint on
-    let doc_js = if let Some(frames) = &frame_selectors {
-        build_frame_document_js(frames)
-    } else {
-        "document".to_string()
-    };
-
-    let script = format!(
-        r#"(() => {{
-            const el = {element_js};
-            if (!el) return {{ error: 'not_found' }};
-            const rect = el.getBoundingClientRect();
-            const cx = rect.x + rect.width / 2;
-            const cy = rect.y + rect.height / 2;
-            const topEl = {doc_js}.elementFromPoint(cx, cy);
-            if (!topEl) return {{ error: 'no_element_at_point' }};
-            if (el === topEl || el.contains(topEl)) {{
-                return {{
-                    ok: true,
-                    center_x: cx,
-                    center_y: cy
-                }};
-            }}
-            // Element is obscured — report what's covering it
-            const tag = topEl.tagName.toLowerCase();
-            const id = topEl.id ? '#' + topEl.id : '';
-            const cls = topEl.className && typeof topEl.className === 'string'
-                ? '.' + topEl.className.trim().split(/\s+/).join('.')
-                : '';
-            return {{ error: 'obscured', by: tag + id + cls }};
-        }})()"#
-    );
+    let script = obscured_script(selector, frame);
 
     let operation = format!("checking whether element '{}' is obscured", selector);
     let val = evaluate_value(page, script, actionability_timeout(config), &operation).await?;
@@ -603,6 +624,44 @@ pub async fn check_not_obscured(
     }
 }
 
+fn obscured_script(selector: &str, frame: &Option<Frame>) -> String {
+    let frame_selectors = get_frame_selectors(frame);
+    let element_js = build_element_js(selector, &frame_selectors);
+    let doc_js = if let Some(frames) = &frame_selectors {
+        build_frame_document_js(frames)
+    } else {
+        "document".to_string()
+    };
+
+    format!(
+        r#"(() => {{
+            const el = {element_js};
+            if (!el) return {{ error: 'not_found' }};
+            const rect = el.getBoundingClientRect();
+            const cx = rect.x + rect.width / 2;
+            const cy = rect.y + rect.height / 2;
+            const topEl = {doc_js}.elementFromPoint(cx, cy);
+            if (!topEl) return {{ error: 'no_element_at_point' }};
+            for (let current = topEl; current; current = current.parentElement || current.getRootNode?.()?.host || null) {{
+                if (current === el || el.contains?.(current)) {{
+                    return {{
+                        ok: true,
+                        center_x: cx,
+                        center_y: cy
+                    }};
+                }}
+            }}
+            // Element is obscured — report what's covering it
+            const tag = topEl.tagName.toLowerCase();
+            const id = topEl.id ? '#' + topEl.id : '';
+            const cls = topEl.className && typeof topEl.className === 'string'
+                ? '.' + topEl.className.trim().split(/\s+/).join('.')
+                : '';
+            return {{ error: 'obscured', by: tag + id + cls }};
+        }})()"#
+    )
+}
+
 /// Check that a form element is enabled (not disabled).
 pub async fn check_enabled(
     page: &Page,
@@ -641,8 +700,8 @@ fn enabled_script(selector: &str, frame: &Option<Frame>) -> String {
         r#"(() => {{
             const el = {element_js};
             if (!el) return {{ error: 'not_found' }};
-            for (let current = el; current; current = current.parentElement) {{
-                if (current.inert === true || current.hasAttribute('inert'))
+            for (let current = el; current; current = current.parentElement || current.getRootNode?.()?.host || null) {{
+                if (current.inert === true || current.hasAttribute?.('inert'))
                     return {{ disabled: true, reason: 'inert' }};
             }}
             const disabled = el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true';
@@ -660,7 +719,12 @@ pub async fn get_frame_offset(
     config: &ActionabilityConfig,
 ) -> Result<(f64, f64)> {
     if page.has_frames() {
-        return page.frame_offset().await;
+        return cdp_with_timeout(
+            actionability_timeout(config),
+            "calculating iframe offset",
+            page.frame_offset(),
+        )
+        .await;
     }
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) => s,
@@ -767,7 +831,12 @@ async fn check_frame_not_obscured(
     center_y: f64,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    page.check_frame_coverage(center_x, center_y).await?;
+    cdp_with_timeout(
+        actionability_timeout(config),
+        "checking whether iframe chain is obscured",
+        page.check_frame_coverage(center_x, center_y),
+    )
+    .await?;
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(()),
@@ -1052,7 +1121,9 @@ fn focus_element_script(selector: &str, frame: &Option<Frame>) -> String {
             const element = {element_js};
             if (!element) return {{ error: 'not_found' }};
             element.focus({{ preventScroll: true }});
-            if (targetDocument.activeElement === element) return {{ ok: true }};
+            for (let current = targetDocument.activeElement; current; current = current.parentElement || current.getRootNode?.()?.host || null) {{
+                if (current === element) return {{ ok: true }};
+            }}
             const active = targetDocument.activeElement;
             const tag = active ? active.tagName.toLowerCase() : 'none';
             const id = active && active.id ? '#' + active.id : '';
@@ -1635,5 +1706,120 @@ if (result.error !== 'frame_inert' || result.frame !== '#embedded')
                 .to_string()
                 .contains("no finite 'center_x' coordinate")
         );
+    }
+
+    #[test]
+    fn shadow_dom_hit_testing_focus_visibility_and_enabled_checks_cross_shadow_roots() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("shadow-dom-actionability.js");
+        let obscured = obscured_script("#host", &None);
+        let focus = focus_element_script("#host", &None);
+        let visible = visibility_script("#shadow-child", &None);
+        let enabled = enabled_script("#shadow-child", &None);
+        let runtime = format!(
+            r#"let hostOpacity = '1';
+let hostInert = false;
+const host = {{
+    tagName: 'MY-BUTTON',
+    parentElement: null,
+    get inert() {{ return hostInert; }},
+    hasAttribute: () => false,
+    contains: () => false,
+    getBoundingClientRect: () => ({{ x: 10, y: 20, width: 100, height: 40 }}),
+    focus() {{ document.activeElement = shadowChild; }},
+    ownerDocument: {{
+        defaultView: {{
+            getComputedStyle: (el) => ({{
+                display: 'block',
+                visibility: 'visible',
+                contentVisibility: 'visible',
+                opacity: el === host ? hostOpacity : '1',
+            }}),
+        }},
+    }},
+}};
+const shadowChild = {{
+    tagName: 'SPAN',
+    id: 'shadow-child',
+    parentElement: null,
+    inert: false,
+    hasAttribute: () => false,
+    matches: () => false,
+    getAttribute: () => null,
+    getRootNode: () => ({{ host }}),
+    getBoundingClientRect: () => ({{ x: 10, y: 20, width: 100, height: 40 }}),
+    ownerDocument: host.ownerDocument,
+}};
+global.document = {{
+    activeElement: null,
+    querySelector: (sel) => sel === '#host' ? host : shadowChild,
+    elementFromPoint: () => shadowChild,
+}};
+
+const obscuredResult = {obscured};
+if (!obscuredResult.ok || obscuredResult.center_x !== 60 || obscuredResult.center_y !== 40)
+    throw new Error('obscured check failed for shadow child: ' + JSON.stringify(obscuredResult));
+
+const focusResult = {focus};
+if (!focusResult.ok)
+    throw new Error('focus check failed for delegated shadow focus: ' + JSON.stringify(focusResult));
+
+hostOpacity = '0';
+const visibleResult = {visible};
+if (visibleResult.visible !== false || visibleResult.reason !== 'zero_opacity')
+    throw new Error('visibility check missed shadow host opacity: ' + JSON.stringify(visibleResult));
+
+hostOpacity = '1';
+hostInert = true;
+const enabledResult = {enabled};
+if (enabledResult.disabled !== true || enabledResult.reason !== 'inert')
+    throw new Error('enabled check missed inert shadow host: ' + JSON.stringify(enabledResult));
+"#
+        );
+        fs::write(&script_path, runtime).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn escape_css_rule_preserves_valid_selectors_and_neutralizes_rule_breakouts() {
+        for valid in [
+            "div > span.highlight",
+            r#"[data-name="it's a card"]"#,
+            r#"[data-name='hello "world"']"#,
+            r#"[data-expr="a{b}c;d"]"#,
+            r".icon\2603",
+            ".café",
+        ] {
+            assert_eq!(escape_css_rule(valid), valid);
+        }
+
+        assert_eq!(
+            escape_css_rule(".banner {} body { display: none }"),
+            r".banner \{\} body \{ display: none \}"
+        );
+        assert_eq!(
+            escape_css_rule("@import url('x'); .target"),
+            r"\@import url('x')\; .target"
+        );
+        assert_eq!(
+            escape_css_rule(".target /* unclosed comment"),
+            r".target /\* unclosed comment"
+        );
+        assert_eq!(
+            escape_css_rule(r#".target[title="unclosed"#),
+            r#".target[title="unclosed""#
+        );
+        assert_eq!(escape_css_rule(r".target\"), r".target\\");
+        assert_eq!(escape_css_rule("div\r\n\t>\0.child"), "div   >.child");
     }
 }

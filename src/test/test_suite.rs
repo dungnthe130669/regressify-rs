@@ -206,6 +206,7 @@ pub async fn exec_single_scenario(
         Severity::Debug,
         [],
     );
+    let handler_alive_before_close = !handle.is_finished();
     let browser_closed =
         match tokio::time::timeout(std::time::Duration::from_secs(10), browser.close()).await {
             Ok(Ok(_)) => true,
@@ -215,15 +216,17 @@ pub async fn exec_single_scenario(
     let mut handle = handle;
     let handler_finished =
         wait_for_browser_handler(&mut handle, std::time::Duration::from_secs(5), &log_prefix).await;
+    // If the handler task had already exited before `browser.close()` was sent and
+    // `browser.close()` failed, the browser crashed or disconnected mid-scenario.
+    let shutdown_confirmed = browser_closed || (handler_alive_before_close && handler_finished);
 
-    // The handler normally removes this directory. Only retry after either the
-    // browser or handler has confirmed shutdown; deleting it earlier can race a
-    // still-running Chromium process.
-    if browser_closed || handler_finished {
-        let _ = std::fs::remove_dir_all(&user_data_dir);
+    if !browser_closed {
+        let _ = browser.kill().await;
     }
+    drop(browser);
+    let _ = std::fs::remove_dir_all(&user_data_dir);
 
-    let cleanup = if browser_closed || handler_finished {
+    let cleanup = if shutdown_confirmed {
         Ok(())
     } else {
         Err(anyhow!("Browser shutdown was not confirmed"))
@@ -233,7 +236,7 @@ pub async fn exec_single_scenario(
         &cleanup,
         cleanup_started.elapsed().as_millis() as u64,
     );
-    classify_scenario_completion(scenario_result, browser_closed || handler_finished)
+    classify_scenario_completion(scenario_result, shutdown_confirmed)
 }
 
 fn classify_scenario_result(result: Result<()>) -> ScenarioOutcome {
