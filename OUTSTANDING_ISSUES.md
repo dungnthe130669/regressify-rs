@@ -682,21 +682,17 @@ These are unresolved findings, not implemented fixes. The review followed CLI,
 browser, desktop editor/worker, Git/deployment, and update/release boundaries;
 it was risk-focused, not an exhaustive security certification.
 
-### P1: Discard Does Not Detect Content-Only Changes After Review
+### P1: Discard Does Not Detect Content-Only Changes After Review (Resolved 2026-10-15)
 
-- Evidence: [Change](src/desktop/git.rs#L36) stores paths and Git status flags, not
-  reviewed content identities. [Discard validation](src/desktop/git.rs#L530)
-  compares only those records before restoring/deleting selected files.
-- Trigger: review an already modified or untracked file, open discard confirmation,
-  then have another editor rewrite that file without changing its status flags.
-  The current/expected comparison still succeeds and the newer edits are removed.
-- Verification: traced through the [confirmation callback](src/desktop/ui/git.rs#L659)
-  and model. Existing stale-discard coverage changes staging status; it does not
-  cover different bytes with the same status. No destructive live-workspace probe ran.
-- Repair/test: retain and revalidate reviewed content/index identities for selected
-  paths, reject changes before any mutation, and preserve all files on rejection.
-  Add tracked, untracked, and same-status staged-content regression cases in the
-  existing Git test module using temporary repositories.
+- Resolved in source: [Git status snapshots](src/desktop/git.rs) now record
+  index mode/object identities from porcelain v2 records alongside bounded
+  worktree SHA-256 content digests for changed and renamed paths.
+- [Discard validation](src/desktop/git.rs) compares both status records and
+  content/index identities for every selected path before restoring or deleting
+  any file.
+- Regression coverage in `selected_discard_rejects_same_status_worktree_untracked_and_staged_content_changes`
+  verifies rejection and file preservation across tracked worktree edits,
+  untracked edits, and same-status staged-content updates.
 
 ### P2: Desktop Worker Pipe Joins Escape Timeout and Cancellation
 

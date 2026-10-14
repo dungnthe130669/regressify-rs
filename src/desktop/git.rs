@@ -159,6 +159,8 @@ pub struct Snapshot {
     pub detached: bool,
     pub operation: Option<String>,
     pub changes: Vec<Change>,
+    #[doc(hidden)]
+    pub content_identities: BTreeMap<String, String>,
 }
 
 impl Snapshot {
@@ -265,6 +267,19 @@ pub fn status(workspace: &Path, cancellation: &Cancellation) -> Result<Snapshot>
         cancellation,
     )?;
     let mut snapshot = parse_status(&output.stdout)?;
+    for change in &snapshot.changes {
+        let worktree = worktree_content_identity(&root, &change.path);
+        let original = change
+            .original_path
+            .as_deref()
+            .map(|original| worktree_content_identity(&root, original))
+            .unwrap_or_default();
+        let entry = snapshot
+            .content_identities
+            .entry(change.path.clone())
+            .or_default();
+        entry.push_str(&format!("|{worktree}|{original}"));
+    }
     snapshot.remotes = command(&root, ["remote"], cancellation)?
         .text()?
         .lines()
@@ -725,8 +740,11 @@ impl Request {
                         .filter(|change| &change.path == path)
                         .collect::<Vec<_>>();
                     ensure!(
-                        !changes.is_empty() && changes == expected,
-                        "Selected file '{path}' changed Git status; refresh and review before discarding"
+                        !changes.is_empty()
+                            && changes == expected
+                            && current.content_identities.get(path)
+                                == self.expected.content_identities.get(path),
+                        "Selected file '{path}' changed Git status or content; refresh and review before discarding"
                     );
                     for change in changes {
                         ensure!(
@@ -1107,6 +1125,11 @@ fn parse_status(bytes: &[u8]) -> Result<Snapshot> {
                 .context("Invalid behind count")?
                 .parse()?;
         } else if let Some(path) = record.strip_prefix("? ") {
+            snapshot
+                .content_identities
+                .entry(path.into())
+                .or_default()
+                .push_str("untracked;");
             snapshot.changes.push(Change {
                 path: path.into(),
                 original_path: None,
@@ -1128,8 +1151,15 @@ fn parse_status(bytes: &[u8]) -> Result<Snapshot> {
                 parts.len() == count && parts[1].len() == 2,
                 "Invalid Git change record"
             );
+            let path = parts[count - 1];
+            let index_end = if kind == b'u' { 10 } else { 8 };
+            snapshot
+                .content_identities
+                .entry(path.into())
+                .or_default()
+                .push_str(&format!("{};", parts[3..index_end].join(":")));
             snapshot.changes.push(Change {
-                path: parts[count - 1].into(),
+                path: path.into(),
                 original_path: if kind == b'2' {
                     Some(
                         records
@@ -1152,6 +1182,49 @@ fn parse_status(bytes: &[u8]) -> Result<Snapshot> {
         .changes
         .sort_by(|left, right| left.path.cmp(&right.path));
     Ok(snapshot)
+}
+
+fn worktree_content_identity(root: &Path, relative: &str) -> String {
+    use std::io::Read;
+    let path = root.join(relative);
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+        return "missing".into();
+    };
+    if metadata.file_type().is_symlink() {
+        return format!("symlink:{:?}", std::fs::read_link(&path).ok());
+    }
+    if metadata.is_dir() {
+        return "directory".into();
+    }
+    if !metadata.is_file() {
+        return "special".into();
+    }
+    const MAX_HASH_BYTES: u64 = 16 * 1024 * 1024;
+    let len = metadata.len();
+    if len <= MAX_HASH_BYTES
+        && let Ok(file) = std::fs::File::open(&path)
+    {
+        let mut digest = Sha256::new();
+        let mut reader = file.take(MAX_HASH_BYTES + 1);
+        let mut buffer = [0_u8; 64 * 1024];
+        let mut read_bytes = 0_u64;
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    if read_bytes == len {
+                        return format!("file:{len}:{:x}", digest.finalize());
+                    }
+                    break;
+                }
+                Ok(count) => {
+                    read_bytes += count as u64;
+                    digest.update(&buffer[..count]);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+    format!("large:{len}:{:?}", metadata.modified().ok())
 }
 
 #[cfg(test)]
@@ -1570,6 +1643,106 @@ mod tests {
                 .contains("cancelled")
         );
         assert!(root.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn selected_discard_rejects_same_status_worktree_untracked_and_staged_content_changes() {
+        let root = repository();
+        fs::write(root.path().join("tracked.txt"), "initial\n").unwrap();
+        fs::write(root.path().join("staged.txt"), "initial\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+
+        fs::write(root.path().join("tracked.txt"), "reviewed-v1\n").unwrap();
+        fs::write(root.path().join("untracked.txt"), "untracked-1\n").unwrap();
+        fs::write(root.path().join("staged.txt"), "staged-v1\n").unwrap();
+        git(root.path(), &["add", "staged.txt"]);
+        let paths = vec![
+            "tracked.txt".to_string(),
+            "untracked.txt".to_string(),
+            "staged.txt".to_string(),
+        ];
+
+        // 1. Tracked worktree-only edit with same status flags and same byte length.
+        let expected = status(root.path(), &Cancellation::default()).unwrap();
+        fs::write(root.path().join("tracked.txt"), "reviewed-v2\n").unwrap();
+        let error = Request {
+            workspace: root.path().into(),
+            expected,
+            action: Action::Discard {
+                paths: paths.clone(),
+            },
+        }
+        .execute(&Cancellation::default())
+        .unwrap_err();
+        assert!(error.to_string().contains("changed Git status or content"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("tracked.txt")).unwrap(),
+            "reviewed-v2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("untracked.txt")).unwrap(),
+            "untracked-1\n"
+        );
+        assert_eq!(git(root.path(), &["show", ":staged.txt"]), "staged-v1\n");
+
+        // 2. Untracked file edit with same status flags and same byte length.
+        let expected = status(root.path(), &Cancellation::default()).unwrap();
+        fs::write(root.path().join("untracked.txt"), "untracked-2\n").unwrap();
+        let error = Request {
+            workspace: root.path().into(),
+            expected,
+            action: Action::Discard {
+                paths: paths.clone(),
+            },
+        }
+        .execute(&Cancellation::default())
+        .unwrap_err();
+        assert!(error.to_string().contains("changed Git status or content"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("tracked.txt")).unwrap(),
+            "reviewed-v2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("untracked.txt")).unwrap(),
+            "untracked-2\n"
+        );
+
+        // 3. Staged content replaced in index and worktree with same 'M.' status flags.
+        let expected = status(root.path(), &Cancellation::default()).unwrap();
+        fs::write(root.path().join("staged.txt"), "staged-v2\n").unwrap();
+        git(root.path(), &["add", "staged.txt"]);
+        let error = Request {
+            workspace: root.path().into(),
+            expected,
+            action: Action::Discard {
+                paths: paths.clone(),
+            },
+        }
+        .execute(&Cancellation::default())
+        .unwrap_err();
+        assert!(error.to_string().contains("changed Git status or content"));
+        assert_eq!(git(root.path(), &["show", ":staged.txt"]), "staged-v2\n");
+        assert_eq!(
+            fs::read_to_string(root.path().join("staged.txt")).unwrap(),
+            "staged-v2\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("untracked.txt")).unwrap(),
+            "untracked-2\n"
+        );
+
+        // 4. Fresh review snapshot succeeds and discards all three.
+        execute(root.path(), Action::Discard { paths }).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("tracked.txt")).unwrap(),
+            "initial\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("staged.txt")).unwrap(),
+            "initial\n"
+        );
+        assert!(!root.path().join("untracked.txt").exists());
     }
 
     #[test]

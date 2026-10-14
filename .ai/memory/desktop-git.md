@@ -32,7 +32,8 @@ Verified: 2026-10-15
   remotes, and URL rewrites; branch tracking is checked separately. Removing the
   active remote deliberately retains its missing selection to prevent fallback.
   Post-Git workspace reloads use `Session::reload_workspace` so discarded default
-  files are not recreated on disk.
+  files are not recreated on disk, and discard revalidates index/worktree
+  content identities (`Snapshot::content_identities`) before mutating files.
 - [The remote Select](../../src/desktop/ui/git/view.rs) retains its search through
   unchanged snapshots and shows a removed selected name as unavailable. It calls
   the existing guarded request path; `remote_select_` and the real typed-search
