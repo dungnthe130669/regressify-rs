@@ -1047,7 +1047,17 @@ impl Workbench {
                             ),
                     ),
             )
-            .child(rows.scrollbar(&self.suite_list.scroll, scroll::ScrollbarAxis::Vertical))
+            .child(
+                // The overlay must not inherit the rows' scroll offset.
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(rows)
+                    .vertical_scrollbar(&self.suite_list.scroll),
+            )
             .into_any_element()
     }
 
@@ -1455,7 +1465,16 @@ impl Workbench {
                         ),
                 )
             })
-            .child(rows.scrollbar(&self.scenario_list.scroll, scroll::ScrollbarAxis::Vertical))
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .child(rows)
+                    .vertical_scrollbar(&self.scenario_list.scroll),
+            )
             .into_any_element()
     }
 

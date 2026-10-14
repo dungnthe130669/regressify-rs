@@ -2,6 +2,24 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Desktop Scrollbar Clipping (2026-10-14)
+
+- Resolved in source: Test suites, Scenarios, and Landing apps attached scrollbar
+  overlays to their scrolling content, moving the tracks out of the viewport.
+  [Navigation](src/desktop/ui/navigation.rs) and the
+  [landing editor](src/desktop/ui/landing.rs) now attach them to stationary
+  parents while preserving their existing scroll handles and row identities.
+- The [navigator regression](src/desktop/ui/tests.rs) fails before the fix and
+  passes afterward, covering wheel scrolling and thumb dragging in both themes
+  at minimum/large window sizes. The landing test also checks dragging back from
+  the last site. Other application scrollbar attachments use stationary parents
+  or the toolkit's separate overflow wrapper.
+- Focused interactive Windows checks passed for all three panes in light/dark
+  minimum/large windows: wheel to the last item, drag back to the first, and
+  inspect rendered screenshots. Preferences and publishing catalogs were
+  restored afterward. The broader default smoke stopped separately on Windows
+  clipboard restoration; it is not recorded as a complete pass.
+
 ## VS Code Workspace Launch (2026-10-13)
 
 - Resolved in source: opening VS Code through its URI handler prompted for

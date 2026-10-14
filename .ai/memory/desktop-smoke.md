@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-13
+Verified: 2026-10-14
 
 - Run/download bars use Kit Progress with percentages and accessible names.
   Native default smoke checks `Scenario job progress` as a ProgressBar with
@@ -95,9 +95,11 @@ Verified: 2026-10-13
   the New suite lookup by button role because status text repeats that name after
   cancellation. Set and verify native Create focus before Enter; GUI tests cover Tab.
 - Keyboard-scrolled rows share an explicit `track_scroll`/`scrollbar` handle;
-  append the scrollbar after rows so direct-child indices stay aligned. The
-  convenience scroll wrapper owns a separate handle. [Workspace-file tests](../../src/desktop/ui/tests.rs)
-  exercise both ends in compact/large windows and both themes.
+  put the overlay on a stationary relative parent, not the scrolling rows.
+  Keep direct-child row indices aligned; the convenience overflow wrapper owns
+  a separate handle. [Navigator tests](../../src/desktop/ui/tests.rs) and focused
+  native wheel/drag checks cover suite/scenario thumbs in both themes and
+  minimum/large windows; Landing apps has the same stationary-parent contract.
 - Windows interaction prerequisites and native commands remain in the
   [native UI skill](../../.github/skills/desktop-native-ui/SKILL.md).
 - [Titlebar smoke](../../ci/desktop-smoke/flows/titlebar.ps1) checks 1000x640 and

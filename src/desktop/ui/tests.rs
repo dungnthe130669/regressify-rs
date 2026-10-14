@@ -6571,6 +6571,87 @@ fn navigator_list_keyboard_scrolls_viewports_and_handles_empty_filters(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn navigator_scrollbar_remains_draggable_after_scrolling(cx: &mut TestAppContext) {
+    use gpui_kit::{ScrollDelta, point};
+
+    for (width, height) in [(1000., 640.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                for index in 0..39 {
+                    this.session
+                        .workspace
+                        .as_ref()
+                        .unwrap()
+                        .create_suite(&format!("scroll-{index:02}"))
+                        .unwrap();
+                }
+                this.session.refresh().unwrap();
+                this.sync_suites(cx);
+                let mut value = this.session.value().unwrap();
+                let scenario = value["scenarios"][0].clone();
+                value["scenarios"] = (0..40)
+                    .map(|index| {
+                        let mut scenario = scenario.clone();
+                        scenario["id"] = serde_json::json!(format!("scroll-{index:02}"));
+                        scenario
+                    })
+                    .collect();
+                this.session
+                    .open
+                    .as_mut()
+                    .unwrap()
+                    .document
+                    .set_source(serde_yaml::to_string(&value).unwrap())
+                    .unwrap();
+                this.sync_editor(window, cx);
+            });
+            for dark in [false, true] {
+                super::design::apply_theme(dark, None, cx);
+                window.render_frame(cx);
+                for (id, scroll) in [
+                    ("suite-list", view.read(cx).suite_list.scroll.clone()),
+                    ("scenario-list", view.read(cx).scenario_list.scroll.clone()),
+                ] {
+                    let bounds = window.find(id).bounds();
+                    window.scroll(id, ScrollDelta::Pixels(point(px(0.), px(-10_000.))), cx);
+                    window.render_frame(cx);
+                    assert!(scroll.offset().y < px(-100.), "{id} must overflow");
+                    window.drag(
+                        point(bounds.right() - px(8.), bounds.bottom() - px(8.)),
+                        point(bounds.right() - px(8.), bounds.top() + px(8.)),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert!(
+                        scroll.offset().y.abs() <= px(1.),
+                        "{id} scrollbar must stay in its viewport after wheel scrolling: {:?}",
+                        scroll.offset()
+                    );
+                    assert_eq!(window.find(id).bounds(), bounds);
+                    window.drag(
+                        point(bounds.right() - px(8.), bounds.top() + px(8.)),
+                        point(bounds.right() - px(8.), bounds.bottom() - px(8.)),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    let bottom = scroll.offset().y;
+                    assert!(bottom < px(-100.), "{id} thumb must also drag down");
+                    window.scroll(id, ScrollDelta::Pixels(point(px(0.), px(50.))), cx);
+                    window.render_frame(cx);
+                    assert!(
+                        (scroll.offset().y - bottom - px(50.)).abs() <= px(1.),
+                        "{id} must still wheel-scroll upward after dragging"
+                    );
+                }
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
 async fn navigator_suite_rows_remain_clickable_after_minimum_resize(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor_at_size(cx, directory.path(), size(px(1600.), px(1000.)));

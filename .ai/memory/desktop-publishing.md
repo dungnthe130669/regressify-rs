@@ -1,6 +1,6 @@
 # Desktop Publishing
 
-Verified: 2026-10-07
+Verified: 2026-10-14
 
 - [Landing apps](../../src/desktop/landing.rs) are global per-user definitions,
   automatically stored by UUID. The [editor](../../src/desktop/ui/landing.rs)
@@ -67,7 +67,9 @@ Verified: 2026-10-07
   offscreen inputs may be absent from native accessibility until scrolling.
 - Landing base/site fields use Kit Form/Field; each dynamic site is a normal,
   unframed GroupBox. The native site-action/scroll test verifies pointer reorder
-  still works and the final URL input remains reachable through the owned handle.
+  still works, the final URL input remains reachable through the owned handle,
+  and the thumb can drag back to the top. The scrollbar belongs to the stationary
+  relative viewport: attaching Kit's overlay to the scrolling body clips it.
 - Native password clicks require the existing post-click `Wait-Control` settling
   before typing. Menu selection also needs a rendered-state wait before checking
   hidden fields. GPUI scroll tests must settle dialog animations before geometry.

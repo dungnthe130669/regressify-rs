@@ -319,7 +319,7 @@ impl Workbench {
             }
             if !state.status.is_empty() { body = body.child(div().id("landing-status").role(Role::Status).aria_label(state.status.clone()).text_color(cx.theme().danger).child(state.status.clone())); }
             dialog.title("Landing apps").w(px(700.)).overlay_closable(false).keyboard(false).close_button(false)
-                .child(div().id("landing-editor-viewport").role(Role::Group).aria_label("Landing editor").child(body.vertical_scrollbar(&state.scroll)))
+                .child(div().id("landing-editor-viewport").role(Role::Group).aria_label("Landing editor").relative().child(body).vertical_scrollbar(&state.scroll))
                 .footer(gpui_kit::component::dialog::DialogFooter::new().flex_wrap()
                     .child(Button::new("landing-close").label("Close").disabled(locked).on_click(window.listener_for(&view, |this, _, window, cx| this.request_landing_action(LandingAction::Close, window, cx))))
                     .child(Button::new("landing-preview").icon(gpui_kit::assets::IconName::ExternalLink).label("Preview").disabled(locked).on_click(window.listener_for(&view, |this, _, window, cx| this.preview_landing(window, cx))))
@@ -700,6 +700,24 @@ mod tests {
                 field.top() >= viewport.top() && field.bottom() <= viewport.bottom(),
                 "{field:?} outside {viewport:?}"
             );
+            window.drag(
+                gpui_kit::point(
+                    viewport.right() - gpui_kit::px(8.),
+                    viewport.bottom() - gpui_kit::px(8.),
+                ),
+                gpui_kit::point(
+                    viewport.right() - gpui_kit::px(8.),
+                    viewport.top() + gpui_kit::px(8.),
+                ),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                view.read(cx).landing.read(cx).scroll.offset().y.abs() <= gpui_kit::px(1.),
+                "The landing scrollbar must remain draggable after scrolling to the last site"
+            );
+            let first = window.find("landing-app-menu").bounds();
+            assert!(first.top() >= viewport.top() && first.bottom() <= viewport.bottom());
         })
         .unwrap();
     }

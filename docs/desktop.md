@@ -1133,6 +1133,8 @@ navigation, settings, action sequences, activity, source/log editors, and result
 lists. Image previews have horizontal and vertical scrollbars when the selected
 zoom exceeds the available space. Side-by-side previews share both scroll offsets;
 scrolling or dragging a thumb in either pane moves both images together.
+Test suites, Scenarios, and Landing apps keep their scrollbar tracks fixed to
+the viewport while content scrolls, so the thumb remains reachable at either end.
 
 Suite search matches display names, paths, and scenario labels, IDs, or URLs across the workspace,
 but displays matching suites only. Open a suite to see its scenarios below. The
