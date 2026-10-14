@@ -1,5 +1,7 @@
 /*.*
+/_diagnostics/
 /_snapshot/
+/states/
 bitmaps_reference/*
 bitmaps_test/
 html_report/

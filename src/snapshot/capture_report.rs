@@ -5,13 +5,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use rayon::prelude::*;
 use serde::Deserialize;
 
 use crate::helpers::{ScenarioName, scenario_names};
 
 use super::site::{
     Capture, CapturePreviews, Dimensions, ImageSize, ImageSizes, MAX_IMAGE_BYTES, MAX_REPORT_BYTES,
-    SuiteReport, checked_file, read_bounded, store_asset, valid_segment,
+    SuiteReport, checked_file, read_bounded, store_asset, valid_segment, valid_suite_id,
 };
 
 #[derive(Clone)]
@@ -173,15 +174,22 @@ fn capture_paths(report: &RawReport) -> Result<Vec<String>> {
         .collect()
 }
 
-fn image_asset(
+struct PendingImage<'a> {
+    source: PathBuf,
+    suite: &'a str,
+    role: &'static str,
+    name: String,
+    include_grid: bool,
+}
+
+fn resolve_image_source<'a>(
     root: &Path,
-    output: &Path,
-    suite: &str,
+    suite: &'a str,
+    run_id: &str,
     path: Option<&str>,
-    role: &str,
-    images: &mut BTreeMap<PathBuf, ImageAsset>,
+    role: &'static str,
     grid_paths: &BTreeSet<String>,
-) -> Result<Option<ImageAsset>> {
+) -> Result<Option<PendingImage<'a>>> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -201,6 +209,19 @@ fn image_asset(
             && relative.to_ascii_lowercase().ends_with(".png"),
         "Invalid snapshot image path"
     );
+    let name = if reference {
+        ensure!(!relative.contains('/'), "Invalid snapshot image path");
+        relative.to_owned()
+    } else {
+        let (image_run, name) = relative
+            .split_once('/')
+            .context("Snapshot test image has no capture run")?;
+        ensure!(
+            image_run == run_id && valid_segment(name),
+            "Invalid snapshot image path"
+        );
+        name.to_owned()
+    };
     let folder = if reference {
         "bitmaps_reference"
     } else {
@@ -214,31 +235,44 @@ fn image_asset(
     else {
         return Ok(None);
     };
-    if let Some(asset) = images.get(&source) {
-        return Ok(Some(asset.clone()));
-    }
-    let bytes = read_bounded(&source, MAX_IMAGE_BYTES)?;
+    Ok(Some(PendingImage {
+        source,
+        suite,
+        role,
+        name,
+        include_grid: grid_paths.contains(&normalized),
+    }))
+}
+
+fn decode_pending_image(
+    pending: &PendingImage<'_>,
+) -> Result<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, ImageSize)> {
+    let bytes = read_bounded(&pending.source, MAX_IMAGE_BYTES)?;
     ensure!(
         bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "Snapshot capture is not a PNG image: {}",
-        source.display()
+        pending.source.display()
     );
-    let (preview, grid, size) = preview_images(&bytes, grid_paths.contains(&normalized))
-        .with_context(|| {
+    let (preview, grid, size) =
+        preview_images(&bytes, pending.include_grid).with_context(|| {
             format!(
                 "Failed to create snapshot previews for '{}'",
-                source.display()
+                pending.source.display()
             )
         })?;
-    let name = if reference {
-        relative
-    } else {
-        relative
-            .split_once('/')
-            .context("Snapshot test image has no capture run")?
-            .1
-    };
-    let asset = ImageAsset {
+    Ok((bytes, preview, grid, size))
+}
+
+fn store_pending_image(
+    output: &Path,
+    pending: &PendingImage<'_>,
+    encoded: (Vec<u8>, Vec<u8>, Option<Vec<u8>>, ImageSize),
+) -> Result<ImageAsset> {
+    let (bytes, preview, grid, size) = encoded;
+    let PendingImage {
+        suite, role, name, ..
+    } = pending;
+    Ok(ImageAsset {
         size,
         full: store_asset(
             output,
@@ -259,9 +293,7 @@ fn image_asset(
                 )
             })
             .transpose()?,
-    };
-    images.insert(source, asset.clone());
-    Ok(Some(asset))
+    })
 }
 
 pub(super) fn load_suite(
@@ -271,10 +303,7 @@ pub(super) fn load_suite(
     images: &mut BTreeMap<PathBuf, ImageAsset>,
     logs: &mut super::logs::LogCache,
 ) -> Result<Option<SuiteReport>> {
-    ensure!(
-        valid_segment(id) && id != "_snapshot",
-        "Invalid snapshot suite ID"
-    );
+    ensure!(valid_suite_id(id), "Invalid snapshot suite ID");
     let Some(config) = checked_file(root, &Path::new(id).join("html_report/config.js"), true)?
     else {
         return Ok(None);
@@ -334,6 +363,9 @@ pub(super) fn load_suite(
             .map(|test| test.pair.scenario_name())
             .collect::<Vec<_>>(),
     );
+    let mut prepared_tests = Vec::with_capacity(report.tests.len());
+    let mut pending_images = Vec::new();
+    let mut queued_sources = BTreeSet::new();
     for (test, scenario) in report.tests.into_iter().zip(names) {
         let pair = test.pair;
         ensure!(
@@ -371,7 +403,7 @@ pub(super) fn load_suite(
                 .unwrap_or_default()
                 .to_owned()
         } else {
-            pair.file_name
+            pair.file_name.clone()
         };
         ensure!(
             valid_segment(&capture_id) && identifiers.insert(capture_id.clone()),
@@ -395,33 +427,78 @@ pub(super) fn load_suite(
                 Ok::<_, anyhow::Error>(value)
             })
             .transpose()?;
-        let reference = image_asset(
+        let reference = resolve_image_source(
             root,
-            output,
             id,
+            &run_id,
             pair.reference.as_deref(),
             "reference",
-            images,
             &grid_paths,
         )?;
-        let current = image_asset(
+        let current =
+            resolve_image_source(root, id, &run_id, pair.test.as_deref(), "test", &grid_paths)?;
+        let diff = resolve_image_source(
             root,
-            output,
             id,
-            pair.test.as_deref(),
-            "test",
-            images,
-            &grid_paths,
-        )?;
-        let diff = image_asset(
-            root,
-            output,
-            id,
+            &run_id,
             pair.diff_image.as_deref(),
             "diff",
-            images,
             &grid_paths,
         )?;
+        for pending in [&reference, &current, &diff].into_iter().flatten() {
+            if !images.contains_key(&pending.source)
+                && queued_sources.insert(pending.source.clone())
+            {
+                pending_images.push(PendingImage {
+                    source: pending.source.clone(),
+                    suite: pending.suite,
+                    role: pending.role,
+                    name: pending.name.clone(),
+                    include_grid: pending.include_grid,
+                });
+            }
+        }
+        prepared_tests.push((
+            test.status,
+            pair,
+            scenario,
+            capture_id,
+            mismatch,
+            reference.map(|item| item.source),
+            current.map(|item| item.source),
+            diff.map(|item| item.source),
+        ));
+    }
+    let decoded_images = if pending_images.len() <= 1 {
+        pending_images
+            .iter()
+            .map(decode_pending_image)
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        pending_images
+            .par_iter()
+            .map(decode_pending_image)
+            .collect::<Result<Vec<_>>>()?
+    };
+    for (pending, encoded) in pending_images.iter().zip(decoded_images) {
+        let asset = store_pending_image(output, pending, encoded)?;
+        images.insert(pending.source.clone(), asset);
+    }
+    for (status, pair, scenario, capture_id, mismatch, reference_src, current_src, diff_src) in
+        prepared_tests
+    {
+        let reference = reference_src
+            .as_ref()
+            .and_then(|source| images.get(source))
+            .cloned();
+        let current = current_src
+            .as_ref()
+            .and_then(|source| images.get(source))
+            .cloned();
+        let diff = diff_src
+            .as_ref()
+            .and_then(|source| images.get(source))
+            .cloned();
         let key = capture_id.strip_suffix(".png").unwrap_or(&capture_id);
         let label = if crate::helpers::generated_capture_label(&pair.label, key) {
             let (_, detail) =
@@ -458,7 +535,7 @@ pub(super) fn load_suite(
             label,
             scenario,
             selector: pair.selector,
-            status: test.status,
+            status,
             threshold: pair.mis_match_threshold,
             mismatch,
             error,
@@ -491,7 +568,8 @@ pub(super) fn load_suite(
         id: id.into(),
         display_name: crate::compare::report_gen::read_suite_metadata(&root.join(id))?
             .map(|metadata| metadata.display_name)
-            .unwrap_or(report.display_name),
+            .unwrap_or(report.display_name)
+            .filter(|name| !name.trim().is_empty()),
         run_id,
         tests,
     }))
@@ -976,6 +1054,10 @@ mod tests {
             assert_eq!(suite.id, "suite");
             assert_eq!(suite.run_id, "current");
         }
+        fs::remove_file(temp.path().join("suite/suite.json")).unwrap();
+        report["displayName"] = json!("   ");
+        write_fixture(temp.path(), &report);
+        assert!(load(temp.path()).unwrap().unwrap().display_name.is_none());
     }
 
     #[test]
@@ -1320,6 +1402,7 @@ mod tests {
         for path in [
             "../../private.png",
             "../bitmaps_reference/../secret.png",
+            "../bitmaps_reference/nested/home.png",
             "https://example.com/a.png",
             "../bitmaps_reference/CON.png",
         ] {
@@ -1328,6 +1411,15 @@ mod tests {
             assert!(load(temp.path()).is_err(), "{path}");
         }
         report["tests"][0]["pair"]["reference"] = serde_json::Value::Null;
+        fs::write(
+            temp.path().join("suite/bitmaps_test/prior/home_diff.png"),
+            png(80),
+        )
+        .unwrap();
+        report["tests"][0]["pair"]["diffImage"] = json!("../bitmaps_test/prior/home_diff.png");
+        write_fixture(temp.path(), &report);
+        assert!(load(temp.path()).is_err());
+        report["tests"][0]["pair"]["diffImage"] = serde_json::Value::Null;
         write_fixture(temp.path(), &report);
         fs::remove_file(temp.path().join("suite/bitmaps_test/current/home.png")).unwrap();
         assert!(load(temp.path()).is_err());

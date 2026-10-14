@@ -68,7 +68,7 @@ fn snapshot_suite_directories(regressify_dir: &Path) -> Result<Vec<String>> {
             })?
             .is_dir()
             && let Some(name) = path.file_name().and_then(|name| name.to_str())
-            && name != "_snapshot"
+            && super::site::valid_suite_id(name)
         {
             directories.push(name.to_string());
         }
@@ -136,5 +136,26 @@ mod tests {
         let directories = snapshot_suite_directories(temp.path()).unwrap();
 
         assert_eq!(directories, vec!["caf\u{00E9}", "store.frontend"]);
+    }
+
+    #[test]
+    fn snapshot_directory_discovery_ignores_reserved_internal_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in [
+            "_snapshot",
+            "_diagnostics",
+            "states",
+            ".snapshot-staging",
+            ".suite-update-staging",
+        ] {
+            std::fs::create_dir_all(temp.path().join(name)).unwrap();
+        }
+        assert!(snapshot_suite_directories(temp.path()).unwrap().is_empty());
+        for pattern in ["_diagnostics", "states", "_*", ".*"] {
+            assert!(
+                selected_snapshot_suites(temp.path(), &[pattern.into()]).is_err(),
+                "{pattern}"
+            );
+        }
     }
 }

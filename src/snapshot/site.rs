@@ -217,6 +217,14 @@ pub(super) fn valid_segment(value: &str) -> bool {
         && !crate::helpers::is_windows_reserved_path_component(value)
 }
 
+pub(super) fn valid_suite_id(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    valid_segment(value)
+        && !matches!(lower.as_str(), "_snapshot" | "_diagnostics" | "states")
+        && !lower.starts_with(".snapshot-")
+        && !lower.starts_with(".suite-update-")
+}
+
 fn normal_relative(relative: &Path) -> Result<()> {
     ensure!(
         !relative.as_os_str().is_empty()
@@ -291,9 +299,58 @@ pub(super) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn output_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
-    let relative = Path::new(relative);
-    normal_relative(relative)?;
+enum RollbackStep {
+    File {
+        path: PathBuf,
+        prior: Option<Vec<u8>>,
+    },
+    Case {
+        current: PathBuf,
+        original: PathBuf,
+    },
+}
+
+fn ensure_exact_case(path: &Path, mut rollback: Option<&mut Vec<RollbackStep>>) -> Result<()> {
+    let Some(expected) = path.file_name() else {
+        return Ok(());
+    };
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve snapshot artifact '{}'", path.display()))?;
+    if canonical.file_name() != Some(expected) {
+        let parent = path.parent().context("Snapshot path has no parent")?;
+        let original_name = canonical.file_name().map(std::ffi::OsStr::to_os_string);
+        let temporary = parent.join(format!(".case-{}", uuid::Uuid::new_v4()));
+        fs::rename(path, &temporary).with_context(|| {
+            format!(
+                "Failed to normalize snapshot path case '{}'",
+                path.display()
+            )
+        })?;
+        if let Err(error) = fs::rename(&temporary, path) {
+            let _ = fs::rename(&temporary, path);
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to normalize snapshot path case '{}'",
+                    path.display()
+                )
+            });
+        }
+        if let (Some(rollback), Some(original_name)) = (rollback.as_deref_mut(), original_name) {
+            rollback.push(RollbackStep::Case {
+                current: path.to_path_buf(),
+                original: parent.join(original_name),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_output_parent(
+    root: &Path,
+    relative: &Path,
+    mut rollback: Option<&mut Vec<RollbackStep>>,
+) -> Result<()> {
     let mut parent = root.to_path_buf();
     for component in relative
         .parent()
@@ -302,11 +359,14 @@ fn output_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
     {
         parent.push(component);
         match fs::symlink_metadata(&parent) {
-            Ok(metadata) => ensure!(
-                metadata.is_dir() && !metadata.file_type().is_symlink(),
-                "Snapshot output parent must be a real directory: {}",
-                parent.display()
-            ),
+            Ok(metadata) => {
+                ensure!(
+                    metadata.is_dir() && !metadata.file_type().is_symlink(),
+                    "Snapshot output parent must be a real directory: {}",
+                    parent.display()
+                );
+                ensure_exact_case(&parent, rollback.as_deref_mut())?;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir(&parent).with_context(|| {
                     format!(
@@ -325,6 +385,13 @@ fn output_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn output_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
+    let relative = Path::new(relative);
+    normal_relative(relative)?;
+    ensure_output_parent(root, relative, None)?;
     if let Some(existing) = checked_file(root, relative, true)?
         && fs::read(&existing).with_context(|| {
             format!(
@@ -333,11 +400,94 @@ fn output_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
             )
         })? == bytes
     {
+        ensure_exact_case(&existing, None)?;
         return Ok(());
     }
     let path = root.join(relative);
     write_file_atomically(&path, bytes)
-        .with_context(|| format!("Failed to write snapshot artifact '{}'", path.display()))
+        .with_context(|| format!("Failed to write snapshot artifact '{}'", path.display()))?;
+    ensure_exact_case(&path, None)
+}
+
+fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf]) -> Result<()> {
+    let manifest_rel = Path::new("_snapshot/data/manifest.json");
+    let status_rel = Path::new(STATUS_PATH);
+    let index_rel = Path::new("index.html");
+    let gitignore_rel = Path::new(".gitignore");
+    let mut ordered: Vec<&Path> = dependencies
+        .iter()
+        .map(PathBuf::as_path)
+        .filter(|path| *path != manifest_rel && *path != status_rel && *path != index_rel)
+        .collect();
+    for tail in [manifest_rel, status_rel] {
+        if dependencies.iter().any(|path| path.as_path() == tail) {
+            ordered.push(tail);
+        }
+    }
+    ordered.push(gitignore_rel);
+    ordered.push(index_rel);
+
+    let mut applied: Vec<RollbackStep> = Vec::new();
+    let result = (|| -> Result<()> {
+        for relative in ordered {
+            normal_relative(relative)?;
+            let limit = if relative == gitignore_rel || relative == index_rel {
+                MAX_REPORT_BYTES
+            } else {
+                MAX_IMAGE_BYTES
+            };
+            let bytes = read_bounded(&staged_root.join(relative), limit)?;
+            ensure_output_parent(root, relative, Some(&mut applied))?;
+            let prior = if let Some(existing) = checked_file(root, relative, true)? {
+                let existing_bytes = fs::read(&existing).with_context(|| {
+                    format!(
+                        "Failed to read existing snapshot artifact '{}'",
+                        existing.display()
+                    )
+                })?;
+                if existing_bytes == bytes {
+                    ensure_exact_case(&existing, Some(&mut applied))?;
+                    continue;
+                }
+                Some(existing_bytes)
+            } else {
+                None
+            };
+            let path = root.join(relative);
+            write_file_atomically(&path, &bytes).with_context(|| {
+                format!("Failed to write snapshot artifact '{}'", path.display())
+            })?;
+            applied.push(RollbackStep::File {
+                path: path.clone(),
+                prior,
+            });
+            ensure_exact_case(&path, Some(&mut applied))?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        for step in applied.into_iter().rev() {
+            match step {
+                RollbackStep::File { path, prior } => match prior {
+                    Some(bytes) => {
+                        let _ = write_file_atomically(&path, &bytes);
+                    }
+                    None => {
+                        let _ = fs::remove_file(&path);
+                    }
+                },
+                RollbackStep::Case { current, original } => {
+                    if let Some(parent) = current.parent() {
+                        let temporary = parent.join(format!(".case-{}", uuid::Uuid::new_v4()));
+                        if fs::rename(&current, &temporary).is_ok() {
+                            let _ = fs::rename(&temporary, &original);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
 }
 
 fn encoded_path(relative: &str) -> Result<String> {
@@ -502,27 +652,9 @@ pub(crate) fn generate_site(
         .collect::<Vec<_>>();
     let dependencies = artifact_paths(&staged_root, &selected)?;
     // Invalid report input must never overwrite a stable path in the published site.
-    for path in dependencies
-        .iter()
-        .filter(|path| path.as_path() != Path::new("index.html"))
-    {
-        output_file(
-            &root,
-            &path.to_string_lossy().replace('\\', "/"),
-            &read_bounded(&staged_root.join(path), MAX_IMAGE_BYTES)?,
-        )?;
-    }
-    output_file(
-        &root,
-        ".gitignore",
-        &read_bounded(&staged_root.join(".gitignore"), MAX_REPORT_BYTES)?,
-    )?;
-    output_file(
-        &root,
-        "index.html",
-        &read_bounded(&staged_root.join("index.html"), MAX_REPORT_BYTES)?,
-    )?;
+    publish_staged_files(&staged_root, &root, &dependencies)?;
     prune_generated_files(&root, &dependencies)?;
+    artifact_paths(&root, &selected)?;
     for suite in &manifest.suites {
         remove_legacy(&root, &format!("{}/html_report/index.html", suite.id))?;
         for name in [
@@ -757,10 +889,7 @@ fn read_versioned(root: &Path, path: &str, kind: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn read_manifest(root: &Path) -> Result<(String, Manifest)> {
-    let source = checked_file(root, Path::new("index.html"), false)?
-        .context("Run snapshot before deploying reports")?;
-    let html = String::from_utf8(read_bounded(&source, MAX_REPORT_BYTES)?)?;
+fn parse_manifest(root: &Path, html: &str) -> Result<(String, Manifest)> {
     let marker = "name=\"regressify-manifest\" content=\"";
     ensure!(
         html.matches(marker).count() == 1,
@@ -771,12 +900,23 @@ fn read_manifest(root: &Path) -> Result<(String, Manifest)> {
         .and_then(|(_, rest)| rest.split_once('"'))
         .map(|(path, _)| path)
         .context("Snapshot manifest URL is missing")?;
+    ensure!(
+        versioned_path(path, "data")? == Path::new("_snapshot/data/manifest.json"),
+        "Snapshot manifest URL is invalid; regenerate the snapshot"
+    );
     let manifest: Manifest = serde_json::from_slice(&read_versioned(root, path, "data")?)?;
     ensure!(
         manifest.version == 2,
         "Unsupported snapshot manifest version"
     );
     Ok((path.to_owned(), manifest))
+}
+
+fn read_manifest(root: &Path) -> Result<(String, Manifest)> {
+    let source = checked_file(root, Path::new("index.html"), false)?
+        .context("Run snapshot before deploying reports")?;
+    let html = String::from_utf8(read_bounded(&source, MAX_REPORT_BYTES)?)?;
+    parse_manifest(root, &html)
 }
 
 /// Inventory only the active manifest, never stale assets, captures, or workspace state.
@@ -787,7 +927,7 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
     let mut expected = BTreeSet::new();
     for id in selected {
         ensure!(
-            valid_segment(id) && expected.insert(id.as_str()),
+            valid_suite_id(id) && expected.insert(id.as_str()),
             "Invalid or duplicate snapshot suite selection"
         );
     }
@@ -813,31 +953,55 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
         paths.insert(PathBuf::from(STATUS_PATH));
     }
     let mut image_versions = BTreeMap::<PathBuf, String>::new();
+    let mut validated_logs = BTreeSet::new();
     for (name, _) in FRONTEND_FILES {
         if *name != "gitignore" {
-            paths.insert(PathBuf::from(name));
+            let relative = PathBuf::from(name);
+            checked_file(&root, &relative, false)?;
+            paths.insert(relative);
         }
     }
     for summary in manifest.suites {
         ensure!(
-            seen.insert(summary.id.clone())
+            valid_suite_id(&summary.id)
+                && seen.insert(summary.id.clone())
                 && summary.passed.checked_add(summary.failed) == Some(summary.total)
                 && summary.errors <= summary.failed,
             "Invalid snapshot suite summary"
         );
+        let report_path = versioned_path(&summary.report, "data")?;
+        ensure!(
+            report_path == Path::new(&format!("_snapshot/data/suites/{}.json", summary.id)),
+            "Snapshot suite report path does not match its summary"
+        );
         let report: SuiteReport =
             serde_json::from_slice(&read_versioned(&root, &summary.report, "data")?)?;
+        let passed = report
+            .tests
+            .iter()
+            .filter(|capture| capture.status == "pass")
+            .count();
+        let errors = report
+            .tests
+            .iter()
+            .filter(|capture| capture.error.is_some())
+            .count();
         ensure!(
-            report.id == summary.id && report.tests.len() == summary.total,
+            report.id == summary.id
+                && report.tests.len() == summary.total
+                && passed == summary.passed
+                && report.tests.len() - passed == summary.failed
+                && errors == summary.errors,
             "Snapshot suite data does not match its summary"
         );
-        paths.insert(versioned_path(&summary.report, "data")?);
+        paths.insert(report_path);
         let mut captures = BTreeSet::new();
         for capture in report.tests {
             ensure!(
                 valid_segment(&capture.id)
                     && captures.insert(capture.id.clone())
-                    && matches!(capture.status.as_str(), "pass" | "fail"),
+                    && matches!(capture.status.as_str(), "pass" | "fail")
+                    && (capture.error.is_none() || capture.status == "fail"),
                 "Invalid snapshot capture"
             );
             for image in capture.images() {
@@ -859,40 +1023,54 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
                         "Snapshot log has too many chunks"
                     );
                     ensure!(
+                        matches!(
+                            log.state,
+                            crate::diagnostics::journal::ArchiveState::Complete
+                                | crate::diagnostics::journal::ArchiveState::Partial
+                        ) || (log.chunks.is_empty() && log.records == 0),
+                        "Unavailable snapshot log cannot include chunks"
+                    );
+                    ensure!(
                         log.state != crate::diagnostics::journal::ArchiveState::Complete
-                            || log.missing_records == Some(0),
+                            || (log.missing_records == Some(0) && !log.chunks.is_empty()),
                         "Complete snapshot log has missing records"
                     );
-                    let mut records = 0;
-                    let mut chunks = BTreeSet::new();
-                    for chunk in &log.chunks {
-                        let relative = versioned_path(chunk, "data")?;
-                        let operation = log
-                            .operation_id
-                            .as_ref()
-                            .context("Log chunk has no operation identity")?;
-                        ensure!(
-                            relative.starts_with(
-                                Path::new("_snapshot/data/logs").join(operation.as_str())
-                            ) && chunks.insert(relative.clone()),
-                            "Snapshot log path does not belong to its operation"
-                        );
-                        if let Some(previous) =
-                            image_versions.insert(relative.clone(), chunk.clone())
-                        {
-                            ensure!(previous == *chunk, "Conflicting snapshot log versions");
+                    if log.chunks.is_empty() {
+                        ensure!(log.records == 0, "Snapshot log record count mismatch");
+                    } else if validated_logs.insert((
+                        log.operation_id.clone(),
+                        log.execution_id.clone(),
+                        log.chunks.clone(),
+                        log.records,
+                    )) {
+                        let mut records = 0;
+                        let mut chunks = BTreeSet::new();
+                        for chunk in &log.chunks {
+                            let relative = versioned_path(chunk, "data")?;
+                            let operation = log
+                                .operation_id
+                                .as_ref()
+                                .context("Log chunk has no operation identity")?;
+                            ensure!(
+                                relative.starts_with(
+                                    Path::new("_snapshot/data/logs").join(operation.as_str())
+                                ) && chunks.insert(relative.clone()),
+                                "Snapshot log path does not belong to its operation"
+                            );
+                            if let Some(previous) =
+                                image_versions.insert(relative.clone(), chunk.clone())
+                            {
+                                ensure!(previous == *chunk, "Conflicting snapshot log versions");
+                            }
+                            let bytes = read_versioned(&root, chunk, "data")?;
+                            super::logs::validate_chunk(&bytes, log, &mut records)?;
+                            paths.insert(relative);
                         }
-                        let bytes = read_versioned(&root, chunk, "data")?;
-                        super::logs::validate_chunk(&bytes, log, &mut records)?;
-                        paths.insert(relative);
+                        ensure!(records == log.records, "Snapshot log record count mismatch");
                     }
-                    ensure!(records == log.records, "Snapshot log record count mismatch");
                 }
             }
         }
-    }
-    for path in &paths {
-        checked_file(&root, path, false)?;
     }
     Ok(paths.into_iter().collect())
 }
@@ -905,7 +1083,7 @@ pub(crate) fn update_suite(
     display_name: Option<&str>,
 ) -> Result<()> {
     ensure!(
-        valid_segment(old_id) && new_id.is_none_or(valid_segment),
+        valid_suite_id(old_id) && new_id.is_none_or(valid_suite_id),
         "Invalid snapshot suite identity"
     );
     let root = output.canonicalize()?;
@@ -920,7 +1098,12 @@ pub(crate) fn update_suite(
         .collect();
     artifact_paths(&root, &selected)?;
     ensure!(
-        new_id.is_none_or(|id| id == old_id || !selected.iter().any(|existing| existing == id)),
+        new_id.is_none_or(|id| {
+            id.eq_ignore_ascii_case(old_id)
+                || !selected
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(id))
+        }),
         "A published report already uses the destination suite ID"
     );
     let mut reports = Vec::new();
@@ -944,19 +1127,23 @@ pub(crate) fn update_suite(
         }
         if let Some(new_id) = new_id.filter(|id| *id != old_id) {
             let prefix = Path::new("_snapshot/images").join(old_id);
+            let mut staged_images = Vec::new();
             for capture in &mut report.tests {
                 for image in capture.images_mut() {
                     let relative = versioned_path(image, "images")?;
                     if let Ok(suffix) = relative.strip_prefix(&prefix) {
                         let bytes = read_versioned(&root, image, "images")?;
                         let destination = Path::new("_snapshot/images").join(new_id).join(suffix);
-                        *image = store_asset(
-                            &root,
-                            &destination.to_string_lossy().replace('\\', "/"),
-                            &bytes,
-                        )?;
+                        staged_images.push((
+                            image,
+                            destination.to_string_lossy().replace('\\', "/"),
+                            bytes,
+                        ));
                     }
                 }
+            }
+            for (image, destination, bytes) in staged_images {
+                *image = store_asset(&root, &destination, &bytes)?;
             }
         }
         summary.report = store_json(
@@ -977,7 +1164,9 @@ pub(crate) fn update_suite(
         .map(|suite| suite.id.clone())
         .collect::<Vec<_>>();
     let active = artifact_paths(&root, &selected)?;
-    prune_generated_files(&root, &active)
+    prune_generated_files(&root, &active)?;
+    artifact_paths(&root, &selected)?;
+    Ok(())
 }
 
 #[cfg(feature = "desktop")]
@@ -997,7 +1186,7 @@ pub(crate) fn image_roles(output: &Path) -> Result<Option<BTreeMap<PathBuf, Imag
     if !html.contains("name=\"regressify-manifest\"") {
         return Ok(None);
     }
-    let (_, manifest) = read_manifest(&root)?;
+    let (_, manifest) = parse_manifest(&root, &html)?;
     let mut roles = BTreeMap::<PathBuf, ImageRole>::new();
     for summary in manifest.suites {
         let report: SuiteReport =
@@ -1347,6 +1536,18 @@ mod tests {
                 .unwrap()
                 .contains("/suites/* /index.html 200")
         );
+        let gitignore = fs::read_to_string(temp.path().join(".gitignore")).unwrap();
+        for required in [
+            "/_diagnostics/",
+            "/_snapshot/",
+            "/states/",
+            "!bitmaps_reference/*.png",
+        ] {
+            assert!(
+                gitignore.lines().any(|line| line.trim() == required),
+                "Missing {required} in generated .gitignore"
+            );
+        }
     }
 
     #[test]
@@ -1439,13 +1640,23 @@ mod tests {
 
         let temporary = tempfile::tempdir()?;
         let root = temporary.path().canonicalize()?;
+        let initial = SnapshotArgs {
+            title: Some("private old report".into()),
+            ..args()
+        };
+        generate_site(&root, &[], &initial, &WorkspaceConfig::default())?;
         let path = root.join("index.html");
-        fs::write(&path, b"private old report")?;
+        let previous_index = fs::read(&path)?;
+        let previous_manifest = fs::read(root.join("_snapshot/data/manifest.json"))?;
         let locked = fs::OpenOptions::new()
             .read(true)
             .share_mode(0)
             .open(&path)?;
-        let result = generate_site(&root, &[], &args(), &WorkspaceConfig::default());
+        let updated = SnapshotArgs {
+            title: Some("Updated Title".into()),
+            ..args()
+        };
+        let result = generate_site(&root, &[], &updated, &WorkspaceConfig::default());
         drop(locked);
 
         let error = result.unwrap_err();
@@ -1463,8 +1674,13 @@ mod tests {
         );
         assert!(message.contains(&path.display().to_string()), "{message}");
         assert!(!message.contains("private old report"), "{message}");
-        assert_eq!(fs::read(&path)?, b"private old report");
-        generate_site(&root, &[], &args(), &WorkspaceConfig::default())?;
+        assert_eq!(fs::read(&path)?, previous_index);
+        assert_eq!(
+            fs::read(root.join("_snapshot/data/manifest.json"))?,
+            previous_manifest
+        );
+        assert!(artifact_paths(&root, &[]).is_ok());
+        generate_site(&root, &[], &updated, &WorkspaceConfig::default())?;
         assert!(artifact_paths(&root, &[]).is_ok());
         Ok(())
     }
@@ -1705,7 +1921,20 @@ mod tests {
         let index = fs::read(root.join("index.html")).unwrap();
         refresh_site_versions(&root).unwrap();
         assert_eq!(fs::read(root.join("index.html")).unwrap(), index);
-        update_suite(&root, "one", Some("renamed"), None).unwrap();
+        update_suite(&root, "one", Some("One"), None).unwrap();
+        let case_renamed = artifact_paths(&root, &["One".into()]).unwrap();
+        assert!(case_renamed.contains(&PathBuf::from(
+            "_snapshot/images/One/test-thumbnail/home.png"
+        )));
+        assert_eq!(
+            root.join("_snapshot/images/One")
+                .canonicalize()
+                .unwrap()
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("One")
+        );
+        update_suite(&root, "One", Some("renamed"), None).unwrap();
         let inventory = artifact_paths(&root, &["renamed".into()]).unwrap();
         assert!(inventory.contains(&PathBuf::from(
             "_snapshot/images/renamed/test-thumbnail/home.png"

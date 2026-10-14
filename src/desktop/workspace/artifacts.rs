@@ -32,6 +32,13 @@ pub(super) struct ArtifactUpdate {
     replacements: Vec<Replacement>,
 }
 
+fn same_existing_path(first: &Path, second: &Path) -> bool {
+    match (first.canonicalize(), second.canonicalize()) {
+        (Ok(first), Ok(second)) => first == second,
+        _ => false,
+    }
+}
+
 pub(super) fn existing_root(root: &Path) -> Result<Option<PathBuf>> {
     for ancestor in root.ancestors() {
         match fs::symlink_metadata(ancestor) {
@@ -160,9 +167,11 @@ impl ArtifactUpdate {
             fs::create_dir(&backup)?;
             let source = root.join(old_id);
             if let Some(new_id) = new_id.filter(|id| *id != old_id) {
+                let destination = root.join(new_id);
                 ensure!(
-                    fs::symlink_metadata(root.join(new_id))
-                        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+                    same_existing_path(&source, &destination)
+                        || fs::symlink_metadata(&destination)
+                            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
                     "Destination suite artifacts already exist"
                 );
             }
@@ -263,8 +272,9 @@ impl ArtifactUpdate {
                     && destination != &replacement.source
                 {
                     ensure!(
-                        fs::symlink_metadata(destination)
-                            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+                        same_existing_path(&replacement.source, destination)
+                            || fs::symlink_metadata(destination)
+                                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
                         "Destination suite artifacts appeared during the operation"
                     );
                 }

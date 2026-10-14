@@ -745,24 +745,30 @@ impl JournalReader {
     }
 
     pub fn archive_state(&self) -> ArchiveState {
+        self.archive_state_and_missing().0
+    }
+
+    pub(crate) fn archive_state_and_missing(&self) -> (ArchiveState, Option<u64>) {
         match fs::symlink_metadata(self.directory.join("cancellation.json")) {
             Ok(_) => {
                 return self
                     .visit(|_| {})
-                    .map(|_| ArchiveState::Partial)
-                    .unwrap_or(ArchiveState::LoadingError);
+                    .map(|_| (ArchiveState::Partial, None))
+                    .unwrap_or((ArchiveState::LoadingError, None));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return ArchiveState::LoadingError,
+            Err(_) => return (ArchiveState::LoadingError, None),
         }
         let path = self.directory.join("index.json");
         match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ArchiveState::Partial,
-            Err(_) => ArchiveState::LoadingError,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                (ArchiveState::Partial, None)
+            }
+            Err(_) => (ArchiveState::LoadingError, None),
             Ok(_) => self
                 .verified_index()
-                .map(|index| index.state)
-                .unwrap_or(ArchiveState::LoadingError),
+                .map(|index| (index.state, index.missing_records))
+                .unwrap_or((ArchiveState::LoadingError, None)),
         }
     }
 

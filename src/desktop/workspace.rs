@@ -917,8 +917,11 @@ impl Workspace {
             );
             let normalized = id.to_ascii_lowercase();
             ensure!(
-                !matches!(normalized.as_str(), "." | ".." | "_snapshot" | "states")
-                    && !normalized.starts_with(".suite-update-"),
+                !matches!(
+                    normalized.as_str(),
+                    "." | ".." | "_snapshot" | "_diagnostics" | "states"
+                ) && !normalized.starts_with(".suite-update-")
+                    && !normalized.starts_with(".snapshot-"),
                 "Reserved suite output ID"
             );
         }
