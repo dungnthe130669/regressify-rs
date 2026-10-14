@@ -98,6 +98,11 @@ on the user's `PATH`, then verify all intended screenshots in the fresh run.
 This updates successful references, so target-page and baseline-write permissions
 still apply; blocked verification must be reported as incomplete.
 
+For components that expand between scenarios, the MCP guidance recommends the
+same larger capture area for default and expanded states: viewport or full page.
+A header-only default screenshot can miss a menu that is already open before a
+click. Optional component details supplement, rather than replace, these images.
+
 The MCP guidance and generated `AGENTS.md` direct agents to reuse and record
 site-specific lessons in the consumer project's `.ai/memory/`: one behavior or
 issue on one site per file, at most 60 lines, with a compact linked index. Notes

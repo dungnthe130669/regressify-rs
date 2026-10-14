@@ -161,7 +161,7 @@ scenarios:
   - id: header
     label: Header
     url: https://example.com
-    selector: header
+    selector: viewport
   - id: products-menu
     label: Products menu
     url: https://example.com
@@ -183,9 +183,18 @@ scenarios:
     selector: viewport
 ```
 
-`header` records the closed bar in every viewport. Opened panels usually extend
-past the header, where a `header` capture would cut them off, so
-`products-menu` captures the visible viewport and the panel itself. On phones
+The closed/default `header` and opened/expanded menu scenarios use the same larger
+capture area: `viewport`. A header-only default screenshot could miss a menu
+incorrectly expanded before interaction. The initial scenario therefore takes
+no opening or forced-closing action and retains the area where a menu could
+appear. Keep matching viewport sizes and scroll positions for QA's cross-state
+inspection; each capture still compares against its own reference. Choose full
+page consistently instead when the relevant area extends beyond the viewport.
+
+Opened panels usually extend past the header, where a `header` capture would
+cut them off. `products-menu` adds a panel detail without replacing its common
+viewport image; the default scenario does not require that panel to be visible.
+On phones
 the first click opens the navigation drawer; its `viewportNames` skips it in
 desktop jobs. The hover-opened account menu uses `viewport`, which never
 scrolls, so the pointer stays on its trigger. Each viewport label from

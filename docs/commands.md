@@ -333,6 +333,16 @@ selections and the documented zero-timeout fallbacks. Guides/schemas are also MC
 require explicit selection of resources or prompts rather than loading them
 automatically.
 
+For related component states with different visible areas, such as a header
+before and after opening a menu, use the same larger capture area in both
+scenarios. The MCP overview, scenarios guide, recipes, and navigation example
+recommend viewport captures, or full page when needed, with matching viewport
+sizes and scroll positions. A header-only default capture could hide a menu
+incorrectly open before interaction. Capture the untouched default state; do
+not force the menu closed or hide it first. Element details are optional
+supplements. QA can inspect states in context, while automated comparison still
+matches each capture to its own reference.
+
 After every suite creation or edit, the MCP instructions require agents to run
 `regressify ref --test-suite <suite-name>` for each changed suite from the consumer
 workspace using authorized local terminal tools. The CLI and desktop app are

@@ -56,10 +56,18 @@ server's version; do not assume newer fields work in an older installed CLI.
 - Action values, URLs, and cookies are literal; only `basicAuth` expands
   environment variables. Keep secrets out of suites.
 - A test image whose dimensions differ from its reference always fails, so
-  prefer component `selectors` when unrelated page height may change.
+  prefer component `selectors` for fixed-area tests when unrelated page height
+  may change; do not crop away the behavior under test.
 - An element screenshot keeps only the pixels inside that element's box. Menus,
   drawers, popovers, and dialogs opened by actions usually extend beyond their
-  container, so capture `viewport` or the opened layer as well.
+  container. When a component's visible area changes between related scenarios,
+  recommend the same larger capture area for closed/default and opened/expanded
+  states: `viewport`, or full page if the relevant area extends beyond it. A
+  header-only default capture can miss a menu incorrectly expanded before
+  interaction. Keep matching viewport sizes and scroll positions so QA can
+  compare the states. Element close-ups may supplement, not replace, these
+  context captures. Observe the default state without first closing or hiding
+  a possibly unexpected layer. Read the scenarios and recipes guides for details.
 - A last `save` among a scenario's own actions replaces its automatic final
   screenshot; explicit `selectors` are still captured.
 - Mask only nondeterministic regions, never the behavior under test.

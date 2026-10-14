@@ -92,9 +92,9 @@ pub(super) fn build() -> Result<Value> {
             "navigation-menus",
             "suite",
             "visual_tests/navigation.tests.yaml",
-            "A closed header plus opened menus, using the phone and desktop labels from the viewports example. An element capture keeps only pixels inside that element's box, so opened panels and drawers use viewport or their own selector, not header. Replace selectors with verified page selectors.",
+            "Closed/default and opened/expanded navigation states use the same larger capture area: viewport in every scenario, plus an optional panel detail. A header-only default capture could miss a menu incorrectly expanded before interaction. Use full page instead when the relevant area extends beyond the viewport. Uses the phone and desktop labels from the viewports example; replace selectors with verified page selectors.",
             json!({"viewportNames": ["phone", "desktop"], "scenarios": [
-                {"id": "header", "label": "Header", "url": "https://example.com", "selector": "header"},
+                {"id": "header", "label": "Header", "url": "https://example.com", "selector": "viewport"},
                 {"id": "products-menu", "label": "Products menu", "url": "https://example.com", "actions": [{"click": "#menu-toggle", "viewportNames": "phone"}, {"click": "#products-toggle"}, {"wait": "#products-panel"}], "selectors": ["viewport", "#products-panel"]},
                 {"id": "account-menu", "label": "Account menu", "url": "https://example.com", "viewportNames": "desktop", "actions": [{"hover": "#account-toggle"}, {"wait": "#account-dropdown"}], "selector": "viewport"}
             ]}),
@@ -236,6 +236,12 @@ pub(super) fn build() -> Result<Value> {
             "recipes for complete common-page patterns. Use topic troubleshooting for failed tests, ",
             "reports, logs, or setup issues, and topic hooks before writing injected browser scripts. ",
             "Use get_schema for exact fields and get_example for synthetic templates. ",
+            "When a component's visible area changes between related scenarios, recommend the same larger capture area ",
+            "for closed/default and opened/expanded states: viewport, or full page if needed to include the whole relevant area. ",
+            "A header-only default capture can miss a menu incorrectly expanded before interaction. ",
+            "Keep matching viewport sizes and scroll positions so QA can compare the states; ",
+            "element close-ups may supplement, not replace, these context captures. ",
+            "Observe the default state without first closing or hiding a possibly unexpected layer. ",
             "Whenever you create or edit a test suite, you must run ",
             "regressify ref --test-suite <suite-name> for each changed suite after the final edit, ",
             "from the consumer workspace using the client's authorized terminal tools. The CLI and ",
@@ -657,6 +663,73 @@ mod tests {
             assert!(
                 overview.contains(contract),
                 "Missing memory rule: {contract}"
+            );
+        }
+    }
+
+    #[test]
+    fn related_component_states_use_a_shared_context_capture() {
+        let catalog = build().unwrap();
+        for (surface, guidance) in [
+            ("instructions", catalog["instructions"].as_str().unwrap()),
+            (
+                "overview",
+                catalog["guides"]["overview"]["content"].as_str().unwrap(),
+            ),
+            (
+                "scenarios",
+                catalog["guides"]["scenarios"]["content"].as_str().unwrap(),
+            ),
+            (
+                "recipes",
+                catalog["guides"]["recipes"]["content"].as_str().unwrap(),
+            ),
+        ] {
+            let guidance = guidance.split_whitespace().collect::<Vec<_>>().join(" ");
+            for contract in [
+                "same larger capture area",
+                "closed/default",
+                "opened/expanded",
+                "viewport",
+                "full page",
+                "before interaction",
+                "header-only",
+            ] {
+                assert!(
+                    guidance.contains(contract),
+                    "Missing related-state capture guidance in {surface}: {contract}"
+                );
+            }
+        }
+        let example: Value = serde_yaml::from_str(
+            catalog["examples"]["navigation-menus"]["content"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let recipes = catalog["guides"]["recipes"]["content"].as_str().unwrap();
+        let navigation = recipes
+            .split_once("## Header Navigation and Menus")
+            .unwrap()
+            .1;
+        let recipe: Value = serde_yaml::from_str(&yaml_blocks(navigation)[0]).unwrap();
+        assert_eq!(
+            recipe, example,
+            "Navigation recipe and typed example must agree"
+        );
+        let scenarios = example["scenarios"].as_array().unwrap();
+        assert_eq!(scenarios[0]["id"], "header");
+        assert!(
+            scenarios[0].get("actions").is_none(),
+            "Observe the default state without forcing menus closed"
+        );
+        for scenario in scenarios {
+            assert!(
+                scenario["selector"] == "viewport"
+                    || scenario["selectors"].as_array().is_some_and(|selectors| {
+                        selectors.iter().any(|selector| selector == "viewport")
+                    }),
+                "Every related menu state needs the common viewport capture"
             );
         }
     }

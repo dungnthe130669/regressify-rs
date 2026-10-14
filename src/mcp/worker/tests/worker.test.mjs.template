@@ -135,6 +135,24 @@ test("consumer memory and suite capture guidance reaches instructions, tools, re
   }
 });
 
+test("related-state capture guidance reaches startup, tools, resources, and prompts", async () => {
+  const guide = await client.callTool({ name: "get_authoring_guide", arguments: {} });
+  const { resources } = await client.listResources();
+  const overview = resources.find((resource) => resource.name === "guide-overview");
+  assert.ok(overview);
+  const resource = await client.readResource({ uri: overview.uri });
+  const prompt = await client.getPrompt({ name: "author_regressify", arguments: { topic: "actions" } });
+  for (const text of [client.getInstructions(), guide.content[0].text, resource.contents[0].text, prompt.messages[0].content.text]) {
+    const normalized = text.replace(/\s+/g, " ");
+    for (const instruction of ["same larger capture area", "closed/default", "opened/expanded", "viewport", "full page", "before interaction", "header-only"]) {
+      assert.ok(normalized.includes(instruction), `Missing related-state capture instruction: ${instruction}`);
+    }
+  }
+  const example = await client.callTool({ name: "get_example", arguments: { task: "navigation-menus" } });
+  assert.match(example.content[0].text, /selector: viewport/);
+  assert.doesNotMatch(example.content[0].text, /selector: header/);
+});
+
 test("exported script examples are standard browser JavaScript", async () => {
   const scripts = {};
   for (const name of ["ready-script", "before-script", "scenario-ready-script"]) {

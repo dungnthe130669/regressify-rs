@@ -50,6 +50,11 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
    with DOM stubs and keep companion suite paths consistent; Node-based Worker
    development tests are not capture prerequisites. Distinguish legacy
    text-appending `keyPress` shortcuts from real `press` keyboard events.
+   Related component states with changing visible areas should share a larger
+   viewport/full-page capture, including the untouched default state; focused
+   details are supplementary. Keep startup, overview, scenarios, recipes, and
+   the typed navigation example consistent. Catalog and Worker regressions
+   cover delivery and guard against header-only default examples.
 1. The Worker serves public read-only tools, resources, and prompts at `/mcp`. Use the pinned SDK handler for discovery/transport. Retain Origin validation, request byte limits, no arbitrary path/URL inputs, no user data storage, and generic failure responses. Authentication is a separate deployment concern.
 1. Preserve both current stateless and legacy-client tests. Current HTTP requests need protocol/method metadata headers as well as body metadata. Invalid tool arguments may return `isError: true` rather than throw at the client.
 1. Pin template dependencies and retain a matching npm lockfile. Edit the template/catalog, regenerate a fresh package, then test that actual export; do not rely only on a hand-adjusted temporary package. The frontend log-value allowlist must match new typed command identities. Embedded code/config uses `.template` filenames; only exported files are a runnable TypeScript project with a generated catalog and installed dependencies.

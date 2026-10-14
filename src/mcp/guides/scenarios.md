@@ -98,7 +98,8 @@ casually when existing references depend on them.
 Comparison is strict about size: a test image whose dimensions differ from its
 reference always fails, whatever the thresholds. Full-page captures therefore
 fail when unrelated content changes the page height; capture components with
-`selectors` when only part of a page is under test.
+`selectors` when only a fixed area is under test, but do not crop away related
+expanded states or their effect on surrounding content.
 
 ## Opened Menus and Overlays
 
@@ -119,18 +120,34 @@ actions rarely fit inside their trigger's container:
   capturing the container still works.
 
 A scenario that opens a menu and captures `header` therefore records only the
-header bar. Decide which state each image tests, then choose a target that
-contains it:
+header bar. A header-only capture of the default state is also insufficient:
+it can miss a menu incorrectly expanded before interaction, outside the header.
+When the visible area changes across related scenarios, recommend the same
+larger capture area for closed/default and opened/expanded states. Prefer
+`viewport` for all those states, or full page when the relevant area extends
+beyond the viewport (omit `selector` and `selectors` for automatic full-page
+captures). Keep the same configured viewport dimensions and comparable scroll
+positions so QA can inspect the differences in context. Regressify still
+compares each capture against its own reference, not one scenario against another.
 
-- Closed state: capture the container, such as `header`, before opening
-  anything, usually in its own scenario.
-- Opened state: capture `viewport`, the opened layer's own element, or both,
-  for example `selectors: [viewport, "#products-panel"]`. Use `viewport` for
-  fixed drawers and overlays, and for layers opened by hover or closed by
-  scrolling, because viewport captures never scroll.
-- Several states in one scenario: `save` each state with its own `selector`,
-  and close a layer, for example by clicking its toggle again or pressing
-  `Escape` on it, before capturing anything it covers.
+Choose the common area to include the component, its possible expanded layer,
+and affected surrounding content:
+
+- Closed/default state: capture the common larger area before opening anything,
+  usually in its own scenario. Do not first close, hide, remove, or normalize
+  a possibly unexpected layer through actions or ready scripts; that would
+  conceal the default-state bug.
+- Opened/expanded state: capture that same area after the intended interaction.
+  An optional element detail such as `selectors: [viewport, "#products-panel"]`
+  supplements, rather than replaces, the common context image. Use `viewport`
+  for fixed drawers and overlays, and for layers opened by hover or closed by
+  scrolling, because viewport captures never scroll. The default state's
+  capture must not require the opened layer to exist or be visible.
+- Several states in one scenario: `save` the initial state before the opening
+  action and the expanded state afterward, using distinct names and the same
+  larger capture area. If testing dismissal, close the layer with its toggle
+  or `Escape` and save a third state; do not replace the untouched initial
+  capture with a forced-closed state.
 
 Wait for the opened layer itself, as in `wait: "#products-panel"`, before
 capturing it. When the page's markup or styles show that a layer is positioned

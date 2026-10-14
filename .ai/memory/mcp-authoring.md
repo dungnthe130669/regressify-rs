@@ -27,6 +27,12 @@ Verified: 2026-10-14
   `selector`, `selectors`, and `save.selector`. Verified 2026-10-06 with a
   cached-Chromium probe and the selector pixel fixture; QA reported agents
   capturing `header` after opening menus.
+- Related closed/default and opened/expanded states now share viewport context
+  captures in the navigation example and recipe. A header-only initial image
+  can miss premature expansion outside its box; do not force-close the initial
+  state. Startup/overview guidance recommends the same larger viewport/full-page
+  area, matching viewport/scroll position, and supplementary element details.
+  Catalog/Worker regressions cover delivery and matching recipe/example targets.
 - Page-level failure markers, `engineErrorMsg`, and progress errors carry a typed
   summary (step, condition, duration, category); the console adds a sanitized
   local detail line that is never archived. Journals keep `ActionIndex`,

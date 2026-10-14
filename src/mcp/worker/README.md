@@ -16,6 +16,13 @@ scripts, and `troubleshooting` for local reports, logs, configuration/capture
 failures, and MCP connection problems.
 Diagnostic lookups never upload workspace contents or private logs.
 
+For components that expand across related scenarios, capture the same larger
+area in both default and expanded states: viewport, or full page when needed.
+A header-only default capture can miss a menu incorrectly open before a click.
+Keep matching viewport sizes and scroll positions, observe the default state
+without first closing or hiding a layer, and treat component close-ups as
+supplements. The scenarios guide and navigation recipe explain the pattern.
+
 After creating or editing a suite, agents must run
 `regressify ref --test-suite <suite-name>` using their authorized terminal tools.
 The CLI is installed alongside the desktop app on each user's `PATH`; no source

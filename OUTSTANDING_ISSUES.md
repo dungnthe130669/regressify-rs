@@ -2,6 +2,15 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## MCP Related-State Capture Coverage (2026-10-14)
+
+- Resolved in source: navigation guidance recommended a header-only default
+  capture, which could miss a menu incorrectly expanded outside the header
+  before interaction. [MCP guides](src/mcp/guides/scenarios.md) and the
+  [navigation example](src/mcp/catalog.rs) now recommend the same larger
+  viewport/full-page context across related states, without forcing the initial
+  state closed. Existing hosted MCP Workers need regeneration and redeployment.
+
 ## Desktop Scrollbar Clipping (2026-10-14)
 
 - Resolved in source: Test suites, Scenarios, and Landing apps attached scrollbar
