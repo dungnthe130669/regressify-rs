@@ -2388,7 +2388,7 @@ test("image viewer anchors wheel zoom to the pixel in each side-by-side lane", a
 });
 
 for (const hasDiff of [false, true]) {
-  test(`image viewer keeps ${hasDiff ? "three" : "two"} lanes bounded with independent scrollbars`, async ({
+  test(`image viewer keeps ${hasDiff ? "three" : "two"} lanes bounded with native scrollbars`, async ({
     page,
   }, info) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -2455,6 +2455,114 @@ for (const hasDiff of [false, true]) {
       `comparison-fixed-${hasDiff ? "three" : "two"}-lanes`,
     );
   });
+
+  test(`image viewer synchronizes ${hasDiff ? "three" : "two"} unequal lanes without scroll feedback`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.route("**/_snapshot/data/suites/**", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.id === "workspace-overview") {
+        data.tests[0].reference = data.tests[1].reference;
+        if (!hasDiff) data.tests[0].diff = null;
+      }
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+    const lanes = page.locator(".comparison-lane");
+    await expect(lanes).toHaveCount(hasDiff ? 3 : 2);
+    await expect
+      .poll(() =>
+        lanes
+          .locator("img")
+          .evaluateAll((images) =>
+            images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+          ),
+      )
+      .toBe(true);
+    await page.getByRole("button", { name: "Actual size", exact: true }).click();
+    const limits = await lanes.evaluateAll((elements) =>
+      elements.map((element) => {
+        element.scrollTo(element.scrollWidth, element.scrollHeight);
+        const limit = { left: element.scrollLeft, top: element.scrollTop };
+        element.scrollTo(0, 0);
+        return limit;
+      }),
+    );
+    const source = lanes.nth(1);
+    const sourceLimit = limits[1];
+    if (!sourceLimit || !limits[0]) throw new Error("Comparison lanes are unavailable");
+    expect(sourceLimit.left).toBeGreaterThan(limits[0].left);
+    const expectPosition = async (position: { left: number; top: number }) => {
+      await expect
+        .poll(() =>
+          lanes.evaluateAll(async (elements) => {
+            await new Promise<void>((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            );
+            return elements.map((element) => ({
+              left: element.scrollLeft,
+              top: element.scrollTop,
+            }));
+          }),
+        )
+        .toEqual(
+          limits.map((limit) => ({
+            left: Math.min(position.left, limit.left),
+            top: Math.min(position.top, limit.top),
+          })),
+        );
+    };
+    await source.evaluate((element) => element.scrollTo(element.scrollWidth, element.scrollHeight));
+    await expectPosition(sourceLimit);
+    await source.evaluate((element) => element.scrollTo(160, 80));
+    await expectPosition({ left: 160, top: 80 });
+    await source.focus();
+    await source.press("ArrowLeft");
+    await source.press("ArrowUp");
+    await expectPosition({ left: 120, top: 40 });
+    const bounds = await source.boundingBox();
+    if (!bounds) throw new Error("Image viewport is unavailable");
+    const pointer = { x: Math.round(bounds.x + 30), y: Math.round(bounds.y + 60) };
+    await page.mouse.move(pointer.x, pointer.y);
+    await page.mouse.down();
+    await page.mouse.move(pointer.x - 20, pointer.y - 30, { steps: 3 });
+    await page.mouse.up();
+    await expectPosition({ left: 140, top: 70 });
+
+    const image = source.locator("img");
+    const before = await image.boundingBox();
+    if (!before) throw new Error("Comparison image is unavailable");
+    const pixel = {
+      horizontal: (pointer.x - before.x) / before.width,
+      vertical: (pointer.y - before.y) / before.height,
+    };
+    await page.mouse.move(pointer.x, pointer.y);
+    await page.keyboard.down("Control");
+    try {
+      await page.mouse.wheel(0, -100);
+      await expect(page.getByLabel("Zoom level")).toHaveText("110%");
+      await expect
+        .poll(() =>
+          image.evaluate(
+            (element, position) => {
+              const bounds = element.getBoundingClientRect();
+              return Math.max(
+                Math.abs(bounds.left + bounds.width * position.horizontal - position.x),
+                Math.abs(bounds.top + bounds.height * position.vertical - position.y),
+              );
+            },
+            { ...pointer, ...pixel },
+          ),
+        )
+        .toBeLessThan(2);
+    } finally {
+      await page.keyboard.up("Control");
+    }
+    await page.getByRole("button", { name: "Fit to window", exact: true }).click();
+    await expectPosition({ left: 0, top: 0 });
+  });
 }
 
 test("image viewer keeps per-mode zoom and cancels interrupted drags", async ({
@@ -2510,9 +2618,7 @@ test("image viewer keeps per-mode zoom and cancels interrupted drags", async ({
   await expect(page.getByLabel("Zoom level")).not.toHaveText("110%");
 });
 
-test("scrolling over images moves only the hovered lane without changing zoom", async ({
-  page,
-}) => {
+test("scrolling over images synchronizes lanes without changing zoom", async ({ page }) => {
   await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
   await expect(page.locator(".comparison-lane img")).toHaveCount(3);
   await expect
@@ -2526,25 +2632,53 @@ test("scrolling over images moves only the hovered lane without changing zoom", 
     .toBe(true);
   await page.getByRole("button", { name: "Actual size", exact: true }).click();
   await expect(page.getByLabel("Zoom level")).toHaveText("100%");
-  const content = page.locator(".comparison-lane").first();
-  await content.evaluate((element) => {
-    element.scrollTop = 0;
-  });
   await page.locator(".zoom-canvas").hover({ position: { x: 80, y: 80 } });
   await expect(page.locator(".comparison-crosshair")).toHaveCount(3);
-  await page.mouse.wheel(0, 300);
-  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-  await expect(page.locator(".comparison-crosshair")).toHaveCount(0);
-  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
-  const bottom = await content.evaluate((element) => element.scrollTop);
-  await page.mouse.wheel(0, -120);
-  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeLessThan(bottom);
+  for (const content of await page.locator(".comparison-lane").all()) {
+    await content.hover({ position: { x: 40, y: 40 } });
+    await page.mouse.wheel(160, 300);
+    await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await expect.poll(() => content.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    await expect(page.locator(".comparison-crosshair")).toHaveCount(0);
+    const position = await content.evaluate((element) => ({
+      left: element.scrollLeft,
+      top: element.scrollTop,
+    }));
+    await expect
+      .poll(() =>
+        page
+          .locator(".comparison-lane")
+          .evaluateAll(
+            (lanes, position) =>
+              lanes.every(
+                (lane) =>
+                  lane.scrollLeft ===
+                    Math.min(position.left, lane.scrollWidth - lane.clientWidth) &&
+                  lane.scrollTop === Math.min(position.top, lane.scrollHeight - lane.clientHeight),
+              ),
+            position,
+          ),
+      )
+      .toBe(true);
+    await page.mouse.wheel(-80, -120);
+    await expect
+      .poll(() => content.evaluate((element) => element.scrollTop))
+      .toBeLessThan(position.top);
+    const returned = await content.evaluate((element) => ({
+      left: element.scrollLeft,
+      top: element.scrollTop,
+    }));
+    for (const lane of await page.locator(".comparison-lane").all()) {
+      await expect
+        .poll(() =>
+          lane.evaluate((element) => ({ left: element.scrollLeft, top: element.scrollTop })),
+        )
+        .toEqual(returned);
+    }
+  }
   await expect(page.getByLabel("Zoom level")).toHaveText("100%");
   expect(await page.locator(".zoom-canvas").evaluate((element) => element.scrollTop)).toBe(0);
   expect(await page.locator(".review-scroll").evaluate((element) => element.scrollTop)).toBe(0);
-  for (const lane of (await page.locator(".comparison-lane").all()).slice(1)) {
-    expect(await lane.evaluate((element) => element.scrollTop)).toBe(0);
-  }
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
 });
 

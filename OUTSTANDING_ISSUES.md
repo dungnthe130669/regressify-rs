@@ -96,9 +96,13 @@ Issues identified during adversarial review that remain after the September 2026
   comparisons, source-size differences, and listener cleanup.
 - Resolved oversized-image overflow: the name and controls no longer share the
   images' scroll surface. Side-by-side keeps two/three fixed-width lanes with
-  independent native scrollbars, bounded height, and reachable image edges.
+  separate native scrollbars, bounded height, and reachable image edges.
   Geometry and gesture regressions retain pixel anchoring through scrollbar
   transitions and verify stationary controls on desktop/mobile.
+- Follow-up resolved in source (2026-10-14): side-by-side scrollbars now synchronize
+  both axes from any lane, including drag and keyboard movement. Smaller images
+  clamp without scrolling larger peers back, and zoom anchoring remains intact.
+  Desktop/mobile browser regressions cover two/three lanes and unequal sizes.
 
 ## Snapshot Overview Mobile Layout (2026-10-13)
 

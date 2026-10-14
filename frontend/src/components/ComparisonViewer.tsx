@@ -140,6 +140,7 @@ export function ComparisonViewer({
   const viewer = useRef<HTMLElement>(null);
   const canvas = useRef<HTMLElement>(null);
   const activePane = useRef<HTMLElement | null>(null);
+  const scrollPositions = useRef(new WeakMap<HTMLElement, { left: number; top: number }>());
   const toolbar = useRef<HTMLDivElement>(null);
   const gestureScope = useRef({ capture, mode: requestedMode });
   const anchors = useRef<
@@ -249,6 +250,21 @@ export function ComparisonViewer({
       ? activePane.current
       : canvas.current?.querySelector<HTMLElement>(".image-pane");
   };
+  const syncScroll = (source: HTMLElement) => {
+    if (mode !== "side") return;
+    const left = source.scrollLeft;
+    const top = source.scrollTop;
+    const previous = scrollPositions.current.get(source);
+    if (previous?.left === left && previous.top === top) return;
+    activePane.current = source;
+    scrollPositions.current.set(source, { left, top });
+    for (const pane of canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []) {
+      if (pane === source) continue;
+      pane.scrollTo({ left, top, behavior: "instant" });
+      // Record clamped offsets so a smaller image cannot scroll its peers back.
+      scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
+    }
+  };
   const cancelPan = () => {
     const pointer = pan.current?.pointer;
     pan.current = null;
@@ -317,6 +333,7 @@ export function ComparisonViewer({
     setView({ fit: next, scale: 1 });
     for (const pane of canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []) {
       pane.scrollTo(0, 0);
+      scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
     }
   };
   useLayoutEffect(() => {
@@ -328,6 +345,10 @@ export function ComparisonViewer({
       const scroll = anchor.scroll;
       scroll.scrollLeft += bounds.left + anchor.imageX * scale - anchor.x;
       scroll.scrollTop += bounds.top + anchor.imageY * scale - anchor.y;
+    }
+    // Zoom anchoring and layout clamping are not user scroll gestures.
+    for (const pane of canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []) {
+      scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
     }
   }, [scale]);
   const wheelZoom = useEffectEvent((event: WheelEvent) => {
@@ -604,6 +625,7 @@ export function ComparisonViewer({
               aria-label={`${lane.label} image viewport`}
               // biome-ignore lint/a11y/noNoninteractiveTabindex: Native scroll panes support scoped keyboard zoom and pan.
               tabIndex={0}
+              onScroll={(event) => syncScroll(event.currentTarget)}
             >
               <div
                 className="comparison-stage"

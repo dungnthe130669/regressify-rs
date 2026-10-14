@@ -422,7 +422,10 @@ stepped zoom through 800%, fit-width, fit-to-window, actual size, downloads, and
 safe links to captured pages. The name, navigation buttons, and viewer controls
 stay outside image overflow. Each image has a bounded viewport with native
 scrollbars when needed. Unmodified wheel/trackpad and touch scroll the hovered
-lane; left-drag and arrow keys pan the active lane without moving its neighbors.
+lane; left-drag and arrow keys pan the active lane. In side-by-side mode, scrolling
+either axis in any lane automatically scrolls the other lanes to the same offset.
+Each image clamps at its own bounds without pulling larger images back; native
+scrollbars, wheel/touch, drag, and arrow-key movement all stay linked.
 Ctrl/Cmd+wheel zooms around the pointer.
 The pixel under the pointer stays fixed even when the image fits inside the
 viewport. Modifier-wheel gestures over empty viewer space or at the zoom limit

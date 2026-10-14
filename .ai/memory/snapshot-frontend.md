@@ -80,11 +80,11 @@ Verified: 2026-10-14
   below `Snapshot Overview`; review breadcrumbs stay unchanged. `--grep footer`
   covers short/filtered/missing pages and long document scrolling. `page scrollbar`
   verifies one root gutter, theme-aware empty tracks, and preserved first-paint colors.
-- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) keeps names/controls outside bounded native scroll panes; wheel, drag, and keys pan the active lane. Ctrl/Cmd+wheel uses per-pane anchor padding from full inner bounds so scrollbar changes cannot clamp it. Constrain the review route's `main` flex minimum height. The `image viewer` tests cover gestures, stationary controls, independent scrollbars, and cleanup; fits never upscale.
+- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) keeps names/controls outside bounded native scroll panes. Side-by-side mirrors both axes for native scroll, drag, and keys; a per-pane WeakMap records actual clamped offsets to ignore mirrored events. Zoom layout updates refresh those offsets to preserve per-pane anchors. Ctrl/Cmd+wheel padding uses full inner bounds. Constrain the review route's `main` flex minimum height. The `image viewer` tests cover unequal limits, gestures, stationary controls, linked scrollbars, and cleanup; fits never upscale.
   Optional `imageSizes` reserves decoded dimensions before load; `dimensions` holds deltas. Legacy reports discover sizes on load.
   Delayed-load tests use reduced motion to exclude entrance animation.
 - Side-by-side crosshairs map image pixels through optional comparer `alignment`,
-  excluding band holes and unavailable/out-of-bounds pixels; strokes stay one screen pixel wide. Crosshairs also work without a diff. Fixed equal-width lanes center small images and scroll oversized ones independently; tests scroll target pixels into view and exclude lane borders from hover offsets.
+  excluding band holes and unavailable/out-of-bounds pixels; strokes stay one screen pixel wide. Crosshairs also work without a diff. Fixed equal-width lanes center small images and link scroll offsets with per-image clamping; tests scroll target pixels into view and exclude lane borders from hover offsets.
   The `side by side crosshairs|scrolling over images` browser checks cover
   alignment and cleanup on desktop/mobile. Image nodes have `pointer-events: none`;
   hover their wrappers to wait for stable layout before reading image bounds.
