@@ -10,11 +10,15 @@ Issues identified during adversarial review that remain after the September 2026
   formatting/MCP tests/locked CLI build and exports the checked local source,
   without implicit Git pulls or installed-CLI lookup.
 - [Package tests](src/mcp/worker/tests/worker.test.mjs.template) mock npm and
-  Wrangler to prove every failed command stops publication. Real verification
-  currently blocks on six high-severity dependency audit findings involving
-  MCP SDK/client and sharp, including their parent dependencies. Dependency
-  upgrades need separate review; no advisory exceptions or forced fixes were
-  applied. Audit-service failures also block deployment.
+  Wrangler to prove every failed command stops publication. The six prior
+  high-severity audit findings are resolved by the upgraded dependencies:
+  fresh export verification passes with zero reported vulnerabilities,
+  TypeScript checks, all 12 Worker tests, and the dry-run build.
+- Dependency upgrades initially introduced caret ranges, failing the export
+  contract despite a matching lockfile. Exact pins now preserve those upgraded
+  versions, and the export test names invalid pins and checks resolved direct
+  versions. No advisory exceptions were applied; audit-service failures still
+  block deployment.
 
 ## MCP Related-State Capture Coverage (2026-10-14)
 

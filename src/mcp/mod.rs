@@ -207,21 +207,27 @@ mod tests {
         assert_eq!(wrangler["minify"], true);
         assert_eq!(wrangler["upload_source_maps"], false);
         assert_eq!(
-            package["dependencies"],
-            lock["packages"][""]["dependencies"]
+            package["dependencies"], lock["packages"][""]["dependencies"],
+            "Worker dependencies must match the lockfile root"
         );
         assert_eq!(
-            package["devDependencies"],
-            lock["packages"][""]["devDependencies"]
+            package["devDependencies"], lock["packages"][""]["devDependencies"],
+            "Worker devDependencies must match the lockfile root"
         );
         for section in ["dependencies", "devDependencies"] {
-            for version in package[section].as_object().unwrap().values() {
+            for (name, version) in package[section].as_object().unwrap() {
                 assert!(
                     version
                         .as_str()
                         .unwrap()
                         .chars()
-                        .all(|character| character.is_ascii_digit() || character == '.')
+                        .all(|character| character.is_ascii_digit() || character == '.'),
+                    "{section}.{name} must use an exact version without ranges; found {version}"
+                );
+                assert_eq!(
+                    lock["packages"][format!("node_modules/{name}")]["version"],
+                    *version,
+                    "Resolved lockfile version must match the exact pin for {section}.{name}"
                 );
             }
         }

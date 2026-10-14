@@ -93,5 +93,8 @@ Verified: 2026-10-14
   Root `deploy:check` covers formatting/MCP tests/locked CLI build, and root
   deployment exports current Cargo source rather than pulling Git or resolving
   an installed CLI. The shortcut still replaces its sibling generated directory.
+- The export test requires exact dependency pins, not caret/tilde ranges, even
+  with a synchronized npm lockfile. It checks root declarations and resolved
+  direct versions and names the offending dependency when a pin drifts.
 - See [the task skill](../../.github/skills/mcp-command/SKILL.md) for maintenance
   gates. Keep schema/runtime changes synchronized with the self-contained prose.
