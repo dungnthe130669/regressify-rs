@@ -694,20 +694,15 @@ it was risk-focused, not an exhaustive security certification.
   verifies rejection and file preservation across tracked worktree edits,
   untracked edits, and same-status staged-content updates.
 
-### P2: Desktop Worker Pipe Joins Escape Timeout and Cancellation
+### P2: Desktop Worker Pipe Joins Escape Timeout and Cancellation (Resolved 2026-10-15)
 
-- Evidence: the [desktop worker](src/desktop/runner.rs#L693) has an unbounded
-  reader-join boundary after the parent exits.
-- Trigger: an engine descendant outlives its parent and retains
-  an inherited pipe. The reader waits for EOF; the group handle is not released,
-  and subsequent cancellation no longer reaches the finished parent wait loop.
-  Worker close can hang.
-- Verification: static control-flow review plus the pinned command-group 5.0.1
-  parent `try_wait` behavior. Existing cancellation tests keep the parent alive;
-  the parent-exits-first case was not executed during this review.
-- Repair/test: bound writer/reader completion and preserve cancellation/process-tree
-  cleanup until all streams close. Add a fixture whose parent exits while a child
-  retains stdout/stderr; assert bounded completion, cancellation, and no descendants.
+- Resolved in source: [desktop worker execution](src/desktop/runner.rs) now
+  streams stdin on a separate writer thread, keeps checking cancellation after
+  the parent process exits until all pipe streams finish, and terminates the
+  process group if a descendant retains stdout/stderr past `PIPE_DRAIN_TIMEOUT`.
+- Regression coverage in `descendant_retaining_pipes_after_parent_exit_is_reaped_on_completion_and_cancellation`
+  verifies bounded completion, immediate cancellation, and descendant termination
+  when a parent exits while a child holds inherited pipes and a file lock.
 - Git counterpart resolved on 2026-09-24: its process wrapper keeps checking the
   deadline/cancellation until readers and the stdin writer complete. A local
   parent-exits-first helper regression verifies bounded completion.

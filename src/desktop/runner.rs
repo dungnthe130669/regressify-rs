@@ -29,6 +29,7 @@ const MAX_LOG_CHUNK: usize = 16 * 1024;
 const MAX_LOG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SAVED_RUN_BYTES: u64 = 32 * 1024 * 1024;
 const SAVED_RUN_VERSION: u8 = 2;
+const PIPE_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -714,23 +715,17 @@ impl RunHandle {
                     if let Some(stderr) = stderr {
                         readers.push(read_stream(stderr, true, sender, lost));
                     }
-                    if let Some(payload) = payload {
-                        let sent = child
-                            .inner()
-                            .stdin
-                            .take()
-                            .ok_or_else(|| anyhow!("Worker input is unavailable"))
-                            .and_then(|mut input| {
-                                input
-                                    .write_all(&payload)
-                                    .context("Cannot send run settings to worker")
-                            });
-                        if let Err(error) = sent {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                            return Err(error);
-                        }
-                    }
+                    let writer = payload.map(|payload| {
+                        let stdin = child.inner().stdin.take();
+                        thread::spawn(move || -> Result<()> {
+                            let mut input =
+                                stdin.ok_or_else(|| anyhow!("Worker input is unavailable"))?;
+                            input
+                                .write_all(&payload)
+                                .context("Cannot send run settings to worker")
+                        })
+                    });
+                    let mut exited = None;
                     let outcome = (|| -> Result<RunOutcome> {
                         loop {
                             if let Some(events) = &mut events {
@@ -739,25 +734,42 @@ impl RunHandle {
                                     .map_err(|_| anyhow!("Run progress is unavailable"))?;
                                 events.drain_batch(|record| state.apply(record))?;
                             }
-                            if let Some(status) = child.try_wait()? {
-                                if let Some(events) = &mut events {
-                                    let mut state = live
-                                        .lock()
-                                        .map_err(|_| anyhow!("Run progress is unavailable"))?;
-                                    events.drain(|record| state.apply(record))?;
-                                    events.complete()?;
+                            if exited.is_none()
+                                && let Some(status) = child.try_wait()?
+                            {
+                                exited = Some((status, std::time::Instant::now()));
+                            }
+                            if let Some((status, exited_at)) = exited {
+                                let streams_done =
+                                    writer.as_ref().is_none_or(JoinHandle::is_finished)
+                                        && readers.iter().all(JoinHandle::is_finished);
+                                let drain_expired = exited_at.elapsed() >= PIPE_DRAIN_TIMEOUT;
+                                if !streams_done && drain_expired {
+                                    // A descendant outlived the worker while retaining stdout/stderr;
+                                    // terminate the process group so pipe readers cannot hang.
+                                    let _ = child.kill();
+                                    let _ = child.wait();
                                 }
-                                break Ok(if status.success() {
-                                    RunOutcome::Completed
-                                } else {
-                                    RunOutcome::Failed(format!(
-                                        "Engine worker exited with {}",
-                                        status
-                                            .code()
-                                            .map(|code| code.to_string())
-                                            .unwrap_or_else(|| "a signal".into())
-                                    ))
-                                });
+                                if streams_done || drain_expired {
+                                    if let Some(events) = &mut events {
+                                        let mut state = live
+                                            .lock()
+                                            .map_err(|_| anyhow!("Run progress is unavailable"))?;
+                                        events.drain(|record| state.apply(record))?;
+                                        events.complete()?;
+                                    }
+                                    break Ok(if status.success() {
+                                        RunOutcome::Completed
+                                    } else {
+                                        RunOutcome::Failed(format!(
+                                            "Engine worker exited with {}",
+                                            status
+                                                .code()
+                                                .map(|code| code.to_string())
+                                                .unwrap_or_else(|| "a signal".into())
+                                        ))
+                                    });
+                                }
                             }
                             match cancellation.recv_timeout(Duration::from_millis(50)) {
                                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -779,12 +791,23 @@ impl RunHandle {
                         let _ = child.kill();
                         let _ = child.wait();
                     }
+                    let written = writer
+                        .map(|writer| {
+                            writer
+                                .join()
+                                .map_err(|_| anyhow!("Worker input writer stopped unexpectedly"))?
+                        })
+                        .transpose();
                     for reader in readers {
                         reader
                             .join()
                             .map_err(|_| anyhow!("Log reader stopped unexpectedly"))??;
                     }
-                    outcome
+                    let outcome = outcome?;
+                    if matches!(outcome, RunOutcome::Completed) {
+                        written?;
+                    }
+                    Ok(outcome)
                 })();
                 let outcome =
                     result.unwrap_or_else(|error| RunOutcome::Failed(format!("{error:#}")));
@@ -2025,6 +2048,36 @@ pub(crate) mod tests {
         if mode == "wait" {
             thread::park();
         }
+        if mode == "orphan-child" {
+            let lock_path = std::env::var_os("REGRESSIFY_ORPHAN_LOCK").unwrap();
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(lock_path)
+                .unwrap();
+            lock.lock().unwrap();
+            println!("orphan ready");
+            thread::park();
+        }
+        if mode == "orphan-pipe" {
+            let lock_path = std::env::var_os("REGRESSIFY_ORPHAN_LOCK").unwrap();
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "desktop::runner::tests::process_fixture",
+                    "--nocapture",
+                ])
+                .env("REGRESSIFY_DESKTOP_FIXTURE", "orphan-child")
+                .env("REGRESSIFY_ORPHAN_LOCK", lock_path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap();
+            return;
+        }
         if mode == "fail" {
             std::process::exit(7);
         }
@@ -2124,6 +2177,53 @@ pub(crate) mod tests {
             !path.exists(),
             "cancelled worker left its staging files behind"
         );
+    }
+
+    #[test]
+    fn descendant_retaining_pipes_after_parent_exit_is_reaped_on_completion_and_cancellation() {
+        for cancel_after_parent_exit in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let lock_path = directory.path().join("orphan.lock");
+            let mut command = fixture("orphan-pipe");
+            command.env("REGRESSIFY_ORPHAN_LOCK", &lock_path);
+            let started = std::time::Instant::now();
+            let mut handle = RunHandle::spawn(command, None, None, None).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                let line = handle
+                    .logs
+                    .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .expect("orphan child must emit ready line");
+                if line.text.contains("orphan ready") {
+                    break;
+                }
+            }
+            if cancel_after_parent_exit {
+                handle.cancel();
+            }
+            let outcome = handle.worker.take().unwrap().join().unwrap();
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "worker join hung waiting on descendant pipes"
+            );
+            if cancel_after_parent_exit {
+                assert!(matches!(
+                    outcome,
+                    RunOutcome::Cancelled | RunOutcome::Completed
+                ));
+            } else {
+                assert_eq!(outcome, RunOutcome::Completed);
+            }
+            let lock = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+            assert!(
+                lock.try_lock().is_ok(),
+                "descendant process still holds the lock after RunHandle finished"
+            );
+        }
     }
 
     #[test]
