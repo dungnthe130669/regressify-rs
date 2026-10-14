@@ -109,8 +109,8 @@ Issues identified during adversarial review that remain after the September 2026
   Tests retain diff-band mapping, unavailable-image exclusions, and gesture cleanup.
 - Follow-up resolved in source (2026-10-14): desktop guides also remain visible
   in shared-canvas space beyond smaller images. Both viewers allow synchronized
-  horizontal dragging of fitted canvases, bounded by the widest image reaching
-  a lane edge, without changing scale or creating horizontal overflow. GUI and
+  horizontal and vertical dragging of fitted canvases, bounded by the widest or
+  tallest image reaching a lane edge, without changing scale or creating overflow. GUI and
   browser regressions cover both edges, resize, fit reset, and pointer anchoring;
   native Comparison includes fitted dragging in both themes and window sizes.
 

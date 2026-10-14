@@ -1978,8 +1978,10 @@ height; each image keeps its own dimensions at the canvas's top-left origin.
 Zoom, dragging, and both scroll axes stay synchronized from any pane. When the
 shared canvas is narrower than the lanes, left-drag moves all canvases together
 within the unused horizontal space, stopping when the widest image touches a
-lane edge. Dragging preserves zoom and fit mode without adding horizontal
-overflow; fit controls recenter the canvases.
+lane edge. When every image is shorter than its lane, dragging moves all canvases
+vertically together until the tallest image touches the top or bottom edge.
+Both axes can move together. Dragging preserves zoom and fit mode without adding
+scroll overflow; fit controls restore horizontally centered, top-aligned placement.
 Moving the pointer over the shared canvas, including blank space beyond a
 smaller image, draws horizontal and vertical guides
 at corresponding image pixels in all comparison panes. For an aligned insertion

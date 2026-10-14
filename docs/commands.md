@@ -439,10 +439,13 @@ keys pan (Shift moves farther). Escape cancels a drag. Mode changes retain their
 own zoom; capture changes reset it. Fit modes never upscale small images.
 Side-by-side divides the visible viewer width into two equal lanes, or three when
 a Diff image exists. Lanes never grow with zoom: oversized images scroll inside
-their lanes, while smaller shared canvases start centered. When every image is
+their lanes, while smaller shared canvases start horizontally centered and top-aligned. When every image is
 narrower than its lane, left-drag moves all canvases horizontally together,
 stopping when the widest image touches either lane edge. This does not change
-zoom or add horizontal overflow; fit controls restore centered placement.
+zoom or add horizontal overflow. When every image is shorter than its lane,
+dragging moves the canvases vertically together until the tallest image touches
+the top or bottom edge. Both axes can move together without adding scroll overflow;
+fit controls restore horizontally centered, top-aligned placement.
 Reference and Test remain separate even
 at small zoom levels; Diff adds a third lane when available. Hovering anywhere in
 a lane with a loaded image, including empty space around it, shows synchronized

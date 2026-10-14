@@ -106,7 +106,7 @@ Verified: 2026-10-14
   canvas coordinates, including blank space beyond smaller images, without
   clamping guides to individual image sizes. `crosshairs_` includes a generated-band
   GPUI pointer test; web `aligned diff bands` covers both directions and zoom.
-- Underfilled side-by-side canvases drag together within the unused lane width.
+- Underfilled side-by-side canvases drag together within unused lane width/height.
   Normalized placement preserves bounds after resize; weak pan notifications
   avoid retaining Results through pointer layers. `image_previews_` covers fit,
-  manual zoom, both edges, vertical scroll, recentering, and post-drag zoom anchors.
+  manual zoom, all edges, diagonal pan, orthogonal scroll, fit reset, and zoom anchors.

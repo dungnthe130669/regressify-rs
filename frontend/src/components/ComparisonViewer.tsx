@@ -35,8 +35,9 @@ type Fit = "width" | "area" | "manual";
 type View = {
   fit: Fit;
   scale: number;
-  // A fraction of unused lane width keeps fitted dragging bounded after resize.
+  // Fractions of unused lane space keep fitted dragging bounded after resize.
   horizontalPosition?: number;
+  verticalPosition?: number;
   padding?: { left: number; top: number; right: number; bottom: number }[];
 };
 const fallback: Size = { width: 640, height: 400 };
@@ -172,6 +173,8 @@ export function ComparisonViewer({
     top: number;
     imageLeft: number;
     horizontalSpace: number;
+    imageTop: number;
+    verticalSpace: number;
     moved: boolean;
     scroll: HTMLElement;
   } | null>(null);
@@ -416,6 +419,7 @@ export function ComparisonViewer({
       fit: "manual",
       scale: next,
       horizontalPosition: point ? undefined : view?.horizontalPosition,
+      verticalPosition: point ? undefined : view?.verticalPosition,
       padding,
     });
   };
@@ -443,7 +447,16 @@ export function ComparisonViewer({
       scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
     }
     refreshCrosshairLayout();
-  }, [scale, view?.fit, view?.horizontalPosition, viewport.width, size.width, size.height]);
+  }, [
+    scale,
+    view?.fit,
+    view?.horizontalPosition,
+    view?.verticalPosition,
+    viewport.width,
+    viewport.height,
+    size.width,
+    size.height,
+  ]);
   const wheelZoom = useEffectEvent((event: WheelEvent) => {
     if ((!event.ctrlKey && !event.metaKey) || !Number.isFinite(event.deltaY) || event.deltaY === 0)
       return;
@@ -648,6 +661,9 @@ export function ComparisonViewer({
             imageLeft: image ? image.left - bounds.left - scroll.clientLeft : 0,
             horizontalSpace:
               mode === "side" && image ? Math.max(0, viewport.width - image.width) : 0,
+            imageTop: image ? image.top - bounds.top - scroll.clientTop : 0,
+            verticalSpace:
+              mode === "side" && image ? Math.max(0, viewport.height - image.height) : 0,
             moved: false,
             scroll,
           };
@@ -666,25 +682,34 @@ export function ComparisonViewer({
             drag.moved = true;
             setPanning(true);
             setCrosshair(null);
-            if (drag.horizontalSpace > 0) {
-              const horizontalPosition = Math.max(
-                0,
-                Math.min(1, (drag.imageLeft + deltaX) / drag.horizontalSpace),
-              );
+            if (drag.horizontalSpace > 0 || drag.verticalSpace > 0) {
               setZoom((current) => {
                 const views = current?.capture === capture ? current.views : {};
+                const placement = { fit, scale, ...views[mode] };
+                if (drag.horizontalSpace > 0) {
+                  placement.horizontalPosition = Math.max(
+                    0,
+                    Math.min(1, (drag.imageLeft + deltaX) / drag.horizontalSpace),
+                  );
+                }
+                if (drag.verticalSpace > 0) {
+                  placement.verticalPosition = Math.max(
+                    0,
+                    Math.min(1, (drag.imageTop + deltaY) / drag.verticalSpace),
+                  );
+                }
                 return {
                   capture,
                   views: {
                     ...views,
-                    [mode]: { fit, scale, ...views[mode], horizontalPosition },
+                    [mode]: placement,
                   },
                 };
               });
             }
             drag.scroll.scrollTo({
               left: drag.horizontalSpace > 0 ? 0 : drag.left - deltaX,
-              top: drag.top - deltaY,
+              top: drag.verticalSpace > 0 ? 0 : drag.top - deltaY,
             });
             return;
           }
@@ -746,16 +771,31 @@ export function ComparisonViewer({
       >
         {panes.map((lane, index) => {
           const horizontalPosition = mode === "side" ? view?.horizontalPosition : undefined;
+          const verticalPosition = mode === "side" ? view?.verticalPosition : undefined;
           const horizontalSpace = Math.max(0, viewport.width - size.width * scale);
+          const verticalSpace = Math.max(0, viewport.height - size.height * scale);
           const anchorPadding = view?.padding?.[index];
           const padding =
-            anchorPadding && horizontalPosition !== undefined
+            anchorPadding || horizontalPosition !== undefined || verticalPosition !== undefined
               ? {
-                  ...anchorPadding,
-                  left: horizontalSpace * horizontalPosition,
-                  right: horizontalSpace * (1 - horizontalPosition),
+                  left:
+                    horizontalPosition !== undefined
+                      ? horizontalSpace * horizontalPosition
+                      : (anchorPadding?.left ?? horizontalSpace / 2),
+                  right:
+                    horizontalPosition !== undefined
+                      ? horizontalSpace * (1 - horizontalPosition)
+                      : (anchorPadding?.right ?? horizontalSpace / 2),
+                  top:
+                    verticalPosition !== undefined
+                      ? verticalSpace * verticalPosition
+                      : (anchorPadding?.top ?? 0),
+                  bottom:
+                    verticalPosition !== undefined
+                      ? verticalSpace * (1 - verticalPosition)
+                      : (anchorPadding?.bottom ?? 0),
                 }
-              : anchorPadding;
+              : undefined;
           const guide =
             crosshair?.capture === capture && crosshair.scale === scale
               ? crosshair.positions[index]
@@ -793,10 +833,6 @@ export function ComparisonViewer({
                     style={{
                       width: size.width * scale,
                       height: size.height * scale,
-                      marginLeft:
-                        !padding && horizontalPosition !== undefined
-                          ? horizontalSpace * horizontalPosition
-                          : undefined,
                     }}
                   >
                     <div

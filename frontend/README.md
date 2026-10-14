@@ -97,9 +97,11 @@ and fit changes. The overlay's positioned wrapper sits outside the native scroll
 pane so guides never add image overflow; image-coordinate projection still uses
 the actual image bounds and saved diff alignment. Images retain their individual
 dimensions and share the canvas's top-left origin instead of centering separately.
-Smaller shared canvases start centered and can be dragged left/right together
-until the widest image reaches a lane edge, without changing zoom or creating
-horizontal overflow. Fit controls restore centered placement.
+Smaller shared canvases start horizontally centered and top-aligned. They can be
+dragged left/right and top/bottom together until the widest/tallest image reaches
+the corresponding lane edge, without changing zoom or creating scroll overflow.
+Each underfilled axis moves independently, including diagonal drags.
+Fit controls restore horizontally centered, top-aligned placement.
 Delayed-image checks verify explicit dimensions, unchanged fit zoom, and stable
 comparison geometry in every mode, including failed loads. They disable entrance
 animations so measurements isolate image loading.
