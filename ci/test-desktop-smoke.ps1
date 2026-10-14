@@ -468,7 +468,7 @@ $overviewCopyWaits = @($overviewClipboard.Body.FindAll({
         $node.GetCommandName() -eq 'Wait-FixtureClipboardText'
 }, $true))
 Assert-SmokeEqual $overviewCopyWaits.Count 2 'Both Overview Details copy checks must wait for the clipboard sequence before reading exact text'
-foreach ($mode in @('success', 'wrong-text', 'no-write')) {
+foreach ($mode in @('success', 'delayed-text', 'wrong-text', 'no-write', 'read-error')) {
     & {
         . ([scriptblock]::Create($sequenceProbe))
         $events = [System.Collections.Generic.List[string]]::new()
@@ -478,20 +478,34 @@ foreach ($mode in @('success', 'wrong-text', 'no-write')) {
             Assert-SmokeEqual $events.Count 0 'Waiting must not open the clipboard'
             if ($mode -eq 'no-write') { throw $Failure }
             $pointerType::ClipboardSequence = 11
-            Assert-SmokeEqual (& $Match) $true 'A completed write must advance the clipboard sequence'
             $events.Add('changed')
+            for ($attempt = 0; $attempt -lt 3; $attempt++) {
+                if (& $Match) { return }
+            }
+            throw $Failure
         }
         function Invoke-FixtureClipboard([scriptblock]$Operation) {
             $events.Add('read')
+            if ($mode -eq 'read-error') { throw [System.InvalidOperationException]::new('Synthetic clipboard read failure') }
             if ($mode -eq 'wrong-text') { return 'different synthetic text' }
+            if ($mode -eq 'delayed-text') {
+                if ($events.Count -eq 2) { return '' }
+                if ($events.Count -eq 3) { return 'synthetic sentinel' }
+            }
             'exact synthetic text'
         }
         $failure = $null
         try { Wait-FixtureClipboardText 10 'exact synthetic text' 'Synthetic exact-copy failure' } catch {
             $failure = $_.Exception.GetBaseException().Message
         }
-        Assert-SmokeEqual @($events) $(if ($mode -eq 'no-write') { @() } else { @('changed', 'read') }) 'Clipboard reads must follow completed writes only'
-        Assert-SmokeEqual $failure $(if ($mode -eq 'success') { $null } else { 'Synthetic exact-copy failure' }) 'Wrong or missing clipboard writes must fail'
+        $expectedEvents = if ($mode -eq 'no-write') { @() } elseif ($mode -in @('delayed-text', 'wrong-text')) {
+            @('changed', 'read', 'read', 'read')
+        } else { @('changed', 'read') }
+        Assert-SmokeEqual @($events) @($expectedEvents) 'Clipboard reads must wait for a changed sequence and exact text within the deadline'
+        $expectedFailure = if ($mode -in @('success', 'delayed-text')) { $null } elseif ($mode -eq 'read-error') {
+            'Synthetic clipboard read failure'
+        } else { 'Synthetic exact-copy failure' }
+        Assert-SmokeEqual $failure $expectedFailure 'Wrong or missing clipboard writes must fail and read errors must propagate'
     }
 }
 

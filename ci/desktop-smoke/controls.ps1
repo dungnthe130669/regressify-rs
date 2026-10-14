@@ -132,9 +132,10 @@ function Invoke-FixtureClipboard([scriptblock]$Operation, [ValidateRange(0, 1000
 
 function Wait-FixtureClipboardText([uint32]$PreviousSequence, [string]$Expected, [string]$Failure) {
     Wait-WindowState {
-        [RegressifySmokeClipboard]::GetClipboardSequenceNumber() -ne $PreviousSequence
+        if ([RegressifySmokeClipboard]::GetClipboardSequenceNumber() -eq $PreviousSequence) { return $false }
+        # EmptyClipboard can advance the sequence before the text is available.
+        (Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq $Expected
     } $Failure
-    if ((Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -cne $Expected) { throw $Failure }
 }
 
 function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {

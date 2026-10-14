@@ -50,8 +50,11 @@ Verified: 2026-10-14
   the undisturbed fresh-STA `-ComparisonFlows` run passed all four size/theme
   combinations without a popup lifecycle change.
 - [Clipboard checks](../../ci/desktop-smoke/controls.ps1) wait for the native
-  sequence number to change after a synthetic sentinel and copy action before
-  reading exact text. This avoids a tight read loop competing with GPUI's write.
+  sequence number to change after a synthetic sentinel and copy action, then
+  await exact text within the same frame-paced deadline. Sequence change alone
+  is not completion: GPUI empties the clipboard before supplying text. Headless
+  tests reproduce early empty/stale reads and retain wrong/missing-write failures.
+  Avoid reads while the sequence is unchanged to reduce contention with the writer.
   Overview Details now uses that helper too; its headless regression failed
   before the fix, then passed along with the complete native Default flow.
   Only clipboard-busy `CLIPBRD_E_CANT_OPEN` is retried, for a bounded duration;
