@@ -463,7 +463,7 @@ test("report header keeps the configured heading and subheading above each page"
     await page
       .locator(".overview-page")
       .evaluate((element) => getComputedStyle(element).paddingTop),
-  ).toBe("16px");
+  ).toBe("48px");
   const titleBottom = await header
     .locator(".report-title")
     .evaluate((element) => element.getBoundingClientRect().bottom);

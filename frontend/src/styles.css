@@ -370,7 +370,7 @@ body:has(.settings-dialog[open]) {
 }
 .page.overview-page {
   max-width: 1080px;
-  padding-top: 16px;
+  padding-top: 48px;
 }
 .page-heading {
   display: flex;

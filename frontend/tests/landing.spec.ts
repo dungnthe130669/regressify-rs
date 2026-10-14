@@ -81,6 +81,7 @@ test("landing fetches remote status anonymously and keeps failed links usable", 
   ).toHaveCount(1);
   await expect(page.getByRole("link", { name: "Unavailable report", exact: true })).toBeVisible();
   await expect(page.getByText("No captures", { exact: true })).toBeVisible();
+  await expect(page.locator(".landing-page")).toHaveCSS("padding-top", "48px");
   expect(requests).toBe(4);
   expect(await page.evaluate(() => "landingUnsafe" in window)).toBe(false);
   const copy = await commerce.locator(".landing-site-copy").boundingBox();
