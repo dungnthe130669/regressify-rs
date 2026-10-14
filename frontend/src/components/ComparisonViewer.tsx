@@ -311,13 +311,9 @@ export function ComparisonViewer({
       positions: elements.map((pane, targetIndex) => {
         const target = pane.querySelector("img");
         const lane = lanes[targetIndex];
-        const row = alignedRowToImageRow(alignedY, lane?.gap ?? null);
-        if (
-          !target?.naturalWidth ||
-          !target.naturalHeight ||
-          !isLoaded(lane?.path ?? null) ||
-          row === null
-        )
+        if (!lane) return null;
+        const row = alignedRowToImageRow(alignedY, lane.gap);
+        if (!target?.naturalWidth || !target.naturalHeight || !isLoaded(lane.path) || row === null)
           return null;
         const image = target.getBoundingClientRect();
         const viewport = pane.getBoundingClientRect();

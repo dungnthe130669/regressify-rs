@@ -15,8 +15,7 @@ Issues identified during adversarial review that remain after the September 2026
   without refreshing `suites`. Both now share [workspace classification](src/desktop/workspace.rs)
   and update suite/effective state off the UI thread; in-memory edits, undo/redo,
   and selection changes reuse cached catalog and workspace values.
-- Resolved in source: [Overview](src/desktop/ui/overview.rs) status badges now
-  use `runs.suite_counts`, [scoped run logs](src/desktop/ui/runs/log.rs) exclude
+- Resolved in source: [scoped run logs](src/desktop/ui/runs/log.rs) exclude
   outer command journals and clear stale archive state on reset/start,
   [Capture Log](src/desktop/ui/reports/log.rs) retains viewport/attempt headings
   when filtered to terminal records, [published URL replacement](src/desktop/deployment.rs)
@@ -576,15 +575,10 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Frontend Formatting Baseline (2026-10-01)
 
-- `bun run --cwd frontend lint` initially reported seven existing formatting
-  errors during logging schema work. Five remain in untouched files:
-  [fixture generator](frontend/scripts/create-fixture.ts), [App](frontend/src/App.tsx),
-  [shared UI](frontend/src/components/ui.tsx), [overview](frontend/src/pages/OverviewPage.tsx),
-  and [suite page](frontend/src/pages/SuitePage.tsx). Logging source/test files pass
-  scoped Biome checks; frontend tests, typecheck, and production build pass.
-- Keep formatting fixes scoped to files changed by the logging tasks rather than
-  reformatting unrelated frontend code. Report the full-lint failure separately
-  until the remaining baseline files are intentionally normalized.
+- Resolved: `bun run --cwd frontend lint` now passes with zero warnings or
+  errors across all 37 frontend source, script, and test files, alongside
+  `bun run --cwd frontend typecheck`, `bun run --cwd frontend test`, and
+  `bun run --cwd frontend build`.
 
 ## Worker Snapshot Inventory Assertion (2026-10-01)
 

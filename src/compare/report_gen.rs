@@ -512,28 +512,32 @@ fn compare_report_work(
     work: &[ReportWork],
     max_workers: usize,
 ) -> Result<Vec<Option<ComparisonOutcome>>> {
+    let evaluate = |entry: &ReportWork| match entry {
+        ReportWork::Immediate(_) => None,
+        ReportWork::Compare(job) => Some(
+            match compare_images_with_threshold(
+                &job.reference_path,
+                &job.test_path,
+                job.pair.pixel_match_threshold,
+            ) {
+                Ok((result, diff_png)) => ComparisonOutcome::Compared { result, diff_png },
+                Err(error) => ComparisonOutcome::Failed(error),
+            },
+        ),
+    };
+    let compare_jobs = work
+        .iter()
+        .filter(|entry| matches!(entry, ReportWork::Compare(_)))
+        .count();
+    if max_workers <= 1 || compare_jobs <= 1 {
+        return Ok(work.iter().map(evaluate).collect());
+    }
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(max_workers.max(1))
+        .num_threads(max_workers.min(compare_jobs))
         .build()
         .map_err(|error| anyhow!("Failed to create comparison worker pool: {}", error))?;
 
-    Ok(pool.install(|| {
-        work.par_iter()
-            .map(|entry| match entry {
-                ReportWork::Immediate(_) => None,
-                ReportWork::Compare(job) => Some(
-                    match compare_images_with_threshold(
-                        &job.reference_path,
-                        &job.test_path,
-                        job.pair.pixel_match_threshold,
-                    ) {
-                        Ok((result, diff_png)) => ComparisonOutcome::Compared { result, diff_png },
-                        Err(error) => ComparisonOutcome::Failed(error),
-                    },
-                ),
-            })
-            .collect()
-    }))
+    Ok(pool.install(|| work.par_iter().map(evaluate).collect()))
 }
 
 /// Generate a comparison report for a test suite.

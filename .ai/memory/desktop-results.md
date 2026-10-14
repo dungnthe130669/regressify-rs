@@ -3,8 +3,7 @@
 Verified: 2026-10-15
 
 - [Overview](../../src/desktop/ui/overview.rs) uses uniform DataTable rows with
-  full summaries/errors retained in explicit selectable Details and status badges
-  derived from `runs.suite_counts(&suite.output_id)`. `overview_table_`
+  full summaries/errors retained in explicit selectable Details. `overview_table_`
   covers checkbox/Edit isolation, exact full-text copy, focus return, refresh and
   release, plus 80 mixed valid/error rows in both themes/sizes. Exact header/body
   bounds require fixed-width header content because Kit reserves sort-icon padding.

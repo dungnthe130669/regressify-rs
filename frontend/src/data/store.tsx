@@ -41,7 +41,7 @@ function loadSuiteReport(key: string, id: string, total: number, reload: boolean
   notifySuiteListeners(state);
   fetchReport(`/${key}`, suiteReportSchema, controller.signal, reload)
     .then((data) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || state.controller !== controller) return;
       if (data.id !== id || data.tests.length !== total)
         throw new Error("Suite data does not match this snapshot.");
       state.data = data;
@@ -50,7 +50,7 @@ function loadSuiteReport(key: string, id: string, total: number, reload: boolean
       notifySuiteListeners(state);
     })
     .catch((reason: unknown) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || state.controller !== controller) return;
       state.error = reason instanceof Error ? reason.message : "Unable to load this suite.";
       state.controller = undefined;
       notifySuiteListeners(state);

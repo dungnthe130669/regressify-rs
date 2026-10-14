@@ -326,17 +326,17 @@ fn find_vertical_gap(
     })
 }
 
-fn pixel_is_different(
+fn matching_reference_pixel(
     reference: ImageView<'_>,
     test: ImageView<'_>,
     x: usize,
     y: usize,
     max_delta: f64,
-) -> bool {
+) -> Option<usize> {
     let (Some(reference_index), Some(test_index)) =
         (reference.pixel_index(x, y), test.pixel_index(x, y))
     else {
-        return true;
+        return None;
     };
 
     let delta = color_delta(
@@ -347,60 +347,70 @@ fn pixel_is_different(
         false,
     );
     if delta.abs() <= max_delta {
-        return false;
+        return Some(reference_index);
     }
 
     let same_dimensions = reference.width == test.width && reference.height == test.height;
-    !same_dimensions
-        || !(is_antialiased(
+    (same_dimensions
+        && (is_antialiased(
             reference.pixels,
             x,
             y,
             reference.width,
             reference.height,
             test.pixels,
-        ) || is_antialiased(test.pixels, x, y, test.width, test.height, reference.pixels))
+        ) || is_antialiased(test.pixels, x, y, test.width, test.height, reference.pixels)))
+    .then_some(reference_index)
 }
 
-fn count_differences(reference: ImageView<'_>, test: ImageView<'_>, max_delta: f64) -> u64 {
-    let width = reference.width.max(test.width);
-    let height = reference.height.max(test.height);
-    let mut count = 0;
-
-    for y in 0..height {
-        for x in 0..width {
-            if pixel_is_different(reference, test, x, y, max_delta) {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
-fn render_diff(
+/// Compare pixels and build the diff buffer in a single pass, allocating the
+/// diff buffer lazily only when the first differing pixel is encountered.
+fn compare_and_render_diff(
     reference: ImageView<'_>,
     test: ImageView<'_>,
     max_delta: f64,
     capacity: usize,
-) -> Vec<u8> {
+) -> (u64, Option<Vec<u8>>) {
     let width = reference.width.max(test.width);
     let height = reference.height.max(test.height);
-    let mut pixels = Vec::with_capacity(capacity);
+    let mut count = 0_u64;
+    let mut diff_pixels: Option<Vec<u8>> = None;
 
     for y in 0..height {
         for x in 0..width {
-            if pixel_is_different(reference, test, x, y, max_delta) {
-                pixels.extend_from_slice(&[255, 0, 255, 200]);
-            } else {
-                let reference_index = reference
-                    .pixel_index(x, y)
-                    .expect("Matching pixels must exist in both images");
-                let pixel = &reference.pixels[reference_index];
-                pixels.extend_from_slice(&[pixel.r / 3, pixel.g / 3, pixel.b / 3, pixel.a]);
+            match matching_reference_pixel(reference, test, x, y, max_delta) {
+                Some(reference_index) => {
+                    if let Some(pixels) = &mut diff_pixels {
+                        let pixel = &reference.pixels[reference_index];
+                        pixels.extend_from_slice(&[pixel.r / 3, pixel.g / 3, pixel.b / 3, pixel.a]);
+                    }
+                }
+                None => {
+                    count += 1;
+                    let pixels = diff_pixels.get_or_insert_with(|| {
+                        let mut pixels = Vec::with_capacity(capacity);
+                        for prev_y in 0..=y {
+                            let end_x = if prev_y == y { x } else { width };
+                            for prev_x in 0..end_x {
+                                if let Some(index) = reference.pixel_index(prev_x, prev_y) {
+                                    let pixel = &reference.pixels[index];
+                                    pixels.extend_from_slice(&[
+                                        pixel.r / 3,
+                                        pixel.g / 3,
+                                        pixel.b / 3,
+                                        pixel.a,
+                                    ]);
+                                }
+                            }
+                        }
+                        pixels
+                    });
+                    pixels.extend_from_slice(&[255, 0, 255, 200]);
+                }
             }
         }
     }
-    pixels
+    (count, diff_pixels)
 }
 
 /// Compare two images and generate a diff image only for visual mismatches.
@@ -490,7 +500,11 @@ pub fn compare_images_with_threshold(
     } else if test_h < ref_h {
         test.gap = find_vertical_gap(test, reference, max_delta);
     }
-    let diff_count = count_differences(reference, test, max_delta);
+    let diff_capacity = total_pixels
+        .checked_mul(4)
+        .ok_or_else(|| anyhow!("Image dimensions are too large to build a diff safely"))?;
+    let (diff_count, diff_pixels) =
+        compare_and_render_diff(reference, test, max_delta, diff_capacity);
 
     let raw_mis_match = if total_pixels > 0 {
         (diff_count as f64 / total_pixels as f64) * 100.0
@@ -498,15 +512,9 @@ pub fn compare_images_with_threshold(
         0.0
     };
 
-    let diff_png = if diff_count == 0 {
-        None
-    } else {
-        let diff_capacity = total_pixels
-            .checked_mul(4)
-            .ok_or_else(|| anyhow!("Image dimensions are too large to build a diff safely"))?;
-        let diff_pixels = render_diff(reference, test, max_delta, diff_capacity);
-        Some(lodepng::encode32(&diff_pixels, out_w, out_h)?)
-    };
+    let diff_png = diff_pixels
+        .map(|diff_pixels| lodepng::encode32(&diff_pixels, out_w, out_h))
+        .transpose()?;
     let elapsed = start.elapsed().as_millis();
 
     Ok((

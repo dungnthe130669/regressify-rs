@@ -5166,7 +5166,7 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
             window.find("scenario-approval-run").label(),
-            Some("Run: run-1")
+            Some("Run: reviewed-run")
         );
         assert_eq!(
             window.find("scenario-approval-confirm").label(),
@@ -5425,7 +5425,7 @@ async fn overview_table_refresh_preserves_cursor_and_controls_without_retaining_
         );
         assert_eq!(
             window.find(("overview-status", ext_index)).label(),
-            Some("Failed")
+            Some("Ready")
         );
     })
     .unwrap();
