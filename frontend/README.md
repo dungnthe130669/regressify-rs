@@ -108,11 +108,17 @@ its border. Crosshair targets must first be scrolled into the source lane.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Footer checks cover short, filtered, and not-found pages, plus long content in
-both document and review-pane scrolling on desktop and mobile.
+document scrolling on desktop and mobile, with an independently scrolling sidebar.
+Page scrollbar gutters remain stable on overview, suite, comparison, capture-log,
+error, and landing pages, including when vertical scrollbars appear or disappear.
+Empty gutters retain a theme-aware track color without changing the page background.
+Native-scrollbar pixel checks cover short overview and suite pages in both themes.
 
 Overview checks cover all five sort columns in both directions, filter preservation,
 aggregate totals, conditional count highlights, and rendered pass-rate colors in
 both themes. Empty suites and rates that round to 100% retain their actual status.
+They also verify bold summary values, dividers between stacked summary rows, and
+mobile result counts centered within their cells and aligned in one value column.
 Header and Settings checks cover compact spacing, separate report-text lines,
 empty/long text, keyboard navigation, dismissal/focus return, and scrolling when
 more settings are added. Theme synchronization also runs with Settings closed.
@@ -347,7 +353,8 @@ The overview uses the page heading `Snapshot Overview`, with the generated date
 and time directly below it in the browser's locale. Its content is centered within
 a 1080px maximum width and has no breadcrumb row. Suite and image pages retain
 their navigation. Review panes fill the remaining viewport below the actual header
-height.
+height only for image comparison. Other page content uses the document scrollbar.
+The shared header stays visible while breadcrumbs and page controls scroll normally.
 
 The overview summarizes Total tests, Passed, Failed, and Pass rate across all
 suites. Test totals count captures, and filters do not change the summary. The
@@ -394,16 +401,17 @@ closes the menu, and reopening it clears its search. On phones, Escape dismisses
 the dropdown without closing the navigation drawer.
 The selected suite's scenarios remain visible, with several captures grouped into
 individual image links. Scenarios have their own search.
-The left pane and review area scroll independently. Drag the divider to resize it,
-or focus it and use arrow keys, Home, and End. The preferred width is remembered;
+The left pane stays below the header and scrolls independently. The review area
+uses the root page scrollbar, without a second reserved gutter. Drag the divider
+to resize it, or focus it and use arrow keys, Home, and End. Its width is remembered;
 phones use a drawer with the same selector and scenario list.
 
 Overview and suite footers stay at the bottom of short pages and follow longer
 content without covering it. Image review remains footer-free.
 
-Images occupy their full scaled height inside the right page, with no inner
-scrollbar. Unmodified mouse-wheel, trackpad, and touch scrolling move the page.
-Left-drag pans the same page using pointer capture, without changing zoom or wipe
+Image comparison uses bounded image panes with independent canvas scrolling.
+Unmodified mouse-wheel, trackpad, and touch scrolling move the active image pane.
+Left-drag pans that pane using pointer capture, without changing zoom or wipe
 position; release, cancellation, lost capture, blur, or a view change clears the
 gesture. Ctrl/Cmd+wheel selects the next zoom preset around the pointer; zoom
 buttons use the same 25-800% presets as desktop. Fit width (the web default) and

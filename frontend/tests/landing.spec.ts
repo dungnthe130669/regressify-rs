@@ -25,6 +25,8 @@ test("landing prerender contains safe Markdown, links and branding without JavaS
     page.getByRole("link", { name: "Commerce storefront", exact: true }),
   ).toHaveAttribute("href", "https://commerce.report.test/suites/shop");
   await expect(page.locator(".brand img")).toBeVisible();
+  await expect(page.locator(":root")).toHaveCSS("scrollbar-gutter", "stable");
+  await expect(page.locator(":root")).not.toHaveCSS("scrollbar-color", "auto");
   expect(
     await page.locator(".brand img").evaluate((image: HTMLImageElement) => image.naturalWidth),
   ).toBeGreaterThan(0);

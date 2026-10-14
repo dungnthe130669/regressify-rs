@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import { PNG } from "pngjs";
+import { browserExecutable } from "../scripts/create-fixture";
 import { getAssetVersion } from "../scripts/version-assets";
 
 async function mockCaptureLogs(page: Page, state = "complete", timestampUtcMs = 1790812800000) {
@@ -242,11 +243,11 @@ async function assertLayout(page: Page) {
   expect(await page.evaluate(() => document.fonts.check("14px Roboto"))).toBe(true);
 }
 
-async function screenshot(page: Page, project: string, name: string) {
+async function screenshot(page: Page, project: string, name: string, fullPage = true) {
   await assertLayout(page);
   await page.screenshot({
     path: resolve(import.meta.dirname, `../.fixtures/screenshots/${project}/${name}.png`),
-    fullPage: true,
+    fullPage,
     animations: "disabled",
   });
 }
@@ -349,6 +350,7 @@ test("overview stacks all suite metrics on narrow screens", async ({ page }, inf
   );
   await mockOverview(page, suites);
   await expect(page.locator(".results-table tbody tr")).toHaveCount(suites.length);
+  await page.evaluate(() => document.fonts.ready);
   for (const width of [320, 390, 600, 760]) {
     await page.setViewportSize({ width, height: 844 });
     await assertLayout(page);
@@ -366,6 +368,48 @@ test("overview stacks all suite metrics on narrow screens", async ({ page }, inf
     for (const [index, cell] of cells.entries()) {
       expect(cell.right).toBeLessThanOrEqual(width);
       if (index) expect(cell.top).toBeGreaterThanOrEqual(cells[index - 1]?.bottom ?? 0);
+    }
+    const numberOffsets = await page.locator(".results-table tbody tr").evaluateAll((rows) =>
+      rows.map((row) => {
+        const numbers = Array.from(row.children)
+          .slice(1, 4)
+          .map((element) => {
+            const range = document.createRange();
+            range.selectNodeContents(element.querySelector("span") || element);
+            const text = range.getBoundingClientRect();
+            const cell = element.getBoundingClientRect();
+            const border = parseFloat(getComputedStyle(element).borderBottomWidth);
+            return {
+              center: text.x + text.width / 2,
+              vertical: Math.abs(text.y + text.height / 2 - cell.y - (cell.height - border) / 2),
+            };
+          });
+        const centers = numbers.map((number) => number.center);
+        return {
+          column: Math.max(...centers) - Math.min(...centers),
+          vertical: Math.max(...numbers.map((number) => number.vertical)),
+        };
+      }),
+    );
+    for (const offsets of numberOffsets) {
+      expect.soft(offsets.column, `Number column alignment at ${width}px`).toBeLessThanOrEqual(1);
+      expect
+        .soft(offsets.vertical, `Number vertical alignment at ${width}px`)
+        .toBeLessThanOrEqual(1);
+    }
+    const summary = await page.locator(".metrics > div").evaluateAll((elements) =>
+      elements.map((element) => ({
+        top: element.getBoundingClientRect().top,
+        border: getComputedStyle(element).borderTopWidth,
+      })),
+    );
+    if ((summary[2]?.top ?? 0) > (summary[0]?.top ?? 0)) {
+      expect
+        .soft(
+          summary.map((metric) => metric.border),
+          `Summary row divider at ${width}px`,
+        )
+        .toEqual(["0px", "0px", "1px", "1px"]);
     }
     await expect(page.getByRole("combobox", { name: "Sort suites by" })).toBeVisible();
   }
@@ -552,8 +596,11 @@ for (const system of ["light", "dark"] as const) {
       await expect(page.locator("#root")).toBeEmpty();
       await expect(page.locator("html")).toHaveAttribute("data-theme", resolved);
       await expect(page.locator("html")).toHaveCSS("color-scheme", resolved);
-      await expect(page.locator("html")).toHaveCSS(
-        "background-color",
+      const firstPaint = PNG.sync.read(
+        await page.screenshot({ clip: { x: 32, y: 32, width: 1, height: 1 }, scale: "css" }),
+      );
+      const background = [...firstPaint.data.subarray(0, 3)].join(", ");
+      expect(`rgb(${background})`).toBe(
         resolved === "dark" ? "rgb(21, 25, 25)" : "rgb(247, 248, 248)",
       );
       await page.unroute(appBundle);
@@ -791,6 +838,140 @@ test("overview sorts every column in both directions and preserves filters", asy
   await assertLayout(page);
 });
 
+test("page scrollbar gutters stay stable on every report route", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (const { path, content } of [
+    { path: "/", content: ".metrics" },
+    { path: "/suites/workspace-overview", content: ".capture-card" },
+    {
+      path: "/suites/workspace-overview/images/overview__desktop.png",
+      content: ".comparison-viewer",
+    },
+    {
+      path: "/suites/workspace-overview/images/overview__desktop.png?view=log",
+      content: "[data-log-state]",
+    },
+    { path: "/suites/not-a-suite", content: ".state-panel" },
+    { path: "/suites/workspace-overview/not-found", content: ".state-panel" },
+  ]) {
+    await page.goto(path);
+    await expect(page.locator(content).first()).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    await expect(page.locator(":root")).toHaveCSS("scrollbar-gutter", "stable");
+    await expect(page.locator(":root")).not.toHaveCSS("scrollbar-color", "auto");
+    const review = page.locator(".review-scroll");
+    if (await review.count()) {
+      await expect(review).toHaveCSS("scrollbar-gutter", "auto");
+      await expect(review).toHaveCSS(
+        "overflow-y",
+        content === ".comparison-viewer" ? "hidden" : "visible",
+      );
+    }
+    const scroller = page.locator(":root");
+    const main = page.locator("#main");
+    const initial = await main.boundingBox();
+    if (!initial) throw new Error(`Page content is not visible: ${path}`);
+    for (const overflow of ["hidden", "scroll", "auto"]) {
+      await scroller.evaluate((element, value) => {
+        (element as HTMLElement).style.overflowY = value;
+      }, overflow);
+      const bounds = await main.boundingBox();
+      if (!bounds) throw new Error(`Page content is not visible: ${path}`);
+      expect(Math.abs(bounds.x - initial.x), path).toBeLessThanOrEqual(1);
+      expect(Math.abs(bounds.width - initial.width), path).toBeLessThanOrEqual(1);
+      await assertLayout(page);
+    }
+  }
+});
+
+test.describe("page scrollbar tracks", () => {
+  test("empty gutters remain distinct from short pages in both themes", async ({
+    playwright,
+    isMobile,
+    baseURL,
+  }, info) => {
+    test.skip(isMobile, "Touch browsers use overlay scrollbars without reserved gutters.");
+    const browser = await playwright.chromium.launch({
+      executablePath: browserExecutable(),
+      ignoreDefaultArgs: ["--hide-scrollbars"],
+      args: ["--disable-features=OverlayScrollbar,FluentOverlayScrollbar"],
+    });
+    try {
+      const page = await browser.newPage({ baseURL });
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await page.setViewportSize({ width: 1280, height: 1000 });
+      for (const path of ["/", "/suites/workspace-overview"]) {
+        await page.goto(path);
+        await expect(
+          page.locator(path === "/" ? ".results-table" : ".capture-card").first(),
+        ).toBeVisible();
+        await page.setViewportSize({ width: 1280, height: 480 });
+        const review = page.locator(".review-scroll");
+        if (await review.count()) {
+          expect(
+            await review.evaluate((element) =>
+              Math.abs(element.getBoundingClientRect().width - element.clientWidth),
+            ),
+          ).toBeLessThanOrEqual(1);
+        }
+        await page.mouse.move(800, 350);
+        await page.mouse.wheel(0, 200);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+        expect((await page.locator(".app-header").boundingBox())?.y).toBe(0);
+        await page.screenshot({
+          path: resolve(
+            import.meta.dirname,
+            `../.fixtures/screenshots/desktop/root-scroll-${path === "/" ? "overview" : "suite"}.png`,
+          ),
+          scale: "css",
+          animations: "disabled",
+        });
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.setViewportSize({ width: 1280, height: 1000 });
+        await page.locator("#main").getByRole("searchbox").fill("scrollbar-empty-results");
+        await expect(page.locator("#main .state-panel")).toBeVisible();
+        await page.evaluate(() => document.fonts.ready);
+        for (const theme of ["Light", "Dark"] as const) {
+          await chooseTheme(page, theme);
+          const gutters = await page.locator(":root").evaluateAll((elements) =>
+            elements.map((element) => {
+              const bounds = element.getBoundingClientRect();
+              const root = element === document.documentElement;
+              const width = root ? innerWidth - bounds.width : bounds.width - element.clientWidth;
+              return {
+                width,
+                x: (root ? innerWidth : bounds.right) - width / 2,
+                y: bounds.top + 100,
+                overflowing: element.scrollHeight > element.clientHeight,
+                trackColor: getComputedStyle(document.documentElement).backgroundColor,
+                pageColor: getComputedStyle(document.body).backgroundColor,
+              };
+            }),
+          );
+          const image = PNG.sync.read(
+            await page.screenshot({ scale: "css", animations: "disabled" }),
+          );
+          for (const gutter of gutters) {
+            expect(gutter.width, `${path} reserved gutter width`).toBeGreaterThan(0);
+            expect(gutter.overflowing, `${path} should not need a scrollbar`).toBe(false);
+            expect(gutter.trackColor).not.toBe(gutter.pageColor);
+            const offset = (Math.floor(gutter.y) * image.width + Math.floor(gutter.x)) * 4;
+            const color = [...image.data.subarray(offset, offset + 3)].join(", ");
+            expect(`rgb(${color})`, `${path} empty gutter in ${theme}`).toBe(gutter.trackColor);
+          }
+          await screenshot(
+            page,
+            info.project.name,
+            `scrollbar-gutter-${path === "/" ? "overview" : "suite"}-${theme.toLowerCase()}`,
+          );
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 test("footer stays at the bottom on short and empty pages", async ({ page }, info) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("The viewport is not configured");
@@ -829,7 +1010,7 @@ test("footer stays at the bottom on short and empty pages", async ({ page }, inf
   }
 });
 
-test("footer follows long content in document and review scrolling", async ({ page }) => {
+test("footer follows long overview and suite content in document scrolling", async ({ page }) => {
   const viewport = page.viewportSize();
   if (!viewport) throw new Error("The viewport is not configured");
   await page.setViewportSize({ ...viewport, height: 480 });
@@ -854,7 +1035,7 @@ test("footer follows long content in document and review scrolling", async ({ pa
     expect(
       await footer.evaluate((element) => element.getBoundingClientRect().top),
     ).toBeGreaterThanOrEqual(contentBottom - 1);
-    if (path !== "/") expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
   }
 });
 
@@ -956,6 +1137,13 @@ test("overview centers metrics and result columns with aligned suite labels", as
   await page.goto("/");
   await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
   await page.evaluate(() => document.fonts.ready);
+  expect
+    .soft(
+      await page
+        .locator(".metrics strong")
+        .evaluateAll((elements) => elements.map((element) => getComputedStyle(element).fontWeight)),
+    )
+    .toEqual(["700", "700", "700", "700"]);
   const offsets = await page.evaluate(() => {
     const center = (bounds: DOMRect) => bounds.left + bounds.width / 2;
     const stacked = window.matchMedia("(max-width: 760px)").matches;
@@ -976,10 +1164,13 @@ test("overview centers metrics and result columns with aligned suite labels", as
           range.selectNodeContents(cell);
           const bounds = content?.getBoundingClientRect() || range.getBoundingClientRect();
           if (stacked) {
+            const style = getComputedStyle(cell);
+            const columnWidth = parseFloat(style.gridTemplateColumns.split(" ").at(-1) || "0");
             return Math.abs(
-              bounds.right -
+              center(bounds) -
                 cell.getBoundingClientRect().right +
-                parseFloat(getComputedStyle(cell).paddingRight),
+                parseFloat(style.paddingRight) +
+                columnWidth / 2,
             );
           }
           return Math.abs(center(bounds) - center(cell.getBoundingClientRect()));
@@ -1076,12 +1267,11 @@ test("large suites keep preview images bounded while scrolling and jumping to fa
   await expect.poll(() => images.count()).toBeLessThan(45);
   const first = cards.first();
   const last = cards.last();
-  const review = page.locator(".review-scroll");
   await last.scrollIntoViewIfNeeded();
   await expect.poll(() => last.locator("img[src]").count()).toBe(3);
   await expect.poll(() => first.locator("img[src]").count()).toBe(0);
   await expect.poll(() => images.count()).toBeLessThan(45);
-  await review.evaluate((element) => element.scrollTo(0, 0));
+  await page.evaluate(() => window.scrollTo(0, 0));
   await expect.poll(() => first.locator("img[src]").count()).toBe(3);
   await expect.poll(() => last.locator("img[src]").count()).toBe(0);
   await page.getByRole("button", { name: "Next failed comparison", exact: true }).click();
@@ -1360,7 +1550,8 @@ test("review navigation shows the current suite in a dropdown without shifting s
   expect(await scenarios.evaluate((element) => element.getBoundingClientRect().top)).toBe(
     scenarioTop,
   );
-  await screenshot(page, info.project.name, "navigation-dropdown");
+  await screenshot(page, info.project.name, "navigation-dropdown", false);
+  await expect(suites).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(suites).toBeHidden();
   await expect(suiteSelector).toBeFocused();
@@ -1569,6 +1760,7 @@ test("review panes resize and scroll independently", async ({ page, isMobile }) 
   await page.setViewportSize({ width: 1200, height: 420 });
   await page.goto("/suites/workspace-overview");
   await expect(page.locator(".capture-card")).toHaveCount(4);
+  await page.evaluate(() => document.fonts.ready);
   const divider = page.getByRole("separator", { name: "Resize review navigation" });
   const panel = page.locator(".suite-panel");
   const start = await divider.boundingBox();
@@ -1594,12 +1786,20 @@ test("review panes resize and scroll independently", async ({ page, isMobile }) 
     .poll(() => sidebarScroll.evaluate((element) => element.scrollTop))
     .toBeGreaterThan(0);
   expect(await reviewScroll.evaluate((element) => element.scrollTop)).toBe(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
   const sidebarTop = await sidebarScroll.evaluate((element) => element.scrollTop);
   await reviewScroll.hover({ position: { x: 250, y: 200 } });
   await page.mouse.wheel(0, 400);
-  await expect.poll(() => reviewScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
   expect(await sidebarScroll.evaluate((element) => element.scrollTop)).toBe(sidebarTop);
-  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  expect(await reviewScroll.evaluate((element) => element.scrollTop)).toBe(0);
+  const header = await page.locator(".app-header").boundingBox();
+  const sidebar = await panel.boundingBox();
+  const breadcrumb = await page.locator(".breadcrumb-bar").boundingBox();
+  if (!header || !sidebar || !breadcrumb) throw new Error("Review layout is unavailable");
+  expect(Math.abs(header.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(sidebar.y - header.height)).toBeLessThanOrEqual(1);
+  expect(breadcrumb.y).toBeLessThan(header.height);
   await assertLayout(page);
   await page.reload();
   await expect(divider).toHaveAttribute("aria-valuenow", "236");

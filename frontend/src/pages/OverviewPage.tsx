@@ -237,7 +237,7 @@ export function OverviewPage() {
                     </div>
                   </td>
                   <td className="mono" data-label="Total tests">
-                    {suite.total}
+                    <span>{suite.total}</span>
                   </td>
                   <td className="mono" data-label="Passed">
                     <span

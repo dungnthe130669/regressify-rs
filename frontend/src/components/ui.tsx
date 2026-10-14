@@ -83,7 +83,7 @@ const previewObservers = new Map<
 >();
 
 function observePreview(element: HTMLImageElement, update: (visible: boolean) => void) {
-  const root = element.closest(".review-scroll");
+  const root = null;
   let group = previewObservers.get(root);
   if (!group) {
     const targets = new Map<Element, (visible: boolean) => void>();

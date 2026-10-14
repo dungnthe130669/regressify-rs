@@ -61,6 +61,12 @@ Issues identified during adversarial review that remain after the September 2026
   and engine-error labels took a separate line below suite names. Suites now use
   stacked, labeled metrics at narrow widths, with all sorting options retained.
   Inline numeric error badges expose their full labels on hover, focus, and tap.
+- Follow-up resolved in source (2026-10-14): mobile total/passed/failed counts now
+  share a centered value column, stacked summary rows have a separator, and all
+  summary values use bold text.
+- Report content now uses the root scrollbar without a duplicate review gutter.
+  The sidebar scrolls independently below the sticky header; breadcrumbs and page
+  controls scroll normally. Empty root gutters retain a theme-aware track color.
 - [Browser regressions](frontend/tests/report.spec.ts) failed before the fix and
   pass afterward, covering 320px through the table breakpoint, accessibility,
   themes, filters, the dated heading, and preserved review breadcrumbs/footers.
@@ -874,7 +880,7 @@ it was risk-focused, not an exhaustive security certification.
   or blocked storage, and preference resets.
 - Snapshot footers now stay at the viewport bottom on short, empty, and missing
   pages and follow long content in normal flow. Desktop/mobile footer regressions
-  cover both document and review-pane scrolling without overlap.
+  cover document scrolling without overlap, including suite pages.
 - Desktop Snapshot and Deploy no longer pass built-in report text as explicit
   CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
   reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate

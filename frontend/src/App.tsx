@@ -8,7 +8,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useMatch } from "react-router";
 import desktopIcon from "../../assets/icon.svg?url";
@@ -177,12 +177,25 @@ function Shell() {
   const drag = useRef<{ x: number; width: number } | null>(null);
   const [resizing, setResizing] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
+  const header = useRef<HTMLElement>(null);
   const main = useRef<HTMLElement>(null);
-  const content = useRef<HTMLDivElement>(null);
   const maximumWidth = Math.max(220, Math.min(480, Math.floor(viewportWidth * 0.45)));
   const panelWidth = Math.min(preferredPanelWidth, maximumWidth);
   const resizePanel = (width: number) =>
     setPanelWidth(Math.max(220, Math.min(maximumWidth, width)));
+  useLayoutEffect(() => {
+    const element = header.current;
+    if (!element) return;
+    const update = () =>
+      element.parentElement?.style.setProperty(
+        "--header-height",
+        `${element.getBoundingClientRect().height}px`,
+      );
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     const update = () => {
       setViewportWidth(window.innerWidth);
@@ -208,7 +221,6 @@ function Shell() {
   }, [manifest.title, suiteName]);
   useEffect(() => {
     if (location.pathname) main.current?.focus({ preventScroll: true });
-    content.current?.scrollTo(0, 0);
     window.scrollTo(0, 0);
   }, [location.pathname]);
   const togglePanel = () => {
@@ -222,7 +234,7 @@ function Shell() {
       <a href="#main" className="skip-link">
         Skip to results
       </a>
-      <header className="app-header snapshot-header">
+      <header ref={header} className="app-header snapshot-header">
         <Link to="/" className="brand" aria-label="Regressify overview">
           <img src={iconUrl} width={24} height={24} alt="" />
           <span>Regressify</span>
@@ -347,7 +359,7 @@ function Shell() {
               </span>
             </section>
           )}
-          <div ref={content} className={`workspace-content${match ? " review-scroll" : ""}`}>
+          <div className={`workspace-content${match ? " review-scroll" : ""}`}>
             <main id="main" ref={main} tabIndex={-1}>
               <Routes>
                 <Route path="/" element={<OverviewPage />} />

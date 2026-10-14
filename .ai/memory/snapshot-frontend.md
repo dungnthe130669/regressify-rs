@@ -1,6 +1,6 @@
 # Snapshot Frontend
 
-Verified: 2026-10-13
+Verified: 2026-10-14
 
 - Suite `displayName` is optional in version-2 summaries/reports. `suiteLabel`
   supplies all visible suite labels while IDs remain route/asset keys. The
@@ -61,12 +61,12 @@ Verified: 2026-10-13
   `review navigation` tests cover keyboard/pointer selection, dismissal, search reset,
   long labels, viewport bounds, and accessibility on desktop/mobile.
   Portal into the enclosing native mobile dialog, using the default root on desktop.
-  Escape capture and default prevention keep dismissal out of the native drawer.
-  List-navigation orientation does not belong on the outer searchable dialog.
-  [Shell](../../frontend/src/App.tsx) owns separate
-  left/right scroll areas and pointer-captured divider resizing; preferred desktop
-  width survives narrow/mobile viewports. Tailwind resets native `hr` height to zero,
-  so the vertical divider explicitly needs `height: 100%`.
+  Escape protects the drawer; Floating UI restores focus. Keep list orientation off the dialog.
+  Viewport-only dropdown screenshots avoid Chromium's transient 1x1 full-page capture resize unmounting the sidebar.
+  [Shell](../../frontend/src/App.tsx) pins the independently scrolling sidebar below
+  the ResizeObserver-measured sticky header; page content uses root scrolling.
+  Divider width survives mobile transitions; native `hr` needs `height: 100%`.
+  [Previews](../../frontend/src/components/ui.tsx) observe the document viewport, not the review wrapper.
 - [Overview](../../frontend/src/pages/OverviewPage.tsx) sorts by raw counts/ratios.
   `overview sorts every column` tests directions, filters, and refresh. Nonempty
   fully passing suites highlight passed counts green; failures highlight failed
@@ -78,7 +78,8 @@ Verified: 2026-10-13
 - [Shell](../../frontend/src/App.tsx) sizes growing flex columns below the actual
   compact header. The 1080px overview omits breadcrumbs and shows local date/time
   below `Snapshot Overview`; review breadcrumbs stay unchanged. `--grep footer`
-  covers short/filtered/missing pages and long document/review scrolling.
+  covers short/filtered/missing pages and long document scrolling. `page scrollbar`
+  verifies one root gutter, theme-aware empty tracks, and preserved first-paint colors.
 - [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) keeps names/controls outside bounded native scroll panes; wheel, drag, and keys pan the active lane. Ctrl/Cmd+wheel uses per-pane anchor padding from full inner bounds so scrollbar changes cannot clamp it. Constrain the review route's `main` flex minimum height. The `image viewer` tests cover gestures, stationary controls, independent scrollbars, and cleanup; fits never upscale.
   Optional `imageSizes` reserves decoded dimensions before load; `dimensions` holds deltas. Legacy reports discover sizes on load.
   Delayed-load tests use reduced motion to exclude entrance animation.
