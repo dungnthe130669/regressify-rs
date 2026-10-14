@@ -437,11 +437,13 @@ own zoom; capture changes reset it. Fit modes never upscale small images.
 Side-by-side divides the visible viewer width into two equal lanes, or three when
 a Diff image exists. Lanes never grow with zoom: oversized images scroll inside
 their lanes, while smaller images stay centered. Reference and Test remain separate even
-at small zoom levels; Diff adds a third lane when available. Hovering any loaded
-image shows synchronized crosshairs at matching pixel coordinates in the other
-images, whether or not a diff exists. High-contrast guides stay thin at every zoom
-level. Failed or missing images and coordinates outside a smaller image are
-excluded. When comparison
+at small zoom levels; Diff adds a third lane when available. Hovering anywhere in
+a lane with a loaded image, including empty space around it, shows synchronized
+crosshairs at matching image coordinates in the other lanes, whether or not a
+diff exists. Guides span the entire lane, extend beyond image edges, and stay
+under the pointer during scrolling, zoom, and fit changes. High-contrast strokes
+stay thin at every zoom level. Leaving the lane, touching, dragging, or switching
+views clears them; failed or missing images remain excluded. When comparison
 aligns an inserted or deleted vertical band, crosshairs follow the corresponding
 content above and below it. Within the band, the shorter image has no matching
 pixel and shows no crosshair. Alignment comes from the saved comparison, not an

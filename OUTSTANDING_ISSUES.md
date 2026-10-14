@@ -103,6 +103,10 @@ Issues identified during adversarial review that remain after the September 2026
   both axes from any lane, including drag and keyboard movement. Smaller images
   clamp without scrolling larger peers back, and zoom anchoring remains intact.
   Desktop/mobile browser regressions cover two/three lanes and unequal sizes.
+- Follow-up resolved in source (2026-10-14): frontend crosshairs cover the entire
+  hovered lane, including empty space and small-image padding. They stay visible
+  through scrolling, zoom, and fit changes without enlarging image scroll ranges.
+  Tests retain diff-band mapping, unavailable-image exclusions, and gesture cleanup.
 
 ## Snapshot Overview Mobile Layout (2026-10-13)
 

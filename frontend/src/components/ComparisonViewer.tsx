@@ -131,8 +131,14 @@ export function ComparisonViewer({
   const [crosshair, setCrosshair] = useState<{
     capture: Capture;
     scale: number;
-    x: number;
-    y: number;
+    positions: ({
+      x: number;
+      y: number;
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    } | null)[];
   } | null>(null);
   const [viewport, setViewport] = useState<Size>({ width: 0, height: 0 });
   const [panning, setPanning] = useState(false);
@@ -140,6 +146,9 @@ export function ComparisonViewer({
   const viewer = useRef<HTMLElement>(null);
   const canvas = useRef<HTMLElement>(null);
   const activePane = useRef<HTMLElement | null>(null);
+  const crosshairPointer = useRef<{ capture: Capture; index: number; x: number; y: number } | null>(
+    null,
+  );
   const scrollPositions = useRef(new WeakMap<HTMLElement, { left: number; top: number }>());
   const toolbar = useRef<HTMLDivElement>(null);
   const gestureScope = useRef({ capture, mode: requestedMode });
@@ -223,12 +232,13 @@ export function ComparisonViewer({
     if (!element) return;
     const elements = Array.from(element.querySelectorAll<HTMLElement>(".image-pane"));
     if (elements.length !== paneCount) return;
-    const observer = new ResizeObserver(() =>
+    const observer = new ResizeObserver(() => {
       setViewport({
         width: Math.max(1, Math.min(...elements.map((pane) => pane.clientWidth))),
         height: Math.max(1, Math.min(...elements.map((pane) => pane.clientHeight))),
-      }),
-    );
+      });
+      refreshCrosshairLayout();
+    });
     observer.observe(element);
     for (const pane of elements) observer.observe(pane);
     return () => observer.disconnect();
@@ -243,6 +253,79 @@ export function ComparisonViewer({
           { width: viewport.width || size.width, height: viewport.height || size.height },
           fit,
         );
+  const clearCrosshair = () => {
+    crosshairPointer.current = null;
+    setCrosshair(null);
+  };
+  const updateCrosshair = (index: number, point: { x: number; y: number }) => {
+    const elements = Array.from(canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []);
+    const source = elements[index];
+    const image = source?.querySelector("img");
+    if (
+      mode !== "side" ||
+      capture.error !== null ||
+      !source ||
+      !image?.naturalWidth ||
+      !image.naturalHeight
+    ) {
+      clearCrosshair();
+      return;
+    }
+    const viewport = source.getBoundingClientRect();
+    if (
+      point.x < viewport.left + source.clientLeft ||
+      point.x >= viewport.left + source.clientLeft + source.clientWidth ||
+      point.y < viewport.top + source.clientTop ||
+      point.y >= viewport.top + source.clientTop + source.clientHeight
+    ) {
+      clearCrosshair();
+      return;
+    }
+    const bounds = image.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    crosshairPointer.current = { capture, index, ...point };
+    const imageX = ((point.x - bounds.left) / bounds.width) * image.naturalWidth;
+    const alignedY = imageRowToAlignedRow(
+      ((point.y - bounds.top) / bounds.height) * image.naturalHeight,
+      lanes[index]?.gap ?? null,
+    );
+    setCrosshair({
+      capture,
+      scale,
+      positions: elements.map((pane, targetIndex) => {
+        const target = pane.querySelector("img");
+        const lane = lanes[targetIndex];
+        const row = alignedRowToImageRow(alignedY, lane?.gap ?? null);
+        if (
+          !target?.naturalWidth ||
+          !target.naturalHeight ||
+          !isLoaded(lane?.path ?? null) ||
+          row === null
+        )
+          return null;
+        const image = target.getBoundingClientRect();
+        const viewport = pane.getBoundingClientRect();
+        return {
+          left: pane.clientLeft,
+          top: pane.clientTop,
+          width: pane.clientWidth,
+          height: pane.clientHeight,
+          x:
+            image.left -
+            viewport.left -
+            pane.clientLeft +
+            (imageX / target.naturalWidth) * image.width,
+          y:
+            image.top - viewport.top - pane.clientTop + (row / target.naturalHeight) * image.height,
+        };
+      }),
+    });
+  };
+  const refreshCrosshair = () => {
+    const pointer = crosshairPointer.current;
+    if (pointer?.capture === capture) updateCrosshair(pointer.index, pointer);
+  };
+  const refreshCrosshairLayout = useEffectEvent(refreshCrosshair);
   const scrollRoot = (target?: EventTarget | null) => {
     const pane = target instanceof Element ? target.closest<HTMLElement>(".image-pane") : null;
     if (pane && canvas.current?.contains(pane)) activePane.current = pane;
@@ -337,7 +420,7 @@ export function ComparisonViewer({
     }
   };
   useLayoutEffect(() => {
-    const pending = anchors.current;
+    const pending = view?.fit === "manual" ? anchors.current : [];
     anchors.current = [];
     for (const anchor of pending) {
       if (!anchor.element.isConnected) continue;
@@ -350,7 +433,8 @@ export function ComparisonViewer({
     for (const pane of canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []) {
       scrollPositions.current.set(pane, { left: pane.scrollLeft, top: pane.scrollTop });
     }
-  }, [scale]);
+    refreshCrosshairLayout();
+  }, [scale, view?.fit]);
   const wheelZoom = useEffectEvent((event: WheelEvent) => {
     if ((!event.ctrlKey && !event.metaKey) || !Number.isFinite(event.deltaY) || event.deltaY === 0)
       return;
@@ -360,7 +444,7 @@ export function ComparisonViewer({
   });
   const clearGesture = useEffectEvent(() => {
     cancelPan();
-    setCrosshair(null);
+    clearCrosshair();
     anchors.current = [];
     activePane.current = null;
   });
@@ -385,14 +469,17 @@ export function ComparisonViewer({
     };
   }, []);
   useEffect(() => {
-    const clear = () => setCrosshair(null);
+    const clear = () => {
+      crosshairPointer.current = null;
+      setCrosshair(null);
+    };
     setCrosshair((current) =>
       mode === "side" && current?.capture === capture && current.scale === scale ? current : null,
     );
-    window.addEventListener("scroll", clear, true);
+    window.addEventListener("scroll", refreshCrosshairLayout, true);
     window.addEventListener("blur", clear);
     return () => {
-      window.removeEventListener("scroll", clear, true);
+      window.removeEventListener("scroll", refreshCrosshairLayout, true);
       window.removeEventListener("blur", clear);
     };
   }, [capture, mode, scale]);
@@ -530,7 +617,7 @@ export function ComparisonViewer({
           scrollRoot(event.target);
         }}
         onPointerDown={(event) => {
-          setCrosshair(null);
+          clearCrosshair();
           if (event.button !== 0 || event.pointerType === "touch") return;
           const scroll = scrollRoot(event.target);
           if (!scroll) return;
@@ -579,7 +666,17 @@ export function ComparisonViewer({
             );
           }
         }}
-        onPointerUp={cancelPan}
+        onPointerUp={(event) => {
+          cancelPan();
+          if (event.pointerType === "touch") return;
+          const pane = document
+            .elementFromPoint(event.clientX, event.clientY)
+            ?.closest(".image-pane");
+          if (!pane) return;
+          const elements = Array.from(canvas.current?.querySelectorAll(".image-pane") ?? []);
+          const index = elements.indexOf(pane);
+          if (index >= 0) updateCrosshair(index, { x: event.clientX, y: event.clientY });
+        }}
         onPointerCancel={cancelPan}
         onLostPointerCapture={cancelPan}
         onContextMenu={cancelPan}
@@ -617,161 +714,126 @@ export function ComparisonViewer({
       >
         {panes.map((lane, index) => {
           const padding = view?.padding?.[index];
-          const crosshairY = crosshair ? alignedRowToImageRow(crosshair.y, lane.gap) : null;
+          const guide =
+            crosshair?.capture === capture && crosshair.scale === scale
+              ? crosshair.positions[index]
+              : null;
           return (
-            <section
-              key={lane.label}
-              className={`image-pane${mode === "side" ? " comparison-lane" : ""}`}
-              aria-label={`${lane.label} image viewport`}
-              // biome-ignore lint/a11y/noNoninteractiveTabindex: Native scroll panes support scoped keyboard zoom and pan.
-              tabIndex={0}
-              onScroll={(event) => syncScroll(event.currentTarget)}
-            >
-              <div
-                className="comparison-stage"
-                style={{
-                  width: padding
-                    ? lane.size.width * scale + padding.left + padding.right
-                    : undefined,
-                  paddingLeft: padding?.left,
-                  paddingTop: padding?.top,
-                  paddingRight: padding?.right,
-                  paddingBottom: padding?.bottom,
+            <div key={lane.label} className="image-viewport">
+              <section
+                className={`image-pane${mode === "side" ? " comparison-lane" : ""}`}
+                aria-label={`${lane.label} image viewport`}
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: Native scroll panes support scoped keyboard zoom and pan.
+                tabIndex={0}
+                onScroll={(event) => {
+                  syncScroll(event.currentTarget);
+                  refreshCrosshair();
                 }}
+                onPointerMove={(event) => {
+                  if (event.pointerType === "touch" || event.buttons !== 0) clearCrosshair();
+                  else updateCrosshair(index, { x: event.clientX, y: event.clientY });
+                }}
+                onPointerLeave={clearCrosshair}
+                onPointerCancel={clearCrosshair}
               >
                 <div
-                  className="image-surface"
-                  style={{ width: lane.size.width * scale, height: lane.size.height * scale }}
+                  className="comparison-stage"
+                  style={{
+                    width: padding
+                      ? lane.size.width * scale + padding.left + padding.right
+                      : undefined,
+                    paddingLeft: padding?.left,
+                    paddingTop: padding?.top,
+                    paddingRight: padding?.right,
+                    paddingBottom: padding?.bottom,
+                  }}
                 >
                   <div
-                    ref={index === 0 ? world : undefined}
-                    className="image-world"
-                    style={{
-                      width: lane.size.width,
-                      height: lane.size.height,
-                      transform: `scale(${scale})`,
-                      transformOrigin: "top left",
-                    }}
+                    className="image-surface"
+                    style={{ width: lane.size.width * scale, height: lane.size.height * scale }}
                   >
-                    {mode === "side" ? (
-                      <div
-                        className="comparison-image"
-                        style={lane.size}
-                        onPointerMove={(event) => {
-                          const image = event.currentTarget.querySelector("img");
-                          if (
-                            capture.error !== null ||
-                            event.pointerType === "touch" ||
-                            event.buttons !== 0 ||
-                            !image?.naturalWidth ||
-                            !image.naturalHeight
-                          ) {
-                            setCrosshair(null);
-                            return;
-                          }
-                          const bounds = image.getBoundingClientRect();
-                          const imageX =
-                            ((event.clientX - bounds.left) / bounds.width) * image.naturalWidth;
-                          const imageY =
-                            ((event.clientY - bounds.top) / bounds.height) * image.naturalHeight;
-                          setCrosshair(
-                            imageX >= 0 &&
-                              imageX < image.naturalWidth &&
-                              imageY >= 0 &&
-                              imageY < image.naturalHeight
-                              ? {
-                                  capture,
-                                  scale,
-                                  x: imageX,
-                                  y: imageRowToAlignedRow(imageY, lane.gap),
-                                }
-                              : null,
-                          );
-                        }}
-                        onPointerLeave={() => setCrosshair(null)}
-                        onPointerCancel={() => setCrosshair(null)}
-                        onPointerDown={() => setCrosshair(null)}
-                      >
-                        <ReportImage
-                          path={lane.path}
-                          alt={`${lane.label}: ${capture.label}`}
-                          width={lane.size.width}
-                          height={lane.size.height}
-                          eager
-                        />
-                        {isLoaded(lane.path) &&
-                          crosshair &&
-                          crosshair.capture === capture &&
-                          crosshair.scale === scale &&
-                          crosshair.x < lane.size.width &&
-                          crosshairY !== null &&
-                          crosshairY < lane.size.height && (
-                            <span
-                              className="comparison-crosshair"
-                              aria-hidden="true"
-                              style={{
-                                width: lane.size.width * scale,
-                                height: lane.size.height * scale,
-                                transform: `scale(${1 / scale})`,
-                              }}
-                            >
-                              <span
-                                className="crosshair-horizontal"
-                                style={{ top: crosshairY * scale }}
-                              />
-                              <span
-                                className="crosshair-vertical"
-                                style={{ left: crosshair.x * scale }}
-                              />
-                            </span>
-                          )}
-                      </div>
-                    ) : mode === "wipe" || mode === "overlay" ? (
-                      <>
-                        <div className="image-layer" style={referenceSize}>
+                    <div
+                      ref={index === 0 ? world : undefined}
+                      className="image-world"
+                      style={{
+                        width: lane.size.width,
+                        height: lane.size.height,
+                        transform: `scale(${scale})`,
+                        transformOrigin: "top left",
+                      }}
+                    >
+                      {mode === "side" ? (
+                        <div className="comparison-image" style={lane.size}>
                           <ReportImage
-                            path={capture.reference}
-                            alt={`Reference: ${capture.label}`}
-                            width={referenceSize.width}
-                            height={referenceSize.height}
+                            path={lane.path}
+                            alt={`${lane.label}: ${capture.label}`}
+                            width={lane.size.width}
+                            height={lane.size.height}
                             eager
                           />
                         </div>
-                        <div
-                          className="image-layer"
-                          style={{
-                            ...size,
-                            opacity: mode === "overlay" ? blend / 100 : 1,
-                            clipPath: mode === "wipe" ? `inset(0 0 0 ${blend}%)` : undefined,
-                          }}
-                        >
-                          <div style={testSize}>
+                      ) : mode === "wipe" || mode === "overlay" ? (
+                        <>
+                          <div className="image-layer" style={referenceSize}>
                             <ReportImage
-                              path={capture.test}
-                              alt={`Test: ${capture.label}`}
-                              width={testSize.width}
-                              height={testSize.height}
+                              path={capture.reference}
+                              alt={`Reference: ${capture.label}`}
+                              width={referenceSize.width}
+                              height={referenceSize.height}
                               eager
                             />
                           </div>
-                        </div>
-                        {mode === "wipe" && (
-                          <div className="wipe-divider" style={{ left: `${blend}%` }} />
-                        )}
-                      </>
-                    ) : (
-                      <ReportImage
-                        path={single}
-                        alt={`${mode}: ${capture.label}`}
-                        width={size.width}
-                        height={size.height}
-                        eager
-                      />
-                    )}
+                          <div
+                            className="image-layer"
+                            style={{
+                              ...size,
+                              opacity: mode === "overlay" ? blend / 100 : 1,
+                              clipPath: mode === "wipe" ? `inset(0 0 0 ${blend}%)` : undefined,
+                            }}
+                          >
+                            <div style={testSize}>
+                              <ReportImage
+                                path={capture.test}
+                                alt={`Test: ${capture.label}`}
+                                width={testSize.width}
+                                height={testSize.height}
+                                eager
+                              />
+                            </div>
+                          </div>
+                          {mode === "wipe" && (
+                            <div className="wipe-divider" style={{ left: `${blend}%` }} />
+                          )}
+                        </>
+                      ) : (
+                        <ReportImage
+                          path={single}
+                          alt={`${mode}: ${capture.label}`}
+                          width={size.width}
+                          height={size.height}
+                          eager
+                        />
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            </section>
+                {guide && (
+                  <span
+                    className="comparison-crosshair"
+                    aria-hidden="true"
+                    style={{
+                      left: guide.left,
+                      top: guide.top,
+                      width: guide.width,
+                      height: guide.height,
+                    }}
+                  >
+                    <span className="crosshair-horizontal" style={{ top: guide.y }} />
+                    <span className="crosshair-vertical" style={{ left: guide.x }} />
+                  </span>
+                )}
+              </section>
+            </div>
           );
         })}
       </section>

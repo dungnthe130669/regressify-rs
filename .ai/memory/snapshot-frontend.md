@@ -84,7 +84,7 @@ Verified: 2026-10-14
   Optional `imageSizes` reserves decoded dimensions before load; `dimensions` holds deltas. Legacy reports discover sizes on load.
   Delayed-load tests use reduced motion to exclude entrance animation.
 - Side-by-side crosshairs map image pixels through optional comparer `alignment`,
-  excluding band holes and unavailable/out-of-bounds pixels; strokes stay one screen pixel wide. Crosshairs also work without a diff. Fixed equal-width lanes center small images and link scroll offsets with per-image clamping; tests scroll target pixels into view and exclude lane borders from hover offsets.
+  excluding band holes and unavailable images. One-screen-pixel guides span whole lanes, including blank space and image padding, with or without a diff; saved hover positions refresh after scroll, zoom, fit, and resize. Their positioned wrapper stays outside the native scroller to avoid adding overflow. Lanes retain linked offsets and image-coordinate projection; tests scroll target pixels into view and exclude borders from hover offsets.
   The `side by side crosshairs|scrolling over images` browser checks cover
   alignment and cleanup on desktop/mobile. Image nodes have `pointer-events: none`;
   hover their wrappers to wait for stable layout before reading image bounds.

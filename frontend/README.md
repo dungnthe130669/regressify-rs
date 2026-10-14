@@ -90,6 +90,11 @@ equal-width lanes, synchronized image pixels, unequal dimensions,
 inserted/deleted diff bands, zoom-independent strokes, missing/broken images,
 pointer cleanup, and linked native lane scrolling. Band tests cover every source lane, both
 alignment directions, and absent target pixels inside the gap.
+Lane-wide checks hover below images and inside side padding, verify full-viewport
+one-pixel strokes, and retain guides during stationary-pointer zoom, scrolling,
+and fit changes. The overlay's positioned wrapper sits outside the native scroll
+pane so guides never add image overflow; image-coordinate projection still uses
+the actual image bounds and saved diff alignment.
 Delayed-image checks verify explicit dimensions, unchanged fit zoom, and stable
 comparison geometry in every mode, including failed loads. They disable entrance
 animations so measurements isolate image loading.

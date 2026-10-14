@@ -2639,7 +2639,7 @@ test("scrolling over images synchronizes lanes without changing zoom", async ({ 
     await page.mouse.wheel(160, 300);
     await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     await expect.poll(() => content.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
-    await expect(page.locator(".comparison-crosshair")).toHaveCount(0);
+    await expect(page.locator(".comparison-crosshair")).toHaveCount(3);
     const position = await content.evaluate((element) => ({
       left: element.scrollLeft,
       top: element.scrollTop,
@@ -2754,7 +2754,7 @@ for (const shorter of ["reference", "test"] as const) {
       await route.fulfill({ contentType: "image/png", body: PNG.sync.write(image) });
     });
     await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
-    const lanes = page.locator(".comparison-image");
+    const lanes = page.locator(".comparison-lane");
     const images = lanes.locator("img");
     await expect(images).toHaveCount(3);
     await expect
@@ -2957,10 +2957,10 @@ for (const [differentSizes, hasDiff] of [
     );
     if (differentSizes) {
       await hoverPixel(1, 0.9, 0.2);
-      await expect(crosshairs).toHaveCount(laneCount - 1);
+      await expect(crosshairs).toHaveCount(laneCount);
       await expect(
         page.locator(".comparison-lane").first().locator(".comparison-crosshair"),
-      ).toHaveCount(0);
+      ).toHaveCount(1);
     }
     await page.getByRole("button", { name: "Fit images", exact: true }).click();
     const firstLane = await page.locator(".comparison-lane").first().boundingBox();
@@ -2976,6 +2976,106 @@ for (const [differentSizes, hasDiff] of [
     await expect(images).toHaveCount(2);
     await images.first().locator("..").hover();
     await expect(crosshairs).toHaveCount(2);
+  });
+}
+
+for (const hasDiff of [false, true]) {
+  test(`side by side crosshairs cover empty space in ${hasDiff ? "three" : "two"} full lanes`, async ({
+    page,
+  }, info) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.route("**/_snapshot/data/suites/**", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      if (data.id === "workspace-overview") {
+        data.tests[0].reference = data.tests[1].reference;
+        if (!hasDiff) data.tests[0].diff = null;
+      }
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+    const lanes = page.locator(".comparison-lane");
+    await expect(lanes).toHaveCount(hasDiff ? 3 : 2);
+    await expect
+      .poll(() =>
+        lanes
+          .locator("img")
+          .evaluateAll((images) =>
+            images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+          ),
+      )
+      .toBe(true);
+    await page.getByRole("button", { name: "Fit to window", exact: true }).click();
+    for (const lane of await lanes.all()) {
+      const pointer = await lane.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: Math.round(bounds.left + element.clientLeft + element.clientWidth / 2),
+          y: Math.floor(bounds.top + element.clientTop + element.clientHeight - 12),
+          imageBottom: element.querySelector("img")?.getBoundingClientRect().bottom ?? Infinity,
+          width: element.clientWidth,
+          height: element.clientHeight,
+        };
+      });
+      expect(pointer.y).toBeGreaterThan(pointer.imageBottom);
+      await page.mouse.move(pointer.x, pointer.y);
+      await expect(page.locator(".comparison-crosshair")).toHaveCount(hasDiff ? 3 : 2);
+      const horizontal = await lane.locator(".crosshair-horizontal").boundingBox();
+      const vertical = await lane.locator(".crosshair-vertical").boundingBox();
+      if (!horizontal || !vertical) throw new Error("Lane crosshairs are unavailable");
+      expect(Math.abs(horizontal.y + horizontal.height / 2 - pointer.y)).toBeLessThan(1);
+      expect(Math.abs(vertical.x + vertical.width / 2 - pointer.x)).toBeLessThan(1);
+      expect(horizontal.width).toBe(pointer.width);
+      expect(vertical.height).toBe(pointer.height);
+      expect(horizontal.height).toBe(1);
+      expect(vertical.width).toBe(1);
+    }
+    await screenshot(
+      page,
+      info.project.name,
+      `comparison-lane-crosshairs-${hasDiff ? "three" : "two"}`,
+    );
+    const padding = await lanes.first().evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const image = element.querySelector("img")?.getBoundingClientRect();
+      if (!image) throw new Error("Reference image is unavailable");
+      return {
+        x: Math.ceil(bounds.left + element.clientLeft + 3),
+        y: Math.round(image.top + image.height / 2),
+        imageLeft: image.left,
+      };
+    });
+    expect(padding.x).toBeLessThan(padding.imageLeft);
+    await page.mouse.move(padding.x, padding.y);
+    await expect(lanes.first().locator(".comparison-crosshair")).toHaveCount(1);
+    const zoom = await page.getByLabel("Zoom level").textContent();
+    await page.keyboard.down("Control");
+    try {
+      await page.mouse.wheel(0, -100);
+      await expect(page.getByLabel("Zoom level")).not.toHaveText(zoom ?? "");
+      await expect(lanes.first().locator(".comparison-crosshair")).toHaveCount(1);
+    } finally {
+      await page.keyboard.up("Control");
+    }
+    await lanes.first().focus();
+    await lanes.first().press("1");
+    await lanes.first().press("ArrowDown");
+    await expect
+      .poll(() => lanes.first().evaluate((element) => element.scrollTop))
+      .toBeGreaterThan(0);
+    await expect(page.locator(".comparison-crosshair")).toHaveCount(hasDiff ? 3 : 2);
+    await lanes.first().press("ArrowRight");
+    await expect
+      .poll(() => lanes.first().evaluate((element) => element.scrollLeft))
+      .toBeGreaterThan(0);
+    await expect(lanes.first().locator(".comparison-crosshair")).toHaveCount(1);
+    const guide = await lanes.first().locator(".crosshair-horizontal").boundingBox();
+    if (!guide) throw new Error("Crosshair disappeared after scrolling");
+    expect(Math.abs(guide.y + guide.height / 2 - padding.y)).toBeLessThan(1);
+    await lanes.first().press("0");
+    await expect(lanes.first().locator(".comparison-crosshair")).toHaveCount(1);
+    await page.getByRole("button", { name: "Fit images", exact: true }).hover();
+    await expect(page.locator(".comparison-crosshair")).toHaveCount(0);
   });
 }
 
