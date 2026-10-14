@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, Copy, Download, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchLogChunk,
   formatLogRecord,
@@ -45,6 +45,8 @@ export function CaptureLog({
   const [revision, setRevision] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState("");
+  const exportController = useRef<AbortController | null>(null);
+  useEffect(() => () => exportController.current?.abort(), []);
   useEffect(() => {
     const controller = new AbortController();
     setRecords([]);
@@ -73,6 +75,9 @@ export function CaptureLog({
   const shownState = error ? "loadingError" : state;
   async function download() {
     if (!log || state !== "complete" || error || exporting) return;
+    exportController.current?.abort();
+    const controller = new AbortController();
+    exportController.current = controller;
     setExporting(true);
     setNotice("");
     try {
@@ -80,7 +85,7 @@ export function CaptureLog({
       let count = 0;
       let bytes = 0;
       for (let chunk = 0; chunk < log.chunks.length; chunk += 1) {
-        const entries = await fetchLogChunk(log, chunk);
+        const entries = await fetchLogChunk(log, chunk, controller.signal, revision);
         for (const record of entries) {
           if (record.sequence !== count) throw new Error("Log is incomplete; export stopped.");
           count += 1;
@@ -104,9 +109,10 @@ export function CaptureLog({
       link.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Log export failed");
+      if (!controller.signal.aborted)
+        setNotice(error instanceof Error ? error.message : "Log export failed");
     } finally {
-      setExporting(false);
+      if (!controller.signal.aborted) setExporting(false);
     }
   }
   return (

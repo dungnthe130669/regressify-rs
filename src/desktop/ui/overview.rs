@@ -316,7 +316,7 @@ impl Workbench {
                         .any(|scenario| scenario.label.to_lowercase().contains(&query))
             })
             .map(|(index, suite)| {
-                let counts = runs.progress().counts(Some(&suite.output_id));
+                let counts = runs.suite_counts(&suite.output_id);
                 let status = if suite.error.is_some() {
                     "Invalid"
                 } else if counts.running > 0 {

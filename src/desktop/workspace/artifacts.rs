@@ -227,29 +227,31 @@ impl ArtifactUpdate {
                         metadata.is_dir() && !metadata.file_type().is_symlink(),
                         "Snapshot output must be a real directory"
                     );
-                    let original = inventory(&snapshot)?;
-                    let index_inventory = inventory(&root.join("index.html"))?;
-                    copy_tree(&snapshot, &stage.join("_snapshot"))?;
-                    fs::copy(root.join("index.html"), stage.join("index.html"))?;
-                    for (name, _) in crate::snapshot::FRONTEND_FILES {
-                        if *name != "gitignore" && !name.starts_with("_snapshot/") {
-                            inventory(&root.join(name))?;
-                            fs::copy(root.join(name), stage.join(name))?;
+                    if crate::snapshot::should_update_suite(root, old_id, new_id)? {
+                        let original = inventory(&snapshot)?;
+                        let index_inventory = inventory(&root.join("index.html"))?;
+                        copy_tree(&snapshot, &stage.join("_snapshot"))?;
+                        fs::copy(root.join("index.html"), stage.join("index.html"))?;
+                        for (name, _) in crate::snapshot::FRONTEND_FILES {
+                            if *name != "gitignore" && !name.starts_with("_snapshot/") {
+                                inventory(&root.join(name))?;
+                                fs::copy(root.join(name), stage.join(name))?;
+                            }
                         }
-                    }
-                    crate::snapshot::update_suite(&stage, old_id, new_id, display_name)?;
-                    for (name, original) in
-                        [("_snapshot", original), ("index.html", index_inventory)]
-                    {
-                        update.replacements.push(Replacement {
-                            source: root.join(name),
-                            destination: Some(root.join(name)),
-                            staged: Some(stage.join(name)),
-                            backup: backup.join(name),
-                            inventory: original,
-                            backed_up: false,
-                            installed: false,
-                        });
+                        crate::snapshot::update_suite(&stage, old_id, new_id, display_name)?;
+                        for (name, original) in
+                            [("_snapshot", original), ("index.html", index_inventory)]
+                        {
+                            update.replacements.push(Replacement {
+                                source: root.join(name),
+                                destination: Some(root.join(name)),
+                                staged: Some(stage.join(name)),
+                                backup: backup.join(name),
+                                inventory: original,
+                                backed_up: false,
+                                installed: false,
+                            });
+                        }
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -477,6 +479,49 @@ mod tests {
         assert!(update.commit(|| Ok(())).is_err());
         assert!(root.path().join("shop/concurrent").exists());
         assert!(!root.path().join("new").exists());
+    }
+
+    #[test]
+    fn suite_mutations_ignore_partial_or_unrelated_snapshot_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let (output, _) = published_log_suites(root.path());
+        crate::snapshot::generate_site(
+            &output,
+            &["two".into()],
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let index_before = fs::read(output.join("index.html")).unwrap();
+        assert!(
+            ArtifactUpdate::prepare(std::slice::from_ref(&output), "one", Some("TWO"), None)
+                .is_err()
+        );
+        ArtifactUpdate::prepare(
+            std::slice::from_ref(&output),
+            "one",
+            Some("renamed"),
+            Some("Renamed"),
+        )
+        .unwrap()
+        .commit(|| Ok(()))
+        .unwrap();
+        assert_eq!(fs::read(output.join("index.html")).unwrap(), index_before);
+        assert!(output.join("renamed").is_dir());
+
+        fs::remove_file(output.join("index.html")).unwrap();
+        ArtifactUpdate::prepare(std::slice::from_ref(&output), "renamed", Some("one"), None)
+            .unwrap()
+            .commit(|| Ok(()))
+            .unwrap();
+        assert!(output.join("one").is_dir());
+
+        fs::write(output.join("index.html"), b"<html>legacy report</html>").unwrap();
+        ArtifactUpdate::prepare(std::slice::from_ref(&output), "one", None, None)
+            .unwrap()
+            .commit(|| Ok(()))
+            .unwrap();
+        assert!(!output.join("one").exists());
     }
 
     #[cfg(unix)]

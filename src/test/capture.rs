@@ -505,7 +505,52 @@ pub fn write_capture_log(
     store_capture_log(output, image, log)
 }
 
+/// Refresh a capture log sidecar's bound image digest when lossless PNG
+/// optimization rewrites the image bytes. Sidecars that were missing, corrupt,
+/// or already mismatched before optimization are left untouched so tamper
+/// detection remains intact.
+pub(crate) fn refresh_capture_log_digest(
+    image: &Path,
+    previous_bytes: &[u8],
+    updated_bytes: &[u8],
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let path = image.with_extension("log.json");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 64 * 1024 {
+        return Ok(());
+    }
+    let Ok(bytes) = fs::read(&path) else {
+        return Ok(());
+    };
+    let Ok(mut link) = serde_json::from_slice::<CaptureLogLink>(&bytes) else {
+        return Ok(());
+    };
+    let previous_digest = format!("{:x}", Sha256::digest(previous_bytes));
+    if link.image_digest.as_deref() != Some(previous_digest.as_str()) {
+        return Ok(());
+    }
+    link.image_digest = Some(format!("{:x}", Sha256::digest(updated_bytes)));
+    write_file_atomically(&path, &serde_json::to_vec(&link)?)
+}
+
 pub fn read_capture_log(output: &Path, image: &Path) -> Option<CaptureLog> {
+    let mut cache = BTreeMap::new();
+    read_capture_log_cached(output, image, &mut cache)
+}
+
+pub(crate) fn read_capture_log_cached(
+    output: &Path,
+    image: &Path,
+    archive_states: &mut BTreeMap<
+        crate::diagnostics::record::OperationId,
+        crate::diagnostics::journal::ArchiveState,
+    >,
+) -> Option<CaptureLog> {
     use crate::diagnostics::journal::{ArchiveState, inspect_archive};
     let path = image.with_extension("log.json");
     if matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
@@ -544,7 +589,9 @@ pub fn read_capture_log(output: &Path, image: &Path) -> Option<CaptureLog> {
         }
         let mut log = link.log;
         if let Some(reference) = &log.archive {
-            log.state = inspect_archive(&root, Some(&reference.operation_id), true);
+            log.state = *archive_states
+                .entry(reference.operation_id.clone())
+                .or_insert_with(|| inspect_archive(&root, Some(&reference.operation_id), true));
         }
         Ok(log)
     })();

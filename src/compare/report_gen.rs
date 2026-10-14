@@ -658,6 +658,8 @@ fn generate_selected_report(
             .collect();
     }
 
+    let output_root = suite_dir.parent().unwrap_or(suite_dir);
+    let mut archive_states = BTreeMap::new();
     let mut report_work = Vec::with_capacity(test_screenshots.len());
     for screenshot_name in test_screenshots {
         let test_path = tests_dir.join(&screenshot_name);
@@ -709,9 +711,16 @@ fn generate_selected_report(
             pair.engine_error_msg = None;
         }
 
-        let output_root = suite_dir.parent().unwrap_or(suite_dir);
-        pair.reference_log = crate::test::capture::read_capture_log(output_root, &reference_path);
-        pair.test_log = crate::test::capture::read_capture_log(output_root, &test_path);
+        pair.reference_log = crate::test::capture::read_capture_log_cached(
+            output_root,
+            &reference_path,
+            &mut archive_states,
+        );
+        pair.test_log = crate::test::capture::read_capture_log_cached(
+            output_root,
+            &test_path,
+            &mut archive_states,
+        );
 
         // If either side is flagged as a capture failure (via its JSON error
         // marker), the corresponding scenario never produced a real screenshot.

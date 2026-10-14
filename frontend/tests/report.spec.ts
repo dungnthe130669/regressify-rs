@@ -3721,7 +3721,7 @@ test("empty results, missing images, errors, and unknown routes are explicit", a
   await expect(page.getByRole("heading", { name: "Image not found" })).toBeVisible();
 });
 
-test("invalid report data fails visibly and can be retried", async ({ page }) => {
+test("invalid report data fails visibly and can be retried", async ({ page, isMobile }) => {
   await page.route("**/_snapshot/**", async (route) => {
     if (new URL(route.request().url()).pathname.endsWith(".json"))
       await route.fulfill({ contentType: "application/json", body: '{"version":99}' });
@@ -3732,6 +3732,29 @@ test("invalid report data fails visibly and can be retried", async ({ page }) =>
   await page.unroute("**/_snapshot/**");
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Snapshot Overview", exact: true })).toBeVisible();
+
+  let suiteRequests = 0;
+  let failSuite = true;
+  await page.route("**/_snapshot/data/suites/workspace-overview.json*", async (route) => {
+    suiteRequests += 1;
+    if (failSuite) {
+      await route.fulfill({ status: 500, body: "unavailable" });
+    } else {
+      await route.continue();
+    }
+  });
+  await page.getByRole("link", { name: "workspace-overview", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Suite unavailable" })).toBeVisible();
+  expect(suiteRequests).toBe(1);
+  failSuite = false;
+  await page.locator("#main").getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "workspace-overview", exact: true }),
+  ).toBeVisible();
+  if (!isMobile) {
+    await expect(page.locator("#suite-panel").getByRole("alert")).toHaveCount(0);
+  }
+  expect(suiteRequests).toBe(2);
 });
 
 test("untrusted Markdown is not executable markup or a remote image request", async ({ page }) => {

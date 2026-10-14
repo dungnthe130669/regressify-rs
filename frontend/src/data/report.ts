@@ -279,7 +279,7 @@ export async function fetchReport<T>(
         chunks.push(item.value);
       }
     } finally {
-      await reader.cancel();
+      await reader.cancel().catch(() => {});
       reader.releaseLock();
     }
     const bytes = new Uint8Array(length);

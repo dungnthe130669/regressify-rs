@@ -1,11 +1,12 @@
 # Desktop Publishing
 
-Verified: 2026-10-14
+Verified: 2026-10-15
 
 - [Landing apps](../../src/desktop/landing.rs) are global per-user definitions,
   automatically stored by UUID. The [editor](../../src/desktop/ui/landing.rs)
   has no file picker or Save As. Linked URLs need no local workspace and are
-  fetched only by the visitor's browser.
+  fetched only by the visitor's browser. Local removal stages the locked
+  definition before deleting target credentials and restores it on failure.
 - `pulldown-cmark` renders both subheadings into static HTML. Shared frontend
   assets provide logo, theme, and client status; raw HTML/images and unsafe or
   credentialed links are excluded. The preview exposes only generated content.

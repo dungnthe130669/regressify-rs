@@ -10,7 +10,52 @@ import {
 } from "./report";
 
 const ManifestContext = createContext<Manifest | null>(null);
-const reportCache = new Map<string, SuiteReport>();
+type SuiteState = {
+  data?: SuiteReport;
+  error?: string;
+  controller?: AbortController;
+  listeners: Set<() => void>;
+};
+const reportCache = new Map<string, SuiteState>();
+
+function getSuiteState(key: string): SuiteState {
+  let state = reportCache.get(key);
+  if (!state) {
+    state = { listeners: new Set() };
+    reportCache.set(key, state);
+  }
+  return state;
+}
+
+function notifySuiteListeners(state: SuiteState) {
+  for (const listener of state.listeners) listener();
+}
+
+function loadSuiteReport(key: string, id: string, total: number, reload: boolean) {
+  const state = getSuiteState(key);
+  if (state.data || (state.controller && !reload)) return;
+  state.controller?.abort();
+  const controller = new AbortController();
+  state.controller = controller;
+  state.error = undefined;
+  notifySuiteListeners(state);
+  fetchReport(`/${key}`, suiteReportSchema, controller.signal, reload)
+    .then((data) => {
+      if (controller.signal.aborted) return;
+      if (data.id !== id || data.tests.length !== total)
+        throw new Error("Suite data does not match this snapshot.");
+      state.data = data;
+      state.error = undefined;
+      state.controller = undefined;
+      notifySuiteListeners(state);
+    })
+    .catch((reason: unknown) => {
+      if (controller.signal.aborted) return;
+      state.error = reason instanceof Error ? reason.message : "Unable to load this suite.";
+      state.controller = undefined;
+      notifySuiteListeners(state);
+    });
+}
 
 export function ReportProvider({ children }: { children: ReactNode }) {
   const [manifest, setManifest] = useState<Manifest>();
@@ -57,34 +102,28 @@ export function useManifest(): Manifest {
 
 export function useSuite(id: string | undefined) {
   const summary = useManifest().suites.find((suite) => suite.id === id);
-  const [result, setResult] = useState<{ key: string; data?: SuiteReport; error?: string }>();
-  const [attempt, setAttempt] = useState(0);
+  const [, setRevision] = useState(0);
   const key = summary?.report;
+  const total = summary?.total ?? 0;
   useEffect(() => {
-    if (!key || !id || reportCache.has(key)) return;
-    const controller = new AbortController();
-    setResult({ key });
-    fetchReport(`/${key}`, suiteReportSchema, controller.signal, attempt > 0)
-      .then((data) => {
-        if (controller.signal.aborted) return;
-        if (data.id !== id || data.tests.length !== summary?.total)
-          throw new Error("Suite data does not match this snapshot.");
-        reportCache.set(key, data);
-        setResult({ key, data });
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted)
-          setResult({
-            key,
-            error: reason instanceof Error ? reason.message : "Unable to load this suite.",
-          });
-      });
-    return () => controller.abort();
-  }, [key, id, summary?.total, attempt]);
+    if (!key || !id) return;
+    const state = getSuiteState(key);
+    const update = () => setRevision((value) => value + 1);
+    state.listeners.add(update);
+    if (!state.data && !state.error && !state.controller) {
+      loadSuiteReport(key, id, total, false);
+    }
+    return () => {
+      state.listeners.delete(update);
+    };
+  }, [key, id, total]);
+  const state = key ? reportCache.get(key) : undefined;
   return {
     summary,
-    data: key ? reportCache.get(key) || (result?.key === key ? result.data : undefined) : undefined,
-    error: result?.key === key ? result?.error : undefined,
-    retry: () => setAttempt(attempt + 1),
+    data: state?.data,
+    error: state?.error,
+    retry: () => {
+      if (key && id) loadSuiteReport(key, id, total, true);
+    },
   };
 }

@@ -85,10 +85,16 @@ function useImageSizes(capture: Capture) {
       .map((path) => {
         const image = new window.Image();
         image.onload = () =>
-          setSizes((current) => ({
-            ...current,
-            [path]: { width: image.naturalWidth, height: image.naturalHeight },
-          }));
+          setSizes((current) => {
+            const existing = current[path];
+            return existing?.width === image.naturalWidth &&
+              existing?.height === image.naturalHeight
+              ? current
+              : {
+                  ...current,
+                  [path]: { width: image.naturalWidth, height: image.naturalHeight },
+                };
+          });
         image.src = `/${path}`;
         return image;
       });
@@ -240,10 +246,13 @@ export function ComparisonViewer({
     const elements = Array.from(element.querySelectorAll<HTMLElement>(".image-pane"));
     if (elements.length !== paneCount) return;
     const observer = new ResizeObserver(() => {
-      setViewport({
-        width: Math.max(1, Math.min(...elements.map((pane) => pane.clientWidth))),
-        height: Math.max(1, Math.min(...elements.map((pane) => pane.clientHeight))),
-      });
+      const nextWidth = Math.max(1, Math.min(...elements.map((pane) => pane.clientWidth)));
+      const nextHeight = Math.max(1, Math.min(...elements.map((pane) => pane.clientHeight)));
+      setViewport((current) =>
+        current.width === nextWidth && current.height === nextHeight
+          ? current
+          : { width: nextWidth, height: nextHeight },
+      );
       refreshCrosshairLayout();
     });
     observer.observe(element);

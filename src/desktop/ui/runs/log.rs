@@ -226,9 +226,13 @@ impl RunPanel {
         if running && self.archive_loading && self.archive_key.is_some() {
             return;
         }
-        let Some(request) = self.manager.request.clone() else {
+        let Some(mut request) = self.manager.request.clone() else {
             return;
         };
+        if self.log_scope.is_some() {
+            // Scenario and job views show only their capture journals, not the outer command log.
+            request.options.diagnostic_operation_id = None;
+        }
         let jobs = self
             .manager
             .progress
@@ -278,6 +282,7 @@ impl RunPanel {
                 {
                     return;
                 }
+                let running = this.running();
                 this.archive_loading = false;
                 this.log_text = page.text();
                 if running && page.state == crate::diagnostics::journal::ArchiveState::Partial {
@@ -288,7 +293,7 @@ impl RunPanel {
                 }
                 this.log.update(cx, |state, cx| {
                     state.set_value(this.log_text.clone(), window, cx);
-                    if tail {
+                    if tail && running {
                         state.set_selected_range(this.log_text.len()..this.log_text.len(), cx);
                     }
                 });

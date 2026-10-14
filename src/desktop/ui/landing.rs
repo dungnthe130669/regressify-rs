@@ -545,23 +545,9 @@ impl Workbench {
         self.task(
             "Removing local landing app...",
             move || {
-                Ok((|| -> Result<_> {
-                    file.ensure_unchanged()?;
-                    let root = file.app.deployment_root(&preferences)?;
-                    let path =
-                        crate::desktop::deployment::DeployTargets::path_in(&root, &preferences)?;
-                    let mut targets = crate::desktop::deployment::DeployTargets::load(&path)?;
-                    for id in targets
-                        .targets
-                        .iter()
-                        .map(|target| target.id.clone())
-                        .collect::<Vec<_>>()
-                    {
-                        targets.remove_target(&root, &path, &id)?;
-                    }
-                    file.remove()?;
-                    LandingCatalog::update(&catalog_path, &file.path, false).map(catalog_entries)
-                })())
+                Ok(file
+                    .remove_with_deployments(&preferences, &catalog_path)
+                    .map(catalog_entries))
             },
             |this, result, window, cx| {
                 this.landing.update(cx, |state, cx| {

@@ -302,7 +302,10 @@ pub(super) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
 enum RollbackStep {
     File {
         path: PathBuf,
-        prior: Option<Vec<u8>>,
+        prior: Option<PathBuf>,
+    },
+    Directory {
+        path: PathBuf,
     },
     Case {
         current: PathBuf,
@@ -310,7 +313,7 @@ enum RollbackStep {
     },
 }
 
-fn ensure_exact_case(path: &Path, mut rollback: Option<&mut Vec<RollbackStep>>) -> Result<()> {
+fn ensure_exact_case(path: &Path, rollback: Option<&mut Vec<RollbackStep>>) -> Result<()> {
     let Some(expected) = path.file_name() else {
         return Ok(());
     };
@@ -328,7 +331,9 @@ fn ensure_exact_case(path: &Path, mut rollback: Option<&mut Vec<RollbackStep>>) 
             )
         })?;
         if let Err(error) = fs::rename(&temporary, path) {
-            let _ = fs::rename(&temporary, path);
+            if let Some(original_name) = &original_name {
+                let _ = fs::rename(&temporary, parent.join(original_name));
+            }
             return Err(error).with_context(|| {
                 format!(
                     "Failed to normalize snapshot path case '{}'",
@@ -336,7 +341,7 @@ fn ensure_exact_case(path: &Path, mut rollback: Option<&mut Vec<RollbackStep>>) 
                 )
             });
         }
-        if let (Some(rollback), Some(original_name)) = (rollback.as_deref_mut(), original_name) {
+        if let (Some(rollback), Some(original_name)) = (rollback, original_name) {
             rollback.push(RollbackStep::Case {
                 current: path.to_path_buf(),
                 original: parent.join(original_name),
@@ -350,6 +355,7 @@ fn ensure_output_parent(
     root: &Path,
     relative: &Path,
     mut rollback: Option<&mut Vec<RollbackStep>>,
+    mut verified: Option<&mut BTreeSet<PathBuf>>,
 ) -> Result<()> {
     let mut parent = root.to_path_buf();
     for component in relative
@@ -358,6 +364,12 @@ fn ensure_output_parent(
         .components()
     {
         parent.push(component);
+        if verified
+            .as_deref()
+            .is_some_and(|checked| checked.contains(&parent))
+        {
+            continue;
+        }
         match fs::symlink_metadata(&parent) {
             Ok(metadata) => {
                 ensure!(
@@ -368,12 +380,39 @@ fn ensure_output_parent(
                 ensure_exact_case(&parent, rollback.as_deref_mut())?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&parent).with_context(|| {
-                    format!(
-                        "Failed to create snapshot output directory '{}'",
-                        parent.display()
-                    )
-                })?;
+                match fs::create_dir(&parent) {
+                    Ok(()) => {
+                        if let Some(rollback) = rollback.as_deref_mut() {
+                            rollback.push(RollbackStep::Directory {
+                                path: parent.clone(),
+                            });
+                        }
+                    }
+                    Err(create_error)
+                        if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
+                    {
+                        let metadata = fs::symlink_metadata(&parent).with_context(|| {
+                            format!(
+                                "Failed to inspect snapshot output directory '{}'",
+                                parent.display()
+                            )
+                        })?;
+                        ensure!(
+                            metadata.is_dir() && !metadata.file_type().is_symlink(),
+                            "Snapshot output parent must be a real directory: {}",
+                            parent.display()
+                        );
+                        ensure_exact_case(&parent, rollback.as_deref_mut())?;
+                    }
+                    Err(create_error) => {
+                        return Err(create_error).with_context(|| {
+                            format!(
+                                "Failed to create snapshot output directory '{}'",
+                                parent.display()
+                            )
+                        });
+                    }
+                }
             }
             Err(error) => {
                 return Err(error).with_context(|| {
@@ -384,6 +423,9 @@ fn ensure_output_parent(
                 });
             }
         }
+        if let Some(checked) = verified.as_deref_mut() {
+            checked.insert(parent.clone());
+        }
     }
     Ok(())
 }
@@ -391,7 +433,7 @@ fn ensure_output_parent(
 fn output_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
     let relative = Path::new(relative);
     normal_relative(relative)?;
-    ensure_output_parent(root, relative, None)?;
+    ensure_output_parent(root, relative, None, None)?;
     if let Some(existing) = checked_file(root, relative, true)?
         && fs::read(&existing).with_context(|| {
             format!(
@@ -428,6 +470,8 @@ fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf
     ordered.push(index_rel);
 
     let mut applied: Vec<RollbackStep> = Vec::new();
+    let mut verified_parents: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut backup_index = 0usize;
     let result = (|| -> Result<()> {
         for relative in ordered {
             normal_relative(relative)?;
@@ -437,7 +481,12 @@ fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf
                 MAX_IMAGE_BYTES
             };
             let bytes = read_bounded(&staged_root.join(relative), limit)?;
-            ensure_output_parent(root, relative, Some(&mut applied))?;
+            ensure_output_parent(
+                root,
+                relative,
+                Some(&mut applied),
+                Some(&mut verified_parents),
+            )?;
             let prior = if let Some(existing) = checked_file(root, relative, true)? {
                 let existing_bytes = fs::read(&existing).with_context(|| {
                     format!(
@@ -449,7 +498,15 @@ fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf
                     ensure_exact_case(&existing, Some(&mut applied))?;
                     continue;
                 }
-                Some(existing_bytes)
+                let backup = staged_root.join(format!(".prior-{backup_index}"));
+                backup_index += 1;
+                fs::write(&backup, &existing_bytes).with_context(|| {
+                    format!(
+                        "Failed to stage rollback backup for snapshot artifact '{}'",
+                        existing.display()
+                    )
+                })?;
+                Some(backup)
             } else {
                 None
             };
@@ -469,13 +526,18 @@ fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf
         for step in applied.into_iter().rev() {
             match step {
                 RollbackStep::File { path, prior } => match prior {
-                    Some(bytes) => {
-                        let _ = write_file_atomically(&path, &bytes);
+                    Some(backup) => {
+                        if let Ok(bytes) = fs::read(&backup) {
+                            let _ = write_file_atomically(&path, &bytes);
+                        }
                     }
                     None => {
                         let _ = fs::remove_file(&path);
                     }
                 },
+                RollbackStep::Directory { path } => {
+                    let _ = fs::remove_dir(&path);
+                }
                 RollbackStep::Case { current, original } => {
                     if let Some(parent) = current.parent() {
                         let temporary = parent.join(format!(".case-{}", uuid::Uuid::new_v4()));
@@ -1076,20 +1138,48 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
 }
 
 #[cfg(feature = "desktop")]
+pub(crate) fn should_update_suite(
+    output: &Path,
+    old_id: &str,
+    new_id: Option<&str>,
+) -> Result<bool> {
+    ensure!(
+        valid_suite_id(old_id) && new_id.is_none_or(valid_suite_id),
+        "Invalid snapshot suite identity"
+    );
+    let root = output.canonicalize()?;
+    let Some(source) = checked_file(&root, Path::new("index.html"), true)? else {
+        return Ok(false);
+    };
+    let html = String::from_utf8(read_bounded(&source, MAX_REPORT_BYTES)?)?;
+    if !html.contains("name=\"regressify-manifest\"") {
+        return Ok(false);
+    }
+    let (_, manifest) = parse_manifest(&root, &html)?;
+    ensure!(
+        new_id.is_none_or(|id| {
+            id.eq_ignore_ascii_case(old_id)
+                || !manifest
+                    .suites
+                    .iter()
+                    .any(|existing| existing.id.eq_ignore_ascii_case(id))
+        }),
+        "A published report already uses the destination suite ID"
+    );
+    Ok(manifest.suites.iter().any(|suite| suite.id == old_id))
+}
+
+#[cfg(feature = "desktop")]
 pub(crate) fn update_suite(
     output: &Path,
     old_id: &str,
     new_id: Option<&str>,
     display_name: Option<&str>,
 ) -> Result<()> {
-    ensure!(
-        valid_suite_id(old_id) && new_id.is_none_or(valid_suite_id),
-        "Invalid snapshot suite identity"
-    );
-    let root = output.canonicalize()?;
-    if checked_file(&root, Path::new("index.html"), true)?.is_none() {
+    if !should_update_suite(output, old_id, new_id)? {
         return Ok(());
     }
+    let root = output.canonicalize()?;
     let (_, mut manifest) = read_manifest(&root)?;
     let selected: Vec<_> = manifest
         .suites
@@ -1097,15 +1187,6 @@ pub(crate) fn update_suite(
         .map(|suite| suite.id.clone())
         .collect();
     artifact_paths(&root, &selected)?;
-    ensure!(
-        new_id.is_none_or(|id| {
-            id.eq_ignore_ascii_case(old_id)
-                || !selected
-                    .iter()
-                    .any(|existing| existing.eq_ignore_ascii_case(id))
-        }),
-        "A published report already uses the destination suite ID"
-    );
     let mut reports = Vec::new();
     for summary in &manifest.suites {
         reports.push(serde_json::from_slice::<SuiteReport>(&read_versioned(
@@ -1116,6 +1197,7 @@ pub(crate) fn update_suite(
     }
     let mut summaries = Vec::new();
     for (mut summary, mut report) in manifest.suites.into_iter().zip(reports) {
+        let mut modified = false;
         if summary.id == old_id {
             let Some(new_id) = new_id else { continue };
             summary.id = new_id.into();
@@ -1124,6 +1206,7 @@ pub(crate) fn update_suite(
                 .map(str::to_owned);
             report.id = new_id.into();
             report.display_name = summary.display_name.clone();
+            modified = true;
         }
         if let Some(new_id) = new_id.filter(|id| *id != old_id) {
             let prefix = Path::new("_snapshot/images").join(old_id);
@@ -1142,15 +1225,20 @@ pub(crate) fn update_suite(
                     }
                 }
             }
+            if !staged_images.is_empty() {
+                modified = true;
+            }
             for (image, destination, bytes) in staged_images {
                 *image = store_asset(&root, &destination, &bytes)?;
             }
         }
-        summary.report = store_json(
-            &root,
-            &format!("_snapshot/data/suites/{}.json", summary.id),
-            &report,
-        )?;
+        if modified {
+            summary.report = store_json(
+                &root,
+                &format!("_snapshot/data/suites/{}.json", summary.id),
+                &report,
+            )?;
+        }
         summaries.push(summary);
     }
     manifest.suites = summaries;

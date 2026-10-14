@@ -1,6 +1,6 @@
 # Logging Diagnostics
 
-Verified: 2026-10-12
+Verified: 2026-10-15
 
 - [Diagnostic records](../../src/diagnostics/record.rs) are versioned separately
   from live progress. Public capture records use templates, typed fields, readable
@@ -72,6 +72,7 @@ Verified: 2026-10-12
   fixtures with `prepare_browser(Some(false))`: no downloads or personal profiles.
 - [Capture log links](../../src/test/capture.rs) bind to image SHA-256 digests.
   `ref` and `approve` preserve the original archive reference after replacing an
-  image; failed link writes cannot silently attribute changed bytes to old logs.
-  The staged suite-mutation regressions retain immutable operation paths and
-  source journals while pruning only unreferenced public chunks.
+  image; [lossless PNG optimization](../../src/optimizer/image_optimizer.rs)
+  refreshes only sidecars matching the pre-optimization bytes so tamper detection
+  remains intact. Scoped scenario/job run logs exclude the outer command journal,
+  and `LogPage` retains execution metadata when filtered to terminal records.

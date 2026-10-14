@@ -391,9 +391,10 @@ impl Workspace {
         let mut entries = Vec::new();
         for name in ["regressify.yaml", "regressify.yml"] {
             let path = PathBuf::from(name);
-            if self.resolve(&path)?.is_file() {
+            let resolved = self.resolve(&path)?;
+            if resolved.is_file() {
                 entries.push(Entry {
-                    editable: read_document(&self.resolve(&path)?).is_ok(),
+                    editable: read_document(&resolved).is_ok(),
                     path,
                     kind: DocumentKind::Workspace,
                 });
@@ -410,29 +411,31 @@ impl Workspace {
                     continue;
                 }
                 let path = item.path().strip_prefix(&self.root)?.to_path_buf();
-                let name = item.file_name().to_string_lossy().to_ascii_lowercase();
-                let suite = folder == "visual_tests"
-                    && [".tests.yaml", ".tests.yml", ".tests.json"]
-                        .iter()
-                        .any(|suffix| name.ends_with(suffix));
-                let data = folder == "common" && Format::for_path(&path) != Format::Text;
-                if suite || folder == "common" {
+                let kind = entry_kind(&path);
+                if kind == DocumentKind::Suite || folder == "common" {
                     entries.push(Entry {
                         editable: read_document(&self.resolve(&path)?).is_ok(),
                         path,
-                        kind: if suite {
-                            DocumentKind::Suite
-                        } else if data && name.contains("viewports") {
-                            DocumentKind::Viewports
-                        } else {
-                            DocumentKind::Data
-                        },
+                        kind,
                     });
                 }
             }
         }
         entries.sort_by_key(Entry::label);
         Ok(entries)
+    }
+
+    pub fn classify_entry(&self, relative: &Path) -> Result<Entry> {
+        let resolved = self.resolve(relative)?;
+        ensure!(
+            resolved.is_file(),
+            "Select a regular file inside the workspace"
+        );
+        Ok(Entry {
+            editable: read_document(&resolved).is_ok(),
+            path: relative.to_path_buf(),
+            kind: entry_kind(relative),
+        })
     }
 
     pub fn open_document(&self, entry: Entry) -> Result<OpenDocument> {
@@ -554,9 +557,9 @@ impl Workspace {
                 let parsed = (|| -> Result<crate::types::TestSuite> {
                     ensure!(input.name != "all", "The suite name 'all' is reserved");
                     let document = self.open_document(entry.clone())?.document;
-                    document.validate()?;
-                    validate_typed_source(&document)?;
-                    let suite: crate::types::TestSuite = serde_json::from_value(document.value()?)?;
+                    let value = document.value()?;
+                    super::document::validate_value(document.kind, &value)?;
+                    let suite = parse_typed_source::<crate::types::TestSuite>(&document)?;
                     ensure!(!suite.scenarios.is_empty(), "Suite contains no scenarios");
                     Ok(suite)
                 })();
@@ -998,6 +1001,33 @@ impl Workspace {
     }
 }
 
+fn entry_kind(relative: &Path) -> DocumentKind {
+    let name = relative
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut components = relative.components();
+    let first = components.next().and_then(|part| part.as_os_str().to_str());
+    if components.next().is_none() && matches!(name.as_str(), "regressify.yaml" | "regressify.yml")
+    {
+        return DocumentKind::Workspace;
+    }
+    if first == Some("visual_tests")
+        && [".tests.yaml", ".tests.yml", ".tests.json"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+    {
+        return DocumentKind::Suite;
+    }
+    if first == Some("common")
+        && Format::for_path(relative) != Format::Text
+        && name.contains("viewports")
+    {
+        return DocumentKind::Viewports;
+    }
+    DocumentKind::Data
+}
+
 fn validate_component(name: &str) -> Result<()> {
     ensure!(
         !name.is_empty()
@@ -1050,24 +1080,24 @@ fn read_document(path: &Path) -> Result<String> {
     Ok(source)
 }
 
-fn validate_typed_source(document: &Document) -> Result<()> {
-    fn parse<T: serde::de::DeserializeOwned>(document: &Document) -> Result<()> {
-        match document.format {
-            Format::Yaml => {
-                serde_yaml::from_str::<T>(document.source())?;
-            }
-            Format::Json => {
-                serde_json::from_str::<T>(document.source())?;
-            }
-            Format::Text => return Err(anyhow!("Configuration documents must use YAML or JSON")),
-        }
-        Ok(())
+fn parse_typed_source<T: serde::de::DeserializeOwned>(document: &Document) -> Result<T> {
+    match document.format {
+        Format::Yaml => Ok(serde_yaml::from_str::<T>(document.source())?),
+        Format::Json => Ok(serde_json::from_str::<T>(document.source())?),
+        Format::Text => Err(anyhow!("Configuration documents must use YAML or JSON")),
     }
+}
+
+fn validate_typed_source(document: &Document) -> Result<()> {
     // Parsing structs directly also catches duplicate properties with source locations.
     match document.kind {
-        DocumentKind::Workspace => parse::<crate::config::WorkspaceConfig>(document),
-        DocumentKind::Suite => parse::<crate::types::TestSuite>(document),
-        DocumentKind::Viewports => parse::<Vec<crate::config::viewports::ViewportDef>>(document),
+        DocumentKind::Workspace => {
+            parse_typed_source::<crate::config::WorkspaceConfig>(document).map(|_| ())
+        }
+        DocumentKind::Suite => parse_typed_source::<crate::types::TestSuite>(document).map(|_| ()),
+        DocumentKind::Viewports => {
+            parse_typed_source::<Vec<crate::config::viewports::ViewportDef>>(document).map(|_| ())
+        }
         DocumentKind::Data => Ok(()),
     }
 }
@@ -1377,6 +1407,25 @@ mod tests {
         assert_eq!(
             actual,
             expected.map(|(path, kind)| (path.to_string(), kind))
+        );
+        for (path, expected_kind) in &expected {
+            let classified = workspace.classify_entry(Path::new(path)).unwrap();
+            assert_eq!(classified.kind, *expected_kind, "{path}");
+            assert!(!classified.supports_editing(), "{path}");
+        }
+        for path in [
+            "visual_tests/helper.js",
+            "visual_tests/data.json",
+            "other.txt",
+        ] {
+            let classified = workspace.classify_entry(Path::new(path)).unwrap();
+            assert_eq!(classified.kind, DocumentKind::Data, "{path}");
+            assert!(classified.supports_editing(), "{path}");
+        }
+        assert!(
+            workspace
+                .classify_entry(Path::new("../outside.yaml"))
+                .is_err()
         );
         for entry in entries
             .into_iter()

@@ -667,6 +667,204 @@ async fn run_log_shows_loading_error_state_for_corrupt_archive(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+async fn run_log_scopes_scenario_archives_and_clears_stale_health_on_reset(
+    cx: &mut TestAppContext,
+) {
+    use crate::diagnostics::{
+        journal::{ArchiveState, JournalOptions, JournalWriter, OperationMetadata},
+        record::*,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let (mut request, jobs, _) = crate::desktop::logs::tests::fixture(directory.path(), 3);
+    let output = request.options.output_directory(directory.path());
+    let command_metadata = OperationMetadata::new(OperationKind::Command, None);
+    let mut command_writer =
+        JournalWriter::create(&output, command_metadata.clone(), JournalOptions::default())
+            .unwrap();
+    let mut command_record = DiagnosticRecordV1::new(
+        command_metadata.operation_id.clone(),
+        OperationKind::Command,
+        Stage::Preflight,
+        DiagnosticEvent::Started,
+    );
+    command_record
+        .fields
+        .insert(Field::Command, FieldValue::Kind(SafeValue::Test));
+    command_writer.write(&command_record).unwrap();
+    command_writer.flush().unwrap();
+    // Leave command_writer unfinalized (Partial) while the capture job is Complete.
+    request.options.diagnostic_operation_id = Some(command_metadata.operation_id);
+
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(request.clone());
+                panel.manager.outcome = Some(crate::desktop::runner::RunOutcome::Completed);
+                for job in jobs {
+                    panel.manager.progress.apply(crate::progress::Record {
+                        version: 1,
+                        elapsed_ms: 0,
+                        event: crate::progress::Event::Queued { job },
+                    });
+                }
+                panel.manager.progress.clear_logs();
+                panel.show_scenario_log("Suite", "page", window, cx);
+            });
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx)
+            .runs
+            .read(cx)
+            .rendered_log()
+            .contains("Loaded from archive")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let rendered = view.read(cx).runs.read(cx).rendered_log().to_string();
+        assert!(!rendered.contains("Command=Test"), "{rendered}");
+        // Switch back to Activity, then click View Log to load the unscoped run log.
+        window.within("run-tabs").click(0_usize, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("run-log-health-warning").is_none());
+        window.click("activity-view-log", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx)
+            .runs
+            .read(cx)
+            .rendered_log()
+            .contains("Command=Test")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("run-tabs").click(0_usize, cx);
+        window.render_frame(cx);
+        assert!(window.find("run-log-health-warning").visible());
+        view.read(cx)
+            .runs
+            .clone()
+            .update(cx, |panel, cx| panel.clear(window, cx));
+        window.render_frame(cx);
+        assert!(window.try_find("run-log-health-warning").is_none());
+        window.within("run-tabs").click(3_usize, cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).runs.read(cx).rendered_log(), "");
+    })
+    .unwrap();
+
+    // Also verify Capture Log retains viewport/attempt heading when filtered to Stage::Finish.
+    let suite_id = cx.update(|cx| view.read(cx).session.suites[0].output_id.clone());
+    let suite = output.join(&suite_id);
+    std::fs::rename(output.join("suite"), &suite).unwrap();
+    let exec_meta = OperationMetadata::new(OperationKind::Capture, None);
+    let execution = ExecutionIdentity {
+        execution_id: ExecutionId::new(),
+        suite_id: SafeIdentity::source("suite"),
+        scenario_id: SafeIdentity::source("page"),
+        viewport: ViewportIdentity {
+            name: SafeIdentity::source("desktop"),
+            width: 1440,
+            height: 900,
+        },
+        capture_role: CaptureRole::Test,
+        attempt: 2,
+    };
+    let mut exec_writer =
+        JournalWriter::create(&output, exec_meta.clone(), JournalOptions::default()).unwrap();
+    let mut rec = DiagnosticRecordV1::new(
+        exec_meta.operation_id.clone(),
+        OperationKind::Capture,
+        Stage::QueueSetup,
+        DiagnosticEvent::Started,
+    );
+    rec.execution = Some(execution.clone());
+    exec_writer.write(&rec).unwrap();
+    exec_writer.finalize(Outcome::Success).unwrap();
+    let image = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+    std::fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+    std::fs::write(suite.join("bitmaps_reference/page__FINAL.png"), &image).unwrap();
+    let test_img = suite.join("bitmaps_test/run/page__FINAL.png");
+    std::fs::write(&test_img, &image).unwrap();
+    crate::test::capture::write_capture_log(
+        &output,
+        &test_img,
+        &crate::diagnostics::runtime::ArchiveReference {
+            operation_id: exec_meta.operation_id,
+            execution_id: Some(execution.execution_id),
+            state: ArchiveState::Complete,
+            missing_records: Some(0),
+        },
+    )
+    .unwrap();
+    crate::compare::report_gen::generate_comparison_report(&suite, &suite_id, "run", 0.0, 1)
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 2;
+            let suites = this.session.suites.clone();
+            this.results.update(cx, |panel, cx| {
+                panel.set_suites(suites);
+                panel.set_visible(true, cx);
+                panel.show_run(output.clone(), "run".into(), window, cx);
+            });
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("results-show-capture-log")
+            .is_some_and(|element| element.visible())
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("results-show-capture-log", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("results-log-heading")
+            .is_some_and(|heading| {
+                heading
+                    .label()
+                    .is_some_and(|label| label.contains("1440 x 900 / Attempt 2"))
+            })
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("log-stage-filter", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(7_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        let text = view.read(cx).results.read(cx).capture_log_text(cx);
+        text.contains("#1]") && !text.contains("#0]")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .find("results-log-heading")
+                .label()
+                .unwrap()
+                .contains("1440 x 900 / Attempt 2")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn update_dialog_preserves_the_draft_and_shows_build_status(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
@@ -1947,10 +2145,7 @@ fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut 
         let root = &view.read(cx).session.workspace.as_ref().unwrap().root;
         assert_eq!(root, &directory.path().canonicalize().unwrap());
         let expected = crate::desktop::workspace::display_path(root);
-        assert_eq!(
-            window.find("workspace-path").label(),
-            Some(expected.as_str())
-        );
+        assert!(window.try_find("workspace-path").is_none());
         assert!(!expected.contains('\\'));
         assert!(!expected.starts_with("//?/"));
         #[cfg(target_os = "windows")]
@@ -1971,6 +2166,13 @@ fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut 
                 control.bounds()
             );
         }
+        window.resize(size(px(1400.), px(640.)));
+        window.bounds_changed(cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("workspace-path").label(),
+            Some(expected.as_str())
+        );
     })
     .unwrap();
 }
@@ -4964,7 +5166,7 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
             window.find("scenario-approval-run").label(),
-            Some("Run: reviewed-run")
+            Some("Run: run-1")
         );
         assert_eq!(
             window.find("scenario-approval-confirm").label(),
@@ -5075,7 +5277,7 @@ fn overview_table_virtual_rows_keep_uniform_geometry(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn overview_table_refresh_preserves_cursor_and_controls_without_retaining_owner(
+async fn overview_table_refresh_preserves_cursor_and_controls_without_retaining_owner(
     cx: &mut TestAppContext,
 ) {
     let directory = tempfile::tempdir().unwrap();
@@ -5161,9 +5363,72 @@ fn overview_table_refresh_preserves_cursor_and_controls_without_retaining_owner(
             });
             window.render_frame(cx);
             assert!(table.read(cx).selected_row().is_none());
+
+            // Verify File -> Refresh files discovers new external suites and updates Overview and Runs.
+            std::fs::write(
+                directory.path().join("visual_tests/external-suite.tests.yaml"),
+                "scenarios:\n  - label: External\n    url: https://example.com\n",
+            )
+            .unwrap();
+            let ref_dir = directory
+                .path()
+                .join(".regressify/external-suite/bitmaps_reference");
+            let output_dir = directory
+                .path()
+                .join(".regressify/external-suite/bitmaps_test/run-1");
+            std::fs::create_dir_all(&ref_dir).unwrap();
+            std::fs::create_dir_all(&output_dir).unwrap();
+            let png = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+            std::fs::write(ref_dir.join("external__FINAL.png"), &png).unwrap();
+            std::fs::write(output_dir.join("external__FINAL.png"), &png).unwrap();
+            std::fs::write(
+                output_dir.join("report.json"),
+                r#"{"id":"external-suite","tests":[{"status":"fail","pair":{"fileName":"external__FINAL.png","scenarioId":"external"}}]}"#,
+            )
+            .unwrap();
+            view.update(cx, |this, cx| {
+                this.file_command(
+                    &super::files::FileCommand {
+                        operation: super::files::Operation::Refresh,
+                    },
+                    window,
+                    cx,
+                );
+            });
             table.downgrade()
         })
         .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.render_frame(cx);
+        !view.read(cx).busy
+            && view
+                .read(cx)
+                .runs
+                .read(cx)
+                .can_open_saved_suite("external-suite")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let ext_index = view
+            .read(cx)
+            .session
+            .suites
+            .iter()
+            .position(|suite| suite.name == "external-suite")
+            .expect("Refresh files must update session.suites");
+        assert!(
+            view.read(cx)
+                .runs
+                .read(cx)
+                .can_open_saved_suite("external-suite")
+        );
+        assert_eq!(
+            window.find(("overview-status", ext_index)).label(),
+            Some("Failed")
+        );
+    })
+    .unwrap();
     let owner = view.downgrade();
     drop(view);
     cx.update_window(handle.into(), |_, window, _| window.remove_window())

@@ -228,10 +228,7 @@ export const logChunkSchema = z.object({
   records: z.array(logRecordSchema).max(250),
 });
 export type LogRecord = z.infer<typeof logRecordSchema>;
-const chunkCache = new Map<
-  string,
-  { request: Promise<z.infer<typeof logChunkSchema>>; controller: AbortController }
->();
+const chunkCache = new Map<string, Promise<z.infer<typeof logChunkSchema>>>();
 
 export function formatLogRecord(record: LogRecord): string {
   const source = record.execution
@@ -255,29 +252,26 @@ export async function fetchLogChunk(
   const path = log.chunks[index];
   if (!path || !log.operationId) throw new Error("Log chunk is missing.");
   const cacheKey = `${path}#${revision}`;
-  let cached = chunkCache.get(cacheKey);
-  if (!cached) {
+  let request = chunkCache.get(cacheKey);
+  if (!request) {
     while (chunkCache.size >= 4) {
-      const oldest = chunkCache.entries().next().value;
+      const oldest = chunkCache.keys().next().value;
       if (!oldest) break;
-      oldest[1].controller.abort();
-      chunkCache.delete(oldest[0]);
+      chunkCache.delete(oldest);
     }
-    const controller = new AbortController();
-    const request = fetchReport(
+    request = fetchReport(
       `/${path}`,
       logChunkSchema,
-      AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+      AbortSignal.timeout(15000),
       revision > 0,
       256 * 1024,
     );
-    cached = { request, controller };
-    chunkCache.set(cacheKey, cached);
+    chunkCache.set(cacheKey, request);
     request.catch(() => {
-      if (chunkCache.get(cacheKey)?.request === request) chunkCache.delete(cacheKey);
+      if (chunkCache.get(cacheKey) === request) chunkCache.delete(cacheKey);
     });
   }
-  const chunk = await cached.request;
+  const chunk = await request;
   signal?.throwIfAborted();
   if (
     chunk.operationId !== log.operationId ||

@@ -9,9 +9,7 @@ pub use helpers::get_asset_version;
 #[cfg(all(test, feature = "desktop"))]
 pub(crate) use site::generate_site;
 #[cfg(feature = "desktop")]
-pub(crate) use site::update_suite;
-#[cfg(feature = "desktop")]
 pub(crate) use site::{
     FRONTEND_FILES, FRONTEND_HTML, ImageRole, artifact_paths, escape_html, image_roles,
-    refresh_site_versions,
+    refresh_site_versions, should_update_suite, update_suite,
 };

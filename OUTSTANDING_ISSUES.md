@@ -2,6 +2,28 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Desktop and Log Hardening (2026-10-15)
+
+- Resolved in source: lossless [PNG optimization](src/optimizer/image_optimizer.rs)
+  rewrote capture files without updating their `{image}.log.json` sidecar digests,
+  turning optimized capture logs into `LoadingError` and erasing baseline log
+  provenance on approval. Valid sidecars now refresh their bound SHA-256 digest
+  while pre-existing mismatches remain flagged; [report](src/compare/report_gen.rs)
+  and [log](src/desktop/logs.rs) readers cache archive verification by operation ID.
+- Resolved in source: [file browsing](src/desktop/ui/files.rs) classified any
+  `.tests.` path as `DocumentKind::Suite`, and `Refresh files` updated `entries`
+  without refreshing `suites`. Both now share [workspace classification](src/desktop/workspace.rs)
+  and update suite/effective state off the UI thread; in-memory edits, undo/redo,
+  and selection changes reuse cached catalog and workspace values.
+- Resolved in source: [Overview](src/desktop/ui/overview.rs) status badges now
+  use `runs.suite_counts`, [scoped run logs](src/desktop/ui/runs/log.rs) exclude
+  outer command journals and clear stale archive state on reset/start,
+  [Capture Log](src/desktop/ui/reports/log.rs) retains viewport/attempt headings
+  when filtered to terminal records, [published URL replacement](src/desktop/deployment.rs)
+  normalizes host case and trailing slashes, [landing removal](src/desktop/landing.rs)
+  stages locked definitions before credential deletion, and [post-Git reloads](src/desktop/ui/git.rs)
+  use `Session::reload_workspace` without recreating discarded default files.
+
 ## MCP Deployment Verification (2026-10-14)
 
 - Resolved missing gates: generated [Worker deployment](src/mcp/worker/package.json)
@@ -317,11 +339,10 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Compact Desktop Header (2026-10-08)
 
-- Follow-up confirmed 2026-10-13: the [native header regression](src/desktop/ui/tests.rs)
-  still requires `workspace-path` at 1000px, while the
-  [current title bar](src/desktop/ui/overview.rs) mounts it only from 1400px.
-  This is the sole failing library test in the current full Windows GUI gate;
-  the fixture needs a separate update to match the responsive behavior.
+- Follow-up resolved 2026-10-15: the [native header regression](src/desktop/ui/tests.rs)
+  now verifies that `workspace-path` is hidden at 1000px while controls fit the
+  window-control reserve, and mounted with the expected path from 1400px, matching
+  the [current title bar](src/desktop/ui/overview.rs).
 - Resolved in the task 019 candidate: the application header is bounded by
   viewport width minus the pinned toolkit's native caption slots. A long
   workspace-name regression failed before that bound and now passes, preserving

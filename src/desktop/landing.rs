@@ -300,6 +300,52 @@ impl LandingFile {
         fs::remove_file(&self.path).context("Cannot remove the local landing definition")
     }
 
+    pub fn remove_with_deployments(
+        &self,
+        preferences: &Path,
+        catalog_path: &Path,
+    ) -> Result<LandingCatalog> {
+        let _lock = self.lock()?;
+        self.ensure_unchanged()?;
+        let root = self.app.deployment_root(preferences)?;
+        let path = super::deployment::DeployTargets::path_in(&root, preferences)?;
+        let mut targets = super::deployment::DeployTargets::load(&path)?;
+        let parent = self
+            .path
+            .parent()
+            .context("Landing file directory unavailable")?;
+        let backup_dir = tempfile::Builder::new()
+            .prefix(".landing-remove-")
+            .tempdir_in(parent)?;
+        let backup = backup_dir.path().join("definition.json");
+        // Stage the definition removal under the file lock before deleting target credentials,
+        // and restore the definition if credential or catalog cleanup fails.
+        fs::rename(&self.path, &backup).context("Cannot remove the local landing definition")?;
+        let cleanup = (|| -> Result<LandingCatalog> {
+            for id in targets
+                .targets
+                .iter()
+                .map(|target| target.id.clone())
+                .collect::<Vec<_>>()
+            {
+                targets.remove_target(&root, &path, &id)?;
+            }
+            LandingCatalog::update(catalog_path, &self.path, false)
+        })();
+        match cleanup {
+            Ok(catalog) => {
+                let _ = fs::remove_file(&backup);
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_dir(&root);
+                Ok(catalog)
+            }
+            Err(error) => {
+                let _ = fs::rename(&backup, &self.path);
+                Err(error)
+            }
+        }
+    }
+
     pub fn ensure_unchanged(&self) -> Result<()> {
         ensure!(
             read_definition(&self.path)? == self.saved_source,
@@ -643,8 +689,51 @@ mod tests {
         external.save().unwrap();
         assert!(file.save().is_err());
         assert!(file.remove().is_err());
-        external.remove().unwrap();
+        let preferences = directory.path().join("settings.json");
+        let catalog_path = LandingCatalog::path_in(&preferences).unwrap();
+        LandingCatalog::update(&catalog_path, &external.path, true).unwrap();
+        let deploy_root = external.app.deployment_root(&preferences).unwrap();
+        let deploy_path =
+            crate::desktop::deployment::DeployTargets::path_in(&deploy_root, &preferences).unwrap();
+        let mut targets = crate::desktop::deployment::DeployTargets::default();
+        targets
+            .save_target(
+                &deploy_root,
+                &deploy_path,
+                crate::desktop::deployment::DeployTarget {
+                    id: "landing-target".into(),
+                    name: "Landing target".into(),
+                    published_url: None,
+                    credential_id: None,
+                    named_token_id: None,
+                    environment: String::new(),
+                    provider: crate::desktop::deployment::DeploymentProvider::Netlify,
+                    site_id: "11111111-2222-4333-8444-555555555555".into(),
+                    cloudflare: None,
+                },
+                "netlify-synthetic-token",
+            )
+            .unwrap();
+        assert!(
+            file.remove_with_deployments(&preferences, &catalog_path)
+                .is_err()
+        );
+        assert_eq!(
+            crate::desktop::deployment::DeployTargets::load(&deploy_path)
+                .unwrap()
+                .targets[0]
+                .token(&deploy_root)
+                .unwrap()
+                .as_str(),
+            "netlify-synthetic-token"
+        );
+        let removed_catalog = external
+            .remove_with_deployments(&preferences, &catalog_path)
+            .unwrap();
+        assert!(removed_catalog.files.is_empty());
         assert!(!path.exists());
+        assert!(!deploy_path.exists());
+        assert!(!deploy_root.exists());
     }
 
     #[test]

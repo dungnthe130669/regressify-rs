@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::{Component, Path},
 };
 
@@ -13,7 +13,7 @@ use crate::{
         runtime::ArchiveReference,
     },
     progress::Job,
-    test::capture::{CaptureLog, read_capture_log},
+    test::capture::{CaptureLog, read_capture_log_cached},
 };
 
 use super::runner::{RunCommand, RunRequest};
@@ -29,16 +29,20 @@ pub fn export_complete(
     use std::io::Write;
     anyhow::ensure!(!sources.is_empty(), "No archive is available to export");
     let mut seen = BTreeSet::new();
+    let mut verified_operations = BTreeSet::new();
     let mut readers = Vec::new();
     for source in sources {
         let reference = source
             .archive
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Incomplete or unavailable logs cannot be exported"))?;
-        anyhow::ensure!(
-            inspect_archive(output, Some(&reference.operation_id), true) == ArchiveState::Complete,
-            "Incomplete or unavailable logs cannot be exported"
-        );
+        if verified_operations.insert(reference.operation_id.clone()) {
+            anyhow::ensure!(
+                inspect_archive(output, Some(&reference.operation_id), true)
+                    == ArchiveState::Complete,
+                "Incomplete or unavailable logs cannot be exported"
+            );
+        }
         if seen.insert((
             reference.operation_id.clone(),
             reference.execution_id.clone(),
@@ -60,11 +64,11 @@ pub fn export_complete(
         .ok_or_else(|| anyhow::anyhow!("Export destination has no parent"))?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     writeln!(temporary, "[Loaded from archive]")?;
+    let search = query.search.to_lowercase();
     for (reader, execution) in readers {
         let mut written = Ok(());
         reader.visit(|record| {
             if written.is_err()
-                || !query.matches(&record)
                 || execution.as_ref().is_some_and(|expected| {
                     record
                         .execution
@@ -74,12 +78,13 @@ pub fn export_complete(
             {
                 return;
             }
+            let Some(formatted) = query.matches_formatted(&record, &search) else {
+                return;
+            };
             written = writeln!(
                 temporary,
                 "[{}ms #{}] {}",
-                record.elapsed_ms,
-                record.sequence,
-                format_record(&record)
+                record.elapsed_ms, record.sequence, formatted
             );
         })?;
         written?;
@@ -100,13 +105,22 @@ pub struct LogQuery {
 }
 
 impl LogQuery {
-    fn matches(&self, record: &DiagnosticRecordV1) -> bool {
+    fn matches_with_search(&self, record: &DiagnosticRecordV1, search_lower: &str) -> bool {
         self.severity.is_none_or(|level| record.severity >= level)
             && self.stage.is_none_or(|stage| record.stage == stage)
-            && (self.search.is_empty()
-                || format_record(record)
-                    .to_lowercase()
-                    .contains(&self.search.to_lowercase()))
+            && (search_lower.is_empty()
+                || format_record(record).to_lowercase().contains(search_lower))
+    }
+
+    fn matches_formatted(&self, record: &DiagnosticRecordV1, search_lower: &str) -> Option<String> {
+        if !self.severity.is_none_or(|level| record.severity >= level)
+            || !self.stage.is_none_or(|stage| record.stage == stage)
+        {
+            return None;
+        }
+        let formatted = format_record(record);
+        (search_lower.is_empty() || formatted.to_lowercase().contains(search_lower))
+            .then_some(formatted)
     }
 }
 
@@ -114,6 +128,7 @@ impl LogQuery {
 pub struct LogPage {
     pub state: ArchiveState,
     pub records: Vec<DiagnosticRecordV1>,
+    pub execution: Option<crate::diagnostics::record::ExecutionIdentity>,
     pub matched: usize,
     pub offset: usize,
     pub sources: Vec<CaptureLog>,
@@ -139,6 +154,7 @@ impl LogPage {
         Self {
             state,
             records: Vec::new(),
+            execution: None,
             matched: 0,
             offset: 0,
             sources: Vec::new(),
@@ -194,8 +210,10 @@ fn valid_component(value: &str) -> bool {
 pub fn run_sources(request: &RunRequest, jobs: &[Job]) -> Vec<CaptureLog> {
     let output = request.options.output_directory(&request.root);
     let mut sources = Vec::new();
+    let mut archive_states = BTreeMap::new();
     if let Some(operation) = &request.options.diagnostic_operation_id {
         let state = inspect_archive(&output, Some(operation), true);
+        archive_states.insert(operation.clone(), state);
         sources.push(CaptureLog {
             state,
             archive: Some(ArchiveReference {
@@ -241,10 +259,14 @@ pub fn run_sources(request: &RunRequest, jobs: &[Job]) -> Vec<CaptureLog> {
                 .join("bitmaps_test")
                 .join(&request.options.run_id)
                 .join(format!("{capture}.png"));
-            sources.push(read_capture_log(&output, &image).unwrap_or(CaptureLog {
-                state: ArchiveState::LegacyUnavailable,
-                archive: None,
-            }));
+            sources.push(
+                read_capture_log_cached(&output, &image, &mut archive_states).unwrap_or(
+                    CaptureLog {
+                        state: ArchiveState::LegacyUnavailable,
+                        archive: None,
+                    },
+                ),
+            );
         }
     }
     sources
@@ -281,11 +303,14 @@ fn load_page_inner(
     let mut page = LogPage {
         state: ArchiveState::Complete,
         records: Vec::new(),
+        execution: None,
         matched: 0,
         offset: 0,
         sources: sources.clone(),
     };
     let mut seen = BTreeSet::new();
+    let mut archive_states = BTreeMap::new();
+    let search = query.search.to_lowercase();
     if sources.is_empty() {
         page.state = ArchiveState::LegacyUnavailable;
     }
@@ -300,7 +325,9 @@ fn load_page_inner(
         )) {
             continue;
         }
-        let state = inspect_archive(output, Some(&reference.operation_id), true);
+        let state = *archive_states
+            .entry(reference.operation_id.clone())
+            .or_insert_with(|| inspect_archive(output, Some(&reference.operation_id), true));
         page.state = worse(page.state, state);
         if !matches!(state, ArchiveState::Complete | ArchiveState::Partial) {
             continue;
@@ -315,7 +342,12 @@ fn load_page_inner(
                 }) {
                     return;
                 }
-                if query.matches(&record) {
+                if page.execution.is_none()
+                    && let Some(execution) = &record.execution
+                {
+                    page.execution = Some(execution.clone());
+                }
+                if query.matches_with_search(&record, &search) {
                     if tail {
                         if latest.len() == PAGE_RECORDS {
                             latest.pop_front();

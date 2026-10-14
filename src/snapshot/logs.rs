@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::site::{ExecutionLog, store_asset, versioned_path};
+use super::site::{ExecutionLog, store_asset};
 use crate::{
     diagnostics::{
         journal::{ArchiveState, JournalReader, inspect_archive},
@@ -76,68 +76,97 @@ pub(super) fn publish(
             return Ok(Some(log));
         }
     };
-    let (state, missing_records) = reader.archive_state_and_missing();
-    log.state = state;
-    if matches!(log.state, ArchiveState::Complete | ArchiveState::Partial) {
-        log.build = Some(reader.metadata.build.clone());
-        log.missing_records = missing_records;
-        let mut chunk = LogChunk {
-            version: 1,
-            operation_id: reference.operation_id.clone(),
-            records: Vec::new(),
-        };
-        let mut bytes = 128;
-        let mut published = Ok(());
-        let mut invalid_identity = false;
-        let read = reader.visit(|record| {
-            if published.is_err() || invalid_identity {
-                return;
-            }
-            if record.operation_kind != OperationKind::Capture
-                || reference.execution_id.as_ref().is_some_and(|expected| {
-                    record
-                        .execution
-                        .as_ref()
-                        .is_some_and(|execution| &execution.execution_id != expected)
-                })
-            {
-                invalid_identity = true;
-                return;
-            }
-            let length = match serde_json::to_vec(&record) {
-                Ok(bytes) => bytes.len(),
-                Err(error) => {
-                    published = Err(error.into());
+    let prefix = format!(
+        "{{\"version\":1,\"operationId\":{},\"records\":[",
+        serde_json::to_string(&reference.operation_id)?
+    );
+    let mut chunk_bytes = prefix.as_bytes().to_vec();
+    let mut chunk_records = 0usize;
+    let mut staged_chunks: Vec<(Vec<u8>, u64)> = Vec::new();
+    let mut published = Ok(());
+    let mut invalid_identity = false;
+    let mut observed_execution = reference.execution_id.clone();
+    let (state, missing_records, read) = reader.visit_with_state(|record| {
+        if published.is_err() || invalid_identity {
+            return;
+        }
+        if record.operation_kind != OperationKind::Capture {
+            invalid_identity = true;
+            return;
+        }
+        if let Some(execution) = &record.execution {
+            if let Some(expected) = &observed_execution {
+                if &execution.execution_id != expected {
+                    invalid_identity = true;
                     return;
                 }
-            };
-            if !chunk.records.is_empty()
-                && (chunk.records.len() == MAX_CHUNK_RECORDS
-                    || bytes + length + 1 > MAX_CHUNK_BYTES)
-            {
-                published = flush(output, &mut chunk, &mut log);
-                bytes = 128;
+            } else {
+                observed_execution = Some(execution.execution_id.clone());
             }
-            if published.is_ok() {
-                chunk.records.push(record);
-                bytes += length + 1;
+        }
+        let encoded = match serde_json::to_vec(&record) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                published = Err(error.into());
+                return;
             }
-        });
-        published?;
+        };
+        if chunk_records > 0
+            && (chunk_records == MAX_CHUNK_RECORDS
+                || chunk_bytes.len() + 1 + encoded.len() + 2 > MAX_CHUNK_BYTES)
+        {
+            published = stage_chunk(
+                &reference.operation_id,
+                &prefix,
+                &mut chunk_bytes,
+                &mut chunk_records,
+                &mut staged_chunks,
+            );
+            if published.is_err() {
+                return;
+            }
+        }
+        if chunk_records > 0 {
+            chunk_bytes.push(b',');
+        }
+        chunk_bytes.extend_from_slice(&encoded);
+        chunk_records += 1;
+        if chunk_bytes.len() + 2 > MAX_CHUNK_BYTES {
+            published = Err(anyhow::anyhow!(
+                "Capture log {} has an oversized public record",
+                reference.operation_id
+            ));
+        }
+    });
+    published?;
+    log.state = state;
+    if matches!(log.state, ArchiveState::Complete | ArchiveState::Partial) {
         if read.is_err() || invalid_identity {
-            for published_chunk in log.chunks.drain(..) {
-                if let Ok(relative) = versioned_path(&published_chunk, "data") {
-                    let _ = std::fs::remove_file(output.join(relative));
-                }
-            }
             log.state = ArchiveState::LoadingError;
             log.records = 0;
             log.missing_records = None;
             log.build = None;
         } else {
-            flush(output, &mut chunk, &mut log)?;
-            if log.state == ArchiveState::Complete {
-                log.missing_records = Some(0);
+            log.build = Some(reader.metadata.build.clone());
+            log.missing_records = if log.state == ArchiveState::Complete {
+                Some(0)
+            } else {
+                missing_records
+            };
+            stage_chunk(
+                &reference.operation_id,
+                &prefix,
+                &mut chunk_bytes,
+                &mut chunk_records,
+                &mut staged_chunks,
+            )?;
+            for (index, (bytes, count)) in staged_chunks.into_iter().enumerate() {
+                let path = format!(
+                    "_snapshot/data/logs/{}/chunk-{index:06}.json",
+                    reference.operation_id
+                );
+                log.chunks.push(store_asset(output, &path, &bytes)?);
+                log.records += count;
             }
         }
     } else {
@@ -147,29 +176,28 @@ pub(super) fn publish(
     Ok(Some(log))
 }
 
-fn flush(output: &Path, chunk: &mut LogChunk, log: &mut ExecutionLog) -> Result<()> {
-    if chunk.records.is_empty() {
+fn stage_chunk(
+    operation_id: &OperationId,
+    prefix: &str,
+    chunk_bytes: &mut Vec<u8>,
+    chunk_records: &mut usize,
+    staged_chunks: &mut Vec<(Vec<u8>, u64)>,
+) -> Result<()> {
+    if *chunk_records == 0 {
         return Ok(());
     }
     ensure!(
-        log.chunks.len() < 16_384,
-        "Capture log {} exceeds the publication chunk limit; reduce the selected report scope",
-        chunk.operation_id
+        staged_chunks.len() < 16_384,
+        "Capture log {operation_id} exceeds the publication chunk limit; reduce the selected report scope"
     );
-    let bytes = serde_json::to_vec(chunk)?;
+    chunk_bytes.extend_from_slice(b"]}");
     ensure!(
-        bytes.len() <= MAX_CHUNK_BYTES,
-        "Capture log {} has an oversized public record",
-        chunk.operation_id
+        chunk_bytes.len() <= MAX_CHUNK_BYTES,
+        "Capture log {operation_id} has an oversized public record"
     );
-    let path = format!(
-        "_snapshot/data/logs/{}/chunk-{:06}.json",
-        chunk.operation_id,
-        log.chunks.len()
-    );
-    log.chunks.push(store_asset(output, &path, &bytes)?);
-    log.records += chunk.records.len() as u64;
-    chunk.records.clear();
+    let completed = std::mem::replace(chunk_bytes, prefix.as_bytes().to_vec());
+    staged_chunks.push((completed, *chunk_records as u64));
+    *chunk_records = 0;
     Ok(())
 }
 
@@ -186,6 +214,7 @@ pub(super) fn validate_chunk(bytes: &[u8], log: &ExecutionLog, expected: &mut u6
             && chunk.records.len() <= MAX_CHUNK_RECORDS,
         "Invalid snapshot log chunk metadata"
     );
+    let mut observed_execution = log.execution_id.clone();
     for record in chunk.records {
         record.validate()?;
         ensure!(
@@ -194,13 +223,16 @@ pub(super) fn validate_chunk(bytes: &[u8], log: &ExecutionLog, expected: &mut u6
                 && record.sequence == *expected,
             "Snapshot log record identity or ordering mismatch"
         );
-        ensure!(
-            log.execution_id.as_ref().is_none_or(|expected| record
-                .execution
-                .as_ref()
-                .is_none_or(|execution| &execution.execution_id == expected)),
-            "Snapshot log execution mismatch"
-        );
+        if let Some(execution) = &record.execution {
+            if let Some(expected_execution) = &observed_execution {
+                ensure!(
+                    &execution.execution_id == expected_execution,
+                    "Snapshot log execution mismatch"
+                );
+            } else {
+                observed_execution = Some(execution.execution_id.clone());
+            }
+        }
         *expected += 1;
     }
     Ok(())
@@ -339,7 +371,7 @@ mod tests {
             DiagnosticEvent::Decision,
         );
         record.execution = Some(ExecutionIdentity {
-            execution_id: recorded_execution,
+            execution_id: recorded_execution.clone(),
             suite_id: SafeIdentity::source("suite"),
             scenario_id: SafeIdentity::source("home"),
             viewport: ViewportIdentity {
@@ -379,6 +411,50 @@ mod tests {
         assert!(log.build.is_none());
         assert!(
             !output
+                .path()
+                .join(format!(
+                    "_snapshot/data/logs/{}/chunk-000000.json",
+                    metadata.operation_id
+                ))
+                .exists()
+        );
+
+        let mut shared_cache = LogCache::new();
+        let valid = CaptureLog {
+            state: ArchiveState::Complete,
+            archive: Some(ArchiveReference {
+                operation_id: metadata.operation_id.clone(),
+                execution_id: Some(recorded_execution),
+                state: ArchiveState::Complete,
+                missing_records: Some(0),
+            }),
+        };
+        let valid_log = publish(root.path(), output.path(), Some(valid), &mut shared_cache)
+            .unwrap()
+            .unwrap();
+        assert_eq!(valid_log.state, ArchiveState::Complete);
+        assert_eq!(valid_log.chunks.len(), 2);
+        let later_mismatch = CaptureLog {
+            state: ArchiveState::Complete,
+            archive: Some(ArchiveReference {
+                operation_id: metadata.operation_id.clone(),
+                execution_id: Some(ExecutionId::new()),
+                state: ArchiveState::Complete,
+                missing_records: Some(0),
+            }),
+        };
+        let failed_log = publish(
+            root.path(),
+            output.path(),
+            Some(later_mismatch),
+            &mut shared_cache,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(failed_log.state, ArchiveState::LoadingError);
+        assert!(failed_log.chunks.is_empty());
+        assert!(
+            output
                 .path()
                 .join(format!(
                     "_snapshot/data/logs/{}/chunk-000000.json",

@@ -749,30 +749,45 @@ impl JournalReader {
     }
 
     pub(crate) fn archive_state_and_missing(&self) -> (ArchiveState, Option<u64>) {
+        let (state, missing, _) = self.visit_with_state(|_| {});
+        (state, missing)
+    }
+
+    pub(crate) fn visit_with_state(
+        &self,
+        mut receive: impl FnMut(DiagnosticRecordV1),
+    ) -> (ArchiveState, Option<u64>, Result<ReadSummary>) {
         match fs::symlink_metadata(self.directory.join("cancellation.json")) {
             Ok(_) => {
-                return self
-                    .visit(|_| {})
-                    .map(|_| (ArchiveState::Partial, None))
-                    .unwrap_or((ArchiveState::LoadingError, None));
+                return match self.visit(receive) {
+                    Ok(summary) => (ArchiveState::Partial, None, Ok(summary)),
+                    Err(error) => (ArchiveState::LoadingError, None, Err(error)),
+                };
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return (ArchiveState::LoadingError, None),
+            Err(error) => return (ArchiveState::LoadingError, None, Err(error.into())),
         }
         let path = self.directory.join("index.json");
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                (ArchiveState::Partial, None)
+                (ArchiveState::Partial, None, self.visit(receive))
             }
-            Err(_) => (ArchiveState::LoadingError, None),
-            Ok(_) => self
-                .verified_index()
-                .map(|index| (index.state, index.missing_records))
-                .unwrap_or((ArchiveState::LoadingError, None)),
+            Err(error) => (ArchiveState::LoadingError, None, Err(error.into())),
+            Ok(_) => match self.verified_index_with(&mut receive) {
+                Ok((index, summary)) => (index.state, index.missing_records, Ok(summary)),
+                Err(error) => (ArchiveState::LoadingError, None, Err(error)),
+            },
         }
     }
 
     pub fn verified_index(&self) -> Result<ArchiveIndex> {
+        self.verified_index_with(|_| {}).map(|(index, _)| index)
+    }
+
+    fn verified_index_with(
+        &self,
+        mut receive: impl FnMut(DiagnosticRecordV1),
+    ) -> Result<(ArchiveIndex, ReadSummary)> {
         let index: ArchiveIndex = read_json(
             &self.directory.join("index.json"),
             &self.directory,
@@ -811,6 +826,7 @@ impl JournalReader {
         let mut terminal = None;
         let summary = self.visit(|record| {
             terminal = Some((record.event_name, record.outcome));
+            receive(record);
         })?;
         ensure!(
             summary.records == index.records
@@ -824,7 +840,7 @@ impl JournalReader {
                 "Complete archive lacks a verified terminal outcome"
             );
         }
-        Ok(index)
+        Ok((index, summary))
     }
 
     pub fn segment_count(&self) -> usize {

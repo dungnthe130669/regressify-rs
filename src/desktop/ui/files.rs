@@ -223,6 +223,9 @@ impl Workbench {
         if self.session.value().is_err() {
             self.tab = 1;
         }
+        if change.version.entry.kind == DocumentKind::Workspace {
+            self.workspace_value = Value::Null;
+        }
         self.external_file_notice = None;
         self.sync_editor_content(window, cx);
         self.source.update(cx, |state, cx| {
@@ -594,7 +597,7 @@ impl Workbench {
                                     move |this, _, window, cx| match this.session.discard() {
                                         Ok(()) => {
                                             this.field_errors.clear();
-                                            this.sync_editor(window, cx);
+                                            this.sync_editor_content(window, cx);
                                             window.close_dialog(cx);
                                             this.perform_pending(discard.clone(), window, cx);
                                         }
@@ -650,7 +653,7 @@ impl Workbench {
                             this.session.open = Some(open);
                             this.session.selection = Selection::Root;
                             this.tab = 0;
-                            this.sync_editor(window, cx);
+                            this.sync_editor_content(window, cx);
                             this.finish_suite_operation(operation, window, cx);
                         },
                         window,
@@ -956,9 +959,9 @@ impl Workbench {
                     }
                     _ => return Err(anyhow!("Unsupported file operation")),
                 };
-                Ok((open, workspace.entries()?))
+                Ok((open, workspace.entries()?, workspace.suite_catalog()))
             },
-            move |this, (open, entries), window, cx| {
+            move |this, (open, entries, catalog), window, cx| {
                 if operation == Operation::Rename
                     && let Some(previous) = previous
                 {
@@ -971,6 +974,16 @@ impl Workbench {
                     this.runs.update(cx, |panel, cx| {
                         panel.suite_changed(&previous, Some(&updated), cx)
                     });
+                }
+                match catalog {
+                    Ok(suites) => {
+                        this.session.suites = suites;
+                        this.session.suite_error = None;
+                    }
+                    Err(error) => {
+                        this.session.suites.clear();
+                        this.session.suite_error = Some(format!("{error:#}"));
+                    }
                 }
                 this.session.open = Some(open);
                 this.overview = false;
@@ -992,7 +1005,7 @@ impl Workbench {
                 } else {
                     0
                 };
-                this.sync_editor(window, cx);
+                this.sync_editor_content(window, cx);
                 this.refresh_results(window, cx);
                 this.status = "File saved".into();
                 window.close_dialog(cx);
@@ -1085,17 +1098,27 @@ impl Workbench {
                                             "Deleting suite...",
                                             move || {
                                                 workspace.delete_suite_in_outputs(&snapshot, &outputs)?;
-                                                workspace.entries()
+                                                Ok((workspace.entries()?, workspace.suite_catalog()))
                                             },
-                                            move |this, entries, window, cx| {
+                                            move |this, (entries, catalog), window, cx| {
                                                 if let Some(previous) = previous {
                                                     this.runs.update(cx, |panel, cx| panel.suite_changed(&previous, None, cx));
+                                                }
+                                                match catalog {
+                                                    Ok(suites) => {
+                                                        this.session.suites = suites;
+                                                        this.session.suite_error = None;
+                                                    }
+                                                    Err(error) => {
+                                                        this.session.suites.clear();
+                                                        this.session.suite_error = Some(format!("{error:#}"));
+                                                    }
                                                 }
                                                 this.session.open = None;
                                                 this.session.entries = entries;
                                                 this.session.selection = Selection::Root;
                                                 this.suite_list.current = None;
-                                                this.sync_editor(window, cx);
+                                                this.sync_editor_content(window, cx);
                                                 this.refresh_results(window, cx);
                                                 this.status = "Suite deleted".into();
                                                 window.close_dialog(cx);
@@ -1138,8 +1161,9 @@ impl Workbench {
                 this.session.open = Some(open);
                 this.session.entries = entries;
                 this.session.selection = Selection::Root;
+                this.workspace_value = Value::Null;
                 this.tab = 0;
-                this.sync_editor(window, cx);
+                this.sync_editor_content(window, cx);
                 this.status = "Configuration created".into();
             },
             window,
@@ -1151,51 +1175,54 @@ impl Workbench {
         let Some(workspace) = self.session.workspace.clone() else {
             return;
         };
+        let root = workspace.root.clone();
         cx.spawn_in(window, async move |view, cx| {
-            if let Some(file) = rfd::AsyncFileDialog::new()
-                .set_directory(&workspace.root)
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .set_directory(&root)
                 .add_filter("Configuration", &["yaml", "yml", "json"])
                 .pick_file()
                 .await
-            {
-                let path = file.path().canonicalize().and_then(|path| {
-                    path.strip_prefix(&workspace.root)
-                        .map(std::path::Path::to_path_buf)
-                        .map_err(std::io::Error::other)
-                });
-                let _ = view.update_in(cx, |this, window, cx| match path {
-                    Ok(path) => {
-                        let label = path.to_string_lossy();
-                        let kind = if label.contains(".tests.") {
-                            DocumentKind::Suite
-                        } else if label.contains("viewports") {
-                            DocumentKind::Viewports
-                        } else if matches!(label.as_ref(), "regressify.yaml" | "regressify.yml") {
-                            DocumentKind::Workspace
-                        } else {
-                            DocumentKind::Data
-                        };
-                        let entry = Entry {
-                            path,
-                            kind,
-                            editable: true,
-                        };
-                        if !this
+            else {
+                return;
+            };
+            let picked = file.path().to_path_buf();
+            let classified = cx
+                .background_executor()
+                .spawn(async move {
+                    let canonical = picked.canonicalize()?;
+                    let relative = canonical
+                        .strip_prefix(&workspace.root)
+                        .map_err(|_| anyhow!("Select a file inside the workspace"))?;
+                    workspace.classify_entry(relative)
+                })
+                .await;
+            let _ = view.update_in(cx, |this, window, cx| {
+                if this.busy
+                    || this.session.workspace.as_ref().map(|active| &active.root) != Some(&root)
+                {
+                    return;
+                }
+                match classified {
+                    Ok(entry) => {
+                        if let Some(existing) = this
                             .session
                             .entries
-                            .iter()
-                            .any(|existing| existing.path == entry.path)
+                            .iter_mut()
+                            .find(|existing| existing.path == entry.path)
                         {
+                            *existing = entry.clone();
+                        } else {
                             this.session.entries.push(entry.clone());
+                            this.session.entries.sort_by_key(Entry::label);
                         }
                         this.load_document(entry, window, cx);
                     }
                     Err(error) => {
-                        this.status = format!("Select a file inside the workspace: {error}");
+                        this.status = format!("Select a file inside the workspace: {error:#}");
                         cx.notify();
                     }
-                });
-            }
+                }
+            });
         })
         .detach();
     }
@@ -1206,9 +1233,28 @@ impl Workbench {
         };
         self.task(
             "Refreshing files...",
-            move || workspace.entries(),
-            |this, entries, _, _| {
+            move || Ok((workspace.entries()?, workspace.suite_catalog())),
+            |this, (entries, catalog), window, cx| {
                 this.session.entries = entries;
+                match catalog {
+                    Ok(suites) => {
+                        this.session.suites = suites;
+                        this.session.suite_error = None;
+                    }
+                    Err(error) => {
+                        this.session.suites.clear();
+                        this.session.suite_error = Some(format!("{error:#}"));
+                    }
+                }
+                this.viewport_choices.invalidate();
+                this.sync_suites(cx);
+                this.workspace_value = this
+                    .session
+                    .workspace_value()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(Value::Null);
+                this.refresh_effective(window, cx);
                 this.status = "Files refreshed".into();
             },
             window,

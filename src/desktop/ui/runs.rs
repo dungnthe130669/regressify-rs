@@ -329,6 +329,7 @@ impl RunPanel {
             .retain(|suite| suite.entry.path != old.entry.path);
         if let Some(suite) = new {
             self.suites.push(suite.clone());
+            self.suites.sort_by_key(|suite| suite.entry.label());
         }
         self.suite_selection_anchor = None;
         self.scenario_selection_anchor = None;
@@ -655,6 +656,12 @@ impl RunPanel {
         self.catalog_error = None;
         self.log_text.clear();
         self.log_scope = None;
+        self.archive_page = None;
+        self.archive_key = None;
+        self.archive_loading = false;
+        self.archive_generation = self.archive_generation.wrapping_add(1);
+        self.log_controls
+            .update(cx, |controls, cx| controls.availability(None, false, cx));
         self.collapsed.clear();
         self.expanded_selections.clear();
         self.failed_only = false;
@@ -1313,6 +1320,12 @@ impl RunPanel {
                 self.status = format!("Running {}", self.command.label());
                 self.log_text.clear();
                 self.log_scope = None;
+                self.archive_page = None;
+                self.archive_key = None;
+                self.archive_loading = false;
+                self.archive_generation = self.archive_generation.wrapping_add(1);
+                self.log_controls
+                    .update(cx, |controls, cx| controls.availability(None, true, cx));
                 self.log
                     .update(cx, |state, cx| state.set_value("", window, cx));
                 cx.spawn_in(window, async move |view, cx| {
@@ -1925,8 +1938,11 @@ impl Render for RunPanel {
                     .underline()
                     .px_4()
                     .selected_index(self.tab)
-                    .on_click(cx.listener(|this, index, _, cx| {
+                    .on_click(cx.listener(|this, index, window, cx| {
                         this.tab = *index;
+                        if this.tab == 3 {
+                            this.refresh_log(window, cx);
+                        }
                         cx.notify();
                     }))
                     .child(Tab::new().label("Activity"))

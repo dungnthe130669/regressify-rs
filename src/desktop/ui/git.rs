@@ -1161,8 +1161,18 @@ impl Workbench {
                     panel.finish_activity(success, &this.status, window, cx);
                     panel.disabled = false;
                     match snapshot {
-                        Ok(snapshot) => panel.install_snapshot(snapshot, window, cx),
-                        Err(error) => panel.error = Some(format!("{error:#}")),
+                        Ok(snapshot) => {
+                            panel.install_snapshot(snapshot, window, cx);
+                            if panel.diff_cancel.is_none()
+                                && let Some(path) = panel.active_file.clone()
+                            {
+                                panel.review(path, window, cx);
+                            }
+                        }
+                        Err(error) => {
+                            panel.error = Some(format!("{error:#}"));
+                            panel.refresh(window, cx);
+                        }
                     }
                     if success
                         && matches!(
@@ -1194,12 +1204,12 @@ impl Workbench {
                         panel.remote_error = None;
                         panel.last_fetch = Some(Instant::now());
                     }
-                    panel.refresh(window, cx);
                     cx.emit(GitEvent::Changed);
                     cx.notify();
                 });
                 this.sync_modal(cx);
-                if matches!(action, model::Action::Pull | model::Action::Discard { .. }) {
+                if success && matches!(action, model::Action::Pull | model::Action::Discard { .. })
+                {
                     this.reload_after_git_operation(window, cx);
                 }
                 cx.notify();
@@ -1220,11 +1230,18 @@ impl Workbench {
             "Refreshing workspace after Git...",
             move || {
                 let mut session = Session::default();
-                session.connect(&workspace.root)?;
+                session.reload_workspace(&workspace.root)?;
                 if let Some(entry) = entry
-                    && workspace.root.join(&entry.path).try_exists()?
+                    && let Some(current) = session
+                        .entries
+                        .iter()
+                        .find(|candidate| {
+                            candidate.path == entry.path && candidate.supports_editing()
+                        })
+                        .cloned()
+                    && let Ok(open) = workspace.open_document(current)
                 {
-                    session.install_document(workspace.open_document(entry)?)?;
+                    session.open = Some(open);
                     session.selection = selection;
                     session.reconcile_selection();
                 }
@@ -1232,8 +1249,7 @@ impl Workbench {
             },
             move |this, session, window, cx| {
                 this.session = session;
-                this.sync_suites(cx);
-                this.sync_editor(window, cx);
+                this.sync_editor_content(window, cx);
                 this.main_tab = 3;
                 this.status = status;
                 this.refresh_results(window, cx);

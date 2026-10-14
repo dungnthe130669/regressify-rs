@@ -319,6 +319,21 @@ pub fn validate_published_url(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn same_published_site(left: &str, right: &str) -> bool {
+    match (reqwest::Url::parse(left), reqwest::Url::parse(right)) {
+        (Ok(mut left), Ok(mut right)) => {
+            if let Ok(mut segments) = left.path_segments_mut() {
+                segments.pop_if_empty();
+            }
+            if let Ok(mut segments) = right.path_segments_mut() {
+                segments.pop_if_empty();
+            }
+            left == right
+        }
+        _ => left.trim_end_matches('/') == right.trim_end_matches('/'),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReportPublication {
@@ -456,7 +471,10 @@ impl DeployTargets {
                 && !settings.targets.iter().any(|saved| {
                     saved.id == publication.target_id
                         && saved.published_url.as_deref().is_some_and(|saved_url| {
-                            Some(saved_url) == url || Some(saved_url) == previous_url.as_deref()
+                            url.is_some_and(|url| same_published_site(saved_url, url))
+                                || previous_url
+                                    .as_deref()
+                                    .is_some_and(|prev| same_published_site(saved_url, prev))
                         })
                 })
         });
@@ -1667,7 +1685,7 @@ mod tests {
         let replaced = DeployTargets::record_report_publication(
             &path,
             &settings.targets[1],
-            Some("https://first.example.com/"),
+            Some("https://FIRST.example.com"),
             &suites(&["light"]),
         )?;
         assert!(replaced.latest_report_url(&suites(&["alloy"])).is_none());

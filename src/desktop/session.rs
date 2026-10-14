@@ -87,6 +87,20 @@ impl Session {
         Ok(())
     }
 
+    /// Reload workspace files and suites without re-running initialization, so
+    /// post-Git refreshes do not recreate files the user just discarded.
+    pub fn reload_workspace(&mut self, root: &Path) -> Result<()> {
+        ensure!(!self.dirty(), "Save or discard the current document first");
+        let workspace = Workspace::open(root)?;
+        let entries = workspace.entries()?;
+        self.workspace = Some(workspace);
+        self.entries = entries;
+        self.open = None;
+        self.selection = Selection::Root;
+        self.refresh_catalog();
+        Ok(())
+    }
+
     pub fn refresh(&mut self) -> Result<()> {
         self.entries = self
             .workspace

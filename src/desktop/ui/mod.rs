@@ -622,6 +622,11 @@ impl Workbench {
             move || {
                 let mut session = Session::default();
                 session.connect(instance.root())?;
+                let workspace_value = session
+                    .workspace_value()
+                    .ok()
+                    .flatten()
+                    .unwrap_or(Value::Null);
                 let deployment_path = preferences
                     .as_ref()
                     .map(|path| super::deployment::DeployTargets::path_in(instance.root(), path))
@@ -648,6 +653,7 @@ impl Workbench {
                 super::jump_list::record_workspace(instance.root());
                 Ok((
                     session,
+                    workspace_value,
                     instance,
                     activity_path.ok(),
                     activity,
@@ -658,6 +664,7 @@ impl Workbench {
             |this,
              (
                 session,
+                workspace_value,
                 mut instance,
                 activity_path,
                 activity,
@@ -689,6 +696,7 @@ impl Workbench {
                 });
                 this.workspace_instance = Some(instance);
                 this.session = session;
+                this.workspace_value = workspace_value;
                 this.main_tab = 0;
                 this.overview = true;
                 this.tab = 0;
@@ -712,7 +720,7 @@ impl Workbench {
                     });
                     this.save_preferences(window, cx);
                 }
-                this.sync_editor(window, cx);
+                this.sync_editor_content(window, cx);
                 this.runs.update(cx, |panel, cx| {
                     if let Some(path) = deployment_path {
                         panel.set_deployment_storage_path(path, cx);
@@ -800,7 +808,7 @@ impl Workbench {
                 } else {
                     0
                 };
-                this.sync_editor(window, cx);
+                this.sync_editor_content(window, cx);
                 this.status = "Document loaded".into();
             },
             window,
@@ -913,9 +921,10 @@ impl Workbench {
                     .update(cx, |panel, cx| panel.set_workspace(None, window, cx));
                 self.search
                     .update(cx, |state, cx| state.set_value("", window, cx));
+                self.workspace_value = Value::Null;
                 self.main_tab = 0;
                 self.tab = 0;
-                self.sync_editor(window, cx);
+                self.sync_editor_content(window, cx);
                 self.status = "Workspace closed".into();
             }
             Err(error) => self.status = format!("{error:#}"),
@@ -1258,7 +1267,7 @@ impl Workbench {
             open.document.undo();
         }
         self.session.reconcile_selection();
-        self.sync_editor(window, cx);
+        self.sync_editor_content(window, cx);
     }
 
     fn redo_document(&mut self, _: &RedoDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -1269,7 +1278,7 @@ impl Workbench {
             open.document.redo();
         }
         self.session.reconcile_selection();
-        self.sync_editor(window, cx);
+        self.sync_editor_content(window, cx);
     }
 
     fn edit(
@@ -1289,7 +1298,7 @@ impl Workbench {
         match operation(&mut self.session) {
             Ok(()) => {
                 self.status = "Unsaved changes".into();
-                self.sync_editor(window, cx);
+                self.sync_editor_content(window, cx);
             }
             Err(error) => {
                 self.status = format!("{error:#}");
@@ -1377,8 +1386,10 @@ impl Workbench {
         });
     }
 
+    #[cfg(all(test, feature = "gui-tests"))]
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.session.refresh_catalog();
+        self.workspace_value = Value::Null;
         self.sync_editor_content(window, cx);
     }
 
@@ -1430,12 +1441,21 @@ impl Workbench {
             .collect::<BTreeMap<_, _>>();
         self.field_subscriptions.clear();
         self.field_errors.clear();
-        self.workspace_value = self
+        if self
             .session
-            .workspace_value()
-            .ok()
-            .flatten()
-            .unwrap_or(Value::Null);
+            .open
+            .as_ref()
+            .is_some_and(|open| open.entry.kind == DocumentKind::Workspace)
+        {
+            self.workspace_value = self.value.clone();
+        } else if self.workspace_value.is_null() {
+            self.workspace_value = self
+                .session
+                .workspace_value()
+                .ok()
+                .flatten()
+                .unwrap_or(Value::Null);
+        }
         self.refresh_effective(window, cx);
         let fields = self
             .session

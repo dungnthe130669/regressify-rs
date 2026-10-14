@@ -1898,6 +1898,10 @@ async fn discard_selected_folder_requires_confirmation_and_reloads_the_open_docu
     }
     git(directory.path(), &["add", "."]);
     git(directory.path(), &["commit", "-m", "initial"]);
+    // Remove AGENTS.md in HEAD so discarding visual_tests verifies that
+    // reload_after_git_operation does not recreate absent runtime defaults.
+    git(directory.path(), &["rm", "-f", "AGENTS.md"]);
+    git(directory.path(), &["commit", "-m", "remove agents"]);
     let file = directory.path().join("visual_tests/ui-test.tests.yaml");
     let original = std::fs::read_to_string(&file).unwrap();
     let original_value: serde_json::Value = serde_yaml::from_str(&original).unwrap();
@@ -1982,6 +1986,7 @@ async fn discard_selected_folder_requires_confirmation_and_reloads_the_open_docu
     cx.update_window(handle.into(), |_, _, cx| {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
         assert!(!added.exists());
+        assert!(!directory.path().join("AGENTS.md").exists());
         assert_eq!(
             std::fs::read_to_string(directory.path().join("keep.txt")).unwrap(),
             "unselected\n"

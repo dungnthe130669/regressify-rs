@@ -235,18 +235,20 @@ fn resolve_image_source<'a>(
     else {
         return Ok(None);
     };
+    let include_grid = grid_paths.contains(&normalized);
+    let role = if include_grid { "test" } else { role };
     Ok(Some(PendingImage {
         source,
         suite,
         role,
         name,
-        include_grid: grid_paths.contains(&normalized),
+        include_grid,
     }))
 }
 
-fn decode_pending_image(
-    pending: &PendingImage<'_>,
-) -> Result<(Vec<u8>, Vec<u8>, Option<Vec<u8>>, ImageSize)> {
+type DecodedImage = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, ImageSize);
+
+fn decode_pending_image(pending: &PendingImage<'_>) -> Result<DecodedImage> {
     let bytes = read_bounded(&pending.source, MAX_IMAGE_BYTES)?;
     ensure!(
         bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
@@ -366,6 +368,7 @@ pub(super) fn load_suite(
     let mut prepared_tests = Vec::with_capacity(report.tests.len());
     let mut pending_images = Vec::new();
     let mut queued_sources = BTreeSet::new();
+    let mut role_names = BTreeMap::new();
     for (test, scenario) in report.tests.into_iter().zip(names) {
         let pair = test.pair;
         ensure!(
@@ -406,7 +409,7 @@ pub(super) fn load_suite(
             pair.file_name.clone()
         };
         ensure!(
-            valid_segment(&capture_id) && identifiers.insert(capture_id.clone()),
+            valid_segment(&capture_id) && identifiers.insert(capture_id.to_ascii_lowercase()),
             "Invalid or duplicate snapshot capture ID"
         );
         let mismatch = pair
@@ -446,6 +449,13 @@ pub(super) fn load_suite(
             &grid_paths,
         )?;
         for pending in [&reference, &current, &diff].into_iter().flatten() {
+            let previous_name = role_names
+                .entry((pending.role, pending.name.to_ascii_lowercase()))
+                .or_insert_with(|| pending.name.clone());
+            ensure!(
+                *previous_name == pending.name,
+                "Conflicting case for snapshot image path"
+            );
             if !images.contains_key(&pending.source)
                 && queued_sources.insert(pending.source.clone())
             {
@@ -469,20 +479,19 @@ pub(super) fn load_suite(
             diff.map(|item| item.source),
         ));
     }
-    let decoded_images = if pending_images.len() <= 1 {
+    let stored_images = if pending_images.len() <= 1 {
         pending_images
             .iter()
-            .map(decode_pending_image)
+            .map(|pending| store_pending_image(output, pending, decode_pending_image(pending)?))
             .collect::<Result<Vec<_>>>()?
     } else {
         pending_images
             .par_iter()
-            .map(decode_pending_image)
+            .map(|pending| store_pending_image(output, pending, decode_pending_image(pending)?))
             .collect::<Result<Vec<_>>>()?
     };
-    for (pending, encoded) in pending_images.iter().zip(decoded_images) {
-        let asset = store_pending_image(output, pending, encoded)?;
-        images.insert(pending.source.clone(), asset);
+    for (pending, asset) in pending_images.into_iter().zip(stored_images) {
+        images.insert(pending.source, asset);
     }
     for (status, pair, scenario, capture_id, mismatch, reference_src, current_src, diff_src) in
         prepared_tests
@@ -781,7 +790,27 @@ mod tests {
         write_fixture(temp.path(), &report);
         let loaded = load(temp.path()).unwrap().unwrap();
         assert_eq!(loaded.tests[0].diff, loaded.tests[1].test);
-        assert!(loaded.tests[1].previews.as_ref().unwrap().grid.is_some());
+        assert!(
+            loaded.tests[1]
+                .test
+                .as_deref()
+                .unwrap()
+                .starts_with("_snapshot/images/suite/test/shared.png?v=")
+        );
+        assert!(
+            loaded.tests[1]
+                .previews
+                .as_ref()
+                .unwrap()
+                .grid
+                .as_deref()
+                .unwrap()
+                .starts_with("_snapshot/images/suite/test-thumbnail/shared.png?v=")
+        );
+
+        report["tests"][1]["pair"]["fileName"] = json!("HOME.png");
+        write_fixture(temp.path(), &report);
+        assert!(load(temp.path()).is_err());
     }
 
     #[test]

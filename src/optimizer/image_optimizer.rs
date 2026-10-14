@@ -199,6 +199,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     }
 
     write_file_atomically(path, &optimized_buffer)?;
+    crate::test::capture::refresh_capture_log_digest(path, &source, &optimized_buffer)?;
 
     Ok(OptimizeResult::Pair(original_size, optimized_size))
 }
@@ -330,5 +331,78 @@ mod tests {
         };
 
         assert!(error.to_string().contains("pixel limit"));
+    }
+
+    #[test]
+    fn lossless_optimization_preserves_valid_capture_log_links_without_masking_tampering() {
+        use crate::diagnostics::{
+            journal::{ArchiveState, JournalOptions, JournalWriter, OperationMetadata},
+            record::{OperationKind, Outcome},
+            runtime::ArchiveReference,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let suite = temp.path().join("suite");
+        let captures = suite.join("bitmaps_test/run");
+        fs::create_dir_all(&captures).unwrap();
+        let metadata = OperationMetadata::new(OperationKind::Capture, None);
+        let mut writer =
+            JournalWriter::create(temp.path(), metadata.clone(), JournalOptions::default())
+                .unwrap();
+        writer.finalize(Outcome::Success).unwrap();
+        let reference = ArchiveReference {
+            operation_id: metadata.operation_id,
+            execution_id: None,
+            state: ArchiveState::Complete,
+            missing_records: Some(0),
+        };
+        let mut pixels = Vec::with_capacity(64 * 64 * 4);
+        for pixel_index in 0..(64 * 64) {
+            pixels.extend_from_slice(&[
+                (pixel_index % 251) as u8,
+                (pixel_index % 127) as u8,
+                (pixel_index % 61) as u8,
+                255,
+            ]);
+        }
+        let encoded = lodepng::encode32(&pixels, 64, 64).unwrap();
+        let valid_path = captures.join("page__FINAL.png");
+        fs::write(&valid_path, &encoded).unwrap();
+        crate::test::capture::write_capture_log(temp.path(), &valid_path, &reference).unwrap();
+
+        let tampered_path = captures.join("tampered__FINAL.png");
+        fs::write(&tampered_path, &encoded).unwrap();
+        crate::test::capture::write_capture_log(temp.path(), &tampered_path, &reference).unwrap();
+        pixels[0] ^= 0xff;
+        fs::write(&tampered_path, lodepng::encode32(&pixels, 64, 64).unwrap()).unwrap();
+        assert_eq!(
+            crate::test::capture::read_capture_log(temp.path(), &tampered_path)
+                .unwrap()
+                .state,
+            ArchiveState::LoadingError
+        );
+
+        assert!(matches!(
+            optimize_png(&valid_path, &optimize_args(0)).unwrap(),
+            OptimizeResult::Pair(_, _)
+        ));
+        assert!(matches!(
+            optimize_png(&tampered_path, &optimize_args(0)).unwrap(),
+            OptimizeResult::Pair(_, _)
+        ));
+
+        let valid_log = crate::test::capture::read_capture_log(temp.path(), &valid_path).unwrap();
+        assert_eq!(valid_log.state, ArchiveState::Complete);
+        assert_eq!(valid_log.archive, Some(reference.clone()));
+
+        crate::compare::report_gen::approve_screenshots(&suite, Some("run")).unwrap();
+        let promoted = suite.join("bitmaps_reference/page__FINAL.png");
+        let promoted_log = crate::test::capture::read_capture_log(temp.path(), &promoted).unwrap();
+        assert_eq!(promoted_log.state, ArchiveState::Complete);
+        assert_eq!(promoted_log.archive, Some(reference));
+
+        let tampered_log =
+            crate::test::capture::read_capture_log(temp.path(), &tampered_path).unwrap();
+        assert_eq!(tampered_log.state, ArchiveState::LoadingError);
+        assert!(tampered_log.archive.is_none());
     }
 }

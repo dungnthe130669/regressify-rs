@@ -130,6 +130,7 @@ impl ResultsPanel {
                     .records
                     .iter()
                     .find_map(|record| record.execution.as_ref())
+                    .or(page.execution.as_ref())
                 {
                     this.capture_log.title.push_str(&format!(
                         " / {} x {} / Attempt {}",
