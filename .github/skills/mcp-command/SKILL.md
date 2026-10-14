@@ -59,6 +59,7 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
 1. Preserve both current stateless and legacy-client tests. Current HTTP requests need protocol/method metadata headers as well as body metadata. Invalid tool arguments may return `isError: true` rather than throw at the client.
 1. Pin template dependencies and retain a matching npm lockfile. Edit the template/catalog, regenerate a fresh package, then test that actual export; do not rely only on a hand-adjusted temporary package. The frontend log-value allowlist must match new typed command identities. Embedded code/config uses `.template` filenames; only exported files are a runnable TypeScript project with a generated catalog and installed dependencies.
 1. Keep `minify: true` and `upload_source_maps: false` in the Wrangler template so a deployment uploads one minified module and no source maps; Wrangler generates maps whenever uploads are unset. The package test inspects a dry-run bundle; only the worker's imports, such as `content/catalog.json`, enter it.
+1. Gate generated `deploy` through `verify`: high/critical dependency audit (including dev tools), typecheck, tests, and dry-run build, all fail-closed. Root `deploy:check` covers Rust formatting/MCP tests/locked CLI build; root deploy exports current Cargo source without Git pulls or installed-CLI lookup. Never run its sibling-directory cleanup or real publication as validation. Exercise each failed gate with mocked npm/Wrangler; audit failures are blockers, not permission to force upgrades.
 
 ## Checks
 
@@ -76,9 +77,11 @@ npm ci
 npm run check
 npm test
 npm run build
+npm run verify
 ```
 
 Worker tests start/stop a local runtime; `build` is a Wrangler dry run. Neither requires publishing credentials. Cover complete/default-feature export, version and dependency consistency, deterministic bytes, self-contained schema refs, every action/example, invalid destinations, file conflicts, concurrent exports, and symlinks where the platform permits. Unix symlink checks run in Linux CI.
+`verify` also needs the npm audit service; report dependency advisories or lookup failures explicitly. Only `deploy` publishes after all gates succeed.
 Catalog checks also require direct/referenced property help and standalone
 diagnostic/hook contracts. Script-stub checks do not replace live hook fixtures.
 Check consumer memory guidance through startup instructions, the overview tool

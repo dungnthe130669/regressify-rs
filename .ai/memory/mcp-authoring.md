@@ -87,5 +87,11 @@ Verified: 2026-10-14
   unset value means `true`: maps were written to `dist` (not uploaded) and the
   bundle was unminified. The template now sets `minify: true` and
   `upload_source_maps: false`; a package test checks the dry-run output.
+- Generated `deploy` runs `verify` first: high/critical npm audit including
+  development tools, TypeScript, Worker tests, and dry-run build. Every failed
+  command blocks publication; package tests mock npm/Wrangler for all gates.
+  Root `deploy:check` covers formatting/MCP tests/locked CLI build, and root
+  deployment exports current Cargo source rather than pulling Git or resolving
+  an installed CLI. The shortcut still replaces its sibling generated directory.
 - See [the task skill](../../.github/skills/mcp-command/SKILL.md) for maintenance
   gates. Keep schema/runtime changes synchronized with the self-contained prose.

@@ -228,6 +228,31 @@ mod tests {
     }
 
     #[test]
+    fn deployment_scripts_gate_publication_and_export_checked_source() {
+        let root: serde_json::Value =
+            serde_json::from_str(include_str!("../../package.json")).unwrap();
+        assert_eq!(
+            root["scripts"]["deploy:check"],
+            "cargo fmt --all -- --check && cargo test --locked --lib mcp && cargo build --locked --bin regressify"
+        );
+        assert_eq!(
+            root["scripts"]["deploy"],
+            "bun run deploy:check && tuyen rm -rf ../regressify-mcp-worker && cargo run --locked --bin regressify -- mcp --output ../regressify-mcp-worker && bun ci --cwd ../regressify-mcp-worker && bun run --cwd ../regressify-mcp-worker deploy"
+        );
+        let files: std::collections::BTreeMap<_, _> =
+            package_files().unwrap().into_iter().collect();
+        let package: serde_json::Value = serde_json::from_slice(&files["package.json"]).unwrap();
+        assert_eq!(
+            package["scripts"]["verify"],
+            "npm audit --audit-level=high && npm run check && npm test && npm run build"
+        );
+        assert_eq!(
+            package["scripts"]["deploy"],
+            "npm run verify && wrangler deploy"
+        );
+    }
+
+    #[test]
     fn export_contains_versioned_self_contained_schemas() {
         let root = tempfile::tempdir().unwrap();
         let output = root.path().join("worker");

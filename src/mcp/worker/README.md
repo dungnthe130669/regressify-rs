@@ -54,6 +54,7 @@ npm ci
 npm run check
 npm test
 npm run build
+npm run verify
 npm run dev
 ```
 
@@ -64,6 +65,12 @@ the local URL; connect an MCP client to that URL with `/mcp` appended. The
 endpoint is a protocol handler, not a web page. The root URL returns basic
 service metadata.
 
+`verify` is the non-publishing deployment gate: dependency audit, TypeScript
+check, Worker/protocol tests, then dry-run build. High/critical advisories,
+audit-service failures, and any failed check stop the chain. The audit includes
+development dependencies because they build and publish the Worker. Do not
+automatically force dependency upgrades or suppress advisories to pass the gate.
+
 ## Deployment
 
 Review the Worker name in `wrangler.jsonc` before publishing. Do not deploy over
@@ -73,6 +80,12 @@ your Cloudflare account or your own CI secret configuration, then run:
 ```sh
 npm run deploy
 ```
+
+`deploy` always runs `verify` before invoking the live Wrangler deployment.
+Neither a failed audit nor a failed test/build can fall through to publication.
+The package tests mock npm and Wrangler to verify each failure path without
+credentials or real publication. Direct `wrangler deploy` bypasses these gates;
+use the package command for the checked workflow.
 
 Wrangler prints the deployed URL. Append `/mcp`, typically
 `https://regressify-mcp.<account-subdomain>.workers.dev/mcp`, and configure it as

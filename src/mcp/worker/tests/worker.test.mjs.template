@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -200,6 +200,7 @@ test("deployment bundle is one minified module without source maps", { timeout: 
       cwd: fileURLToPath(new URL("..", import.meta.url)),
       env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
     });
+
     // Wrangler always writes a README note to --outdir; it is never uploaded.
     const files = (await readdir(outdir, { recursive: true })).filter((file) => file !== "README.md");
     assert.deepEqual(files, ["index.js"]);
@@ -208,6 +209,60 @@ test("deployment bundle is one minified module without source maps", { timeout: 
     assert.ok(!bundle.includes("// src/index.ts"), "esbuild module comments show an unminified bundle");
   } finally {
     await rm(outdir, { recursive: true, force: true });
+  }
+});
+
+test("deployment stops at every failed gate and publishes only after all pass", async () => {
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(manifest.scripts.verify, "npm audit --audit-level=high && npm run check && npm test && npm run build");
+  assert.equal(manifest.scripts.deploy, "npm run verify && wrangler deploy");
+  const directory = await mkdtemp(join(tmpdir(), "regressify-deploy-gates-"));
+  const windows = process.platform === "win32";
+  const shell = windows ? process.env.ComSpec : "/bin/sh";
+  assert.ok(shell);
+  const shellArgs = (command) => windows ? ["/d", "/s", "/c", command] : ["-c", command];
+  const steps = ["audit", "check", "test", "build", "deploy"];
+  try {
+    const runner = join(directory, "command.cjs");
+    const log = join(directory, "steps.json");
+    await writeFile(runner, `
+const { appendFileSync } = require("node:fs");
+const { spawnSync } = require("node:child_process");
+const [tool, ...args] = process.argv.slice(2);
+if (tool === "npm" && args.join(" ") === "run verify") {
+  const result = spawnSync(${JSON.stringify(shell)}, ${JSON.stringify(shellArgs(manifest.scripts.verify))}, { env: process.env, stdio: "inherit" });
+  if (result.error) throw result.error;
+  process.exit(result.status ?? 1);
+}
+const commands = { "npm audit --audit-level=high": "audit", "npm run check": "check", "npm test": "test", "npm run build": "build", "wrangler deploy": "deploy" };
+const step = commands[[tool, ...args].join(" ")];
+if (!step) throw new Error("Unexpected deployment command");
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(step) + "\\n");
+process.exit(step === process.env.FAIL_STEP ? 7 : 0);
+`);
+    for (const tool of ["npm", "wrangler"]) {
+      const quote = (value) => "'" + value.replaceAll("'", "'\\''") + "'";
+      const content = windows
+        ? `@"${process.execPath}" "${runner}" ${tool} %*\r\n@exit /b %errorlevel%\r\n`
+        : `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(runner)} ${tool} "$@"\n`;
+      await writeFile(join(directory, tool + (windows ? ".cmd" : "")), content, { mode: 0o755 });
+    }
+    for (const failure of [...steps, ""]) {
+      await writeFile(log, "");
+      const run = promisify(execFile)(shell, shellArgs(manifest.scripts.deploy), {
+        cwd: directory,
+        env: { ...process.env, PATH: directory + delimiter + process.env.PATH, FAIL_STEP: failure },
+      });
+      if (failure) {
+        await assert.rejects(run, (error) => error.code === 7);
+      } else {
+        await run;
+      }
+      const observed = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(observed, failure ? steps.slice(0, steps.indexOf(failure) + 1) : steps);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });
 

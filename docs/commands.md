@@ -354,6 +354,26 @@ the suite verified. `ref` updates successful references, so target-page and
 baseline-write authorization remain required. Missing permissions or execution
 prerequisites must be reported as incomplete verification, not silently skipped.
 
+In the generated Worker, `npm run verify` performs `npm audit --audit-level=high`,
+`npm run check`, `npm test`, and `npm run build` in order without publishing.
+High/critical advisories (including development dependencies), audit lookup
+failures, type errors, failed tests, or a failed dry-run build block publication.
+`npm run deploy` always runs this verification chain before live Wrangler
+deployment. Calling `wrangler deploy` directly bypasses these package gates.
+Review dependency fixes rather than automatically forcing upgrades or ignoring
+advisories.
+
+For maintainers in the source repository, `bun run deploy:check` runs Rust
+formatting checks, the MCP tests, and a locked default CLI build. Root
+`bun run deploy` runs those checks before replacing `../regressify-mcp-worker`,
+exports with `cargo run --locked --bin regressify -- mcp`, installs dependencies
+with the frozen lockfile, and calls the generated Worker's gated deploy.
+It no longer pulls Git changes or uses a potentially stale installed CLI.
+This shortcut requires Bun, Node/npm, Cargo, Tuyen for its existing directory
+cleanup, and Cloudflare authorization; the sibling generated directory must
+not contain manual edits. Running source checks alone does not authorize
+publication or verify Cloudflare account permissions.
+
 Startup instructions, the overview guide/resource, and the authoring prompt carry
 the same [small site-memory policy](#workspace-initialization) as generated agent
 guidance. The agent maintains notes locally with its authorized tools; the Worker

@@ -2,6 +2,20 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## MCP Deployment Verification (2026-10-14)
+
+- Resolved missing gates: generated [Worker deployment](src/mcp/worker/package.json)
+  now requires a high/critical dependency audit, typecheck, tests, and dry-run
+  build. [Root deployment](package.json) additionally requires Rust
+  formatting/MCP tests/locked CLI build and exports the checked local source,
+  without implicit Git pulls or installed-CLI lookup.
+- [Package tests](src/mcp/worker/tests/worker.test.mjs.template) mock npm and
+  Wrangler to prove every failed command stops publication. Real verification
+  currently blocks on six high-severity dependency audit findings involving
+  MCP SDK/client and sharp, including their parent dependencies. Dependency
+  upgrades need separate review; no advisory exceptions or forced fixes were
+  applied. Audit-service failures also block deployment.
+
 ## MCP Related-State Capture Coverage (2026-10-14)
 
 - Resolved in source: navigation guidance recommended a header-only default

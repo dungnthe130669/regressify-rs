@@ -85,6 +85,17 @@ the MCP handler, and a pinned npm lockfile. Local Worker checks require Node 22.
 or newer; `build` is a dry run. Review the generated Worker name and README before
 separately running `npm run deploy` with your own Cloudflare authentication.
 
+The generated `npm run verify` command audits dependencies (blocking high/critical
+advisories), type-checks, runs Worker tests, and performs a dry-run build.
+`npm run deploy` runs that gate before publishing; any failure stops deployment.
+In this source repository, `bun run deploy:check` checks Rust formatting, MCP
+tests, and the locked CLI build without publishing. The root `bun run deploy`
+then recreates `../regressify-mcp-worker`, exports using the local Cargo source
+rather than an installed CLI, installs locked dependencies, and invokes the
+generated gated deploy. It requires Bun, Node/npm, Rust, Tuyen for cleanup, and
+Cloudflare authorization. The sibling directory is replaced; do not keep manual
+edits there. No Git pull or dependency update is part of this workflow.
+
 AI clients connect to the deployed `/mcp` endpoint to retrieve instructions for
 suites, scenarios, actions, workspace configuration, predefined files, lifecycle
 hooks, and troubleshooting. The hooks topic includes tested Node examples; the
