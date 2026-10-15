@@ -396,17 +396,18 @@ save
 :::::
 
 Capture a named screenshot. Optional `selector` clips this screenshot to the
-first matching CSS element, or captures the currently visible viewport when set
-to `viewport`; omit it or use `null` to capture the whole page. An element
-capture excludes anything outside the element's box, such as an opened menu
-that overflows it. The selector must be nonblank and match a visible element
-with positive dimensions. Invalid, missing, or hidden targets fail the action
-rather than falling back to a full-page screenshot. The scenario's own
-`selector` does not affect save actions. Selector captures restore the prior
-page scroll position.
+first matching CSS element in the selected tab's main document (or inside
+`frame` when `frame` is set on `save`), or captures the currently visible
+viewport when set to `viewport`; omit it or use `null` to capture the whole
+page. An element capture excludes anything outside the element's box, such as
+an opened menu that overflows it. The selector must be nonblank and match a
+visible element with positive dimensions. Invalid, missing, or hidden targets
+fail the action rather than falling back to a full-page screenshot. The
+scenario's own `selector` does not affect save actions. Selector captures
+restore the prior page and frame scroll positions.
 
 Names must be non-empty portable filename components no longer than
-100 bytes; path separators, reserved Windows filename characters, and the
+100 bytes; path separators, `__`, reserved Windows filename characters, and the
 `_diff` suffix are rejected. Reports list saved screenshots in action order
 before any final capture targets. Adding a selector does not change the
 `$<save-name>` filename suffix.

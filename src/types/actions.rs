@@ -109,7 +109,7 @@ pub enum SelectValue {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct CheckAction {
-    /// Selector of a native checkbox or radio button. Clicks only when not already checked; waits for visibility and an unobscured, enabled target. Click the visible label instead when the native input is visually hidden.
+    /// Selector of a native checkbox or radio button. Clicks only when not already checked; waits for visibility and an unobscured, enabled target. Use click instead for custom role="checkbox" or role="switch" controls or when the native input is visually hidden.
     #[schemars(example = "#accept-terms")]
     pub check: String,
     pub frame: Option<Frame>,
@@ -207,7 +207,7 @@ pub struct RemoveAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct InputAction {
-    /// Selector of the input, textarea, or contenteditable element. Supply exactly one of value (text) or file (upload); neither or both fails when the action runs.
+    /// Selector of the input, textarea, or contenteditable element. Supply exactly one of value (text) or file (upload); neither or both fails during preflight before any browser starts.
     #[schemars(example = "#email")]
     pub input: String,
     /// Literal text typed with keyboard events after the existing text is selected and deleted (unless append is true). No environment variables are substituted. Quote numbers, true, and false when they are text. Use an empty quoted string to clear the field.
@@ -247,7 +247,7 @@ pub struct PressAction {
     /// Selector of the element that receives the key. The key property is also required.
     #[schemars(example = "#search")]
     pub press: String,
-    /// Case-sensitive key name or combination with one non-modifier key: Enter, Tab, Escape, ArrowDown, Ctrl+A, Shift+Tab, or ControlOrMeta+A, for example. Unknown keys fail when the action runs.
+    /// Case-sensitive key name or combination with one non-modifier key: Enter, Tab, Escape, ArrowDown, Ctrl+A, Shift+Tab, or ControlOrMeta+A, for example. Unknown or wrongly cased keys fail during preflight before any browser starts.
     #[schemars(example = &"Enter", example = &"Tab", example = "Ctrl+A", example = "Shift+Tab")]
     pub key: String,
     pub frame: Option<Frame>,
@@ -261,10 +261,10 @@ pub struct PressAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct SaveAction {
-    /// Checkpoint name saved as <scenario-id>[_<viewport>]__$<name>.png: at most 100 bytes, no path separators, not ending in _diff. A last applicable save among the scenario's own actions replaces the automatic final screenshot, but explicit scenario selectors are still captured.
+    /// Checkpoint name saved as <scenario-id>[_<viewport>]__$<name>.png: at most 100 bytes, no path separators or __, and not ending in _diff. A last applicable save among the scenario's own actions replaces the automatic final screenshot, but explicit scenario selectors are still captured.
     #[schemars(example = "after-login")]
     pub save: String,
-    /// Standard CSS selector to capture instead of the whole page, or "viewport" for the visible viewport. An element capture uses the first match in the selected tab's main document, which must be visible, clipped to its box, so open menus or popups extending outside it are cut off. Independent of the scenario's final selector.
+    /// Standard CSS selector to capture instead of the whole page, or "viewport" for the visible viewport. An element capture uses the first match in the selected tab's main document (or the target frame when frame is set on save), which must be visible, clipped to its box, so open menus or popups extending outside it are cut off. Independent of the scenario's final selector.
     #[schemars(
         length(min = 1),
         regex(pattern = r"\S"),
@@ -298,7 +298,7 @@ pub struct ScrollAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct SelectAction {
-    /// Selector of a native select element. Supply exactly one of value (option values) or label (visible option text).
+    /// Selector of a native select element. Supply exactly one of value (option values) or label (visible option text); neither or both fails during preflight before any browser starts. For custom dropdowns or comboboxes that are not native <select> elements, use click actions to open the menu and pick the option.
     #[schemars(example = "#country")]
     pub select: String,
     /// Option value, or list of values for a multiple select. Retries while options are missing or disabled, then fails after elementTimeout.
@@ -317,7 +317,7 @@ pub struct SelectAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct UncheckAction {
-    /// Selector of a checked checkbox to clear. Does nothing when already unchecked; cannot clear a selected radio button.
+    /// Selector of a checked native checkbox to clear. Does nothing when already unchecked; cannot clear a selected radio button. Use click instead for custom role="checkbox" or role="switch" controls or when the native input is visually hidden.
     #[schemars(example = "#newsletter")]
     pub uncheck: String,
     pub frame: Option<Frame>,

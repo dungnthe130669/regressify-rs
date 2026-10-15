@@ -1,6 +1,6 @@
 # Workspace Initialization
 
-Verified: 2026-10-13
+Verified: 2026-10-15
 
 - [Initialization](../../src/init.rs) shares runtime defaults between CLI `init`
   and desktop setup: `regressify.yaml`, five `common/` files, and `visual_tests/`.
@@ -38,12 +38,14 @@ Verified: 2026-10-13
   unchanged. Duplicate managed sections collapse to one; unfinished blocks that
   would swallow a new heading fail without rewriting the file. `init::tests`
   covers these boundaries alongside read-only, non-UTF-8, and concurrent creation.
-- The [generated agent section](../../src/init.rs) teaches agents to read consumer
-  `.ai/memory/` before work and record site lessons, failed approaches, verified
-  fixes, and evidence before finishing. Each consumer topic note is at most 60
-  lines for one behavior or issue on one site, with a compact linked index.
-  Agents split/update notes and exclude private data; initialization does not
-  create or rewrite memory files. The starter-file regression checks this policy.
+- The [generated agent section](../../src/init.rs) aligns with the MCP overview:
+  it teaches agents that hooks are classic browser JavaScript (never Node.js or
+  CommonJS), requires shared larger `viewport`/full-page context captures for
+  related component states, requires running `regressify ref --test-suite <suite-name>`
+  from the installed CLI on `PATH` and verifying fresh results/PNGs after suite
+  edits, and teaches the 60-line single-site/topic `.ai/memory/` workflow.
+  Initialization does not create or rewrite memory files. The starter-file
+  regression checks this policy.
 - Local tag `v0.79.0` wired MCP setup only into explicit CLI init, not desktop
   folder opening. The desktop wiring fix also includes managed agent guidance;
   installed older binaries require a new build. Session tests cover create,

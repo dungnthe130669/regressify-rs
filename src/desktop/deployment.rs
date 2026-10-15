@@ -757,9 +757,10 @@ impl DeployTargets {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DeploymentStats {
     file_count: u64,
+    original_bytes: u64,
     total_bytes: u64,
 }
 
@@ -834,6 +835,7 @@ fn site_deployed_properties(
         "current_url": url,
         "provider": provider,
         "file_count": stats.file_count,
+        "original_bytes": stats.original_bytes,
         "total_bytes": stats.total_bytes,
         "duration_ms": duration_ms,
     }))
@@ -916,12 +918,12 @@ fn phase(name: &str) {
         eprintln!("{name}");
     }
     runtime::event(
-        Stage::ApiUploads,
+        runtime::current_stage().unwrap_or(Stage::ApiUploads),
         DiagnosticEvent::Decision,
         Severity::Info,
         [(
             Field::Artifact,
-            FieldValue::Identity(SafeIdentity::fingerprint(name)),
+            FieldValue::Identity(SafeIdentity::source(name)),
         )],
     );
     crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
@@ -931,20 +933,30 @@ pub(super) async fn with_heartbeat<Work: std::future::Future>(
     label: &str,
     work: Work,
 ) -> Work::Output {
+    let stage = crate::diagnostics::runtime::current_stage()
+        .unwrap_or(crate::diagnostics::record::Stage::RetryPolling);
     monitor(work, std::time::Duration::from_secs(5), |elapsed| {
         use crate::diagnostics::{record::*, runtime};
+        let message = format!("{label}: still working ({}s elapsed)", elapsed.as_secs());
         if runtime::current().is_none() {
-            eprintln!("{label}: still working ({}s elapsed)", elapsed.as_secs());
+            eprintln!("{message}");
         }
         runtime::event(
-            Stage::RetryPolling,
+            stage,
             DiagnosticEvent::Heartbeat,
             Severity::Info,
-            [(
-                Field::ElapsedMs,
-                FieldValue::Number(elapsed.as_millis() as u64),
-            )],
+            [
+                (
+                    Field::Artifact,
+                    FieldValue::Identity(SafeIdentity::source(label)),
+                ),
+                (
+                    Field::ElapsedMs,
+                    FieldValue::Number(elapsed.as_millis() as u64),
+                ),
+            ],
         );
+        crate::progress::emit(crate::progress::Event::Phase { name: message });
     })
     .await
 }
@@ -1115,6 +1127,15 @@ fn stage_reports_inner(output: &Path, suite_ids: &[String], destination: &Path) 
         !destination.exists(),
         "Deployment staging directory must be new"
     );
+    phase(&format!(
+        "Validating snapshot manifest and asset versions for {} selected {}",
+        suite_ids.len(),
+        if suite_ids.len() == 1 {
+            "suite"
+        } else {
+            "suites"
+        }
+    ));
     let dependencies = crate::snapshot::artifact_paths(&output, suite_ids)?;
     let dependency_count = dependencies.len();
     fs::create_dir_all(destination).with_context(|| {
@@ -1123,83 +1144,93 @@ fn stage_reports_inner(output: &Path, suite_ids: &[String], destination: &Path) 
             destination.display()
         )
     })?;
-    phase("Staging selected report dependencies");
+    phase(&format!(
+        "Staging {dependency_count} selected report dependencies"
+    ));
     let mut copied = BTreeSet::new();
     let mut copied_bytes = 0_u64;
     let mut last_update = std::time::Instant::now();
-    let mut copy = |relative: &Path, missing_reference: bool| -> Result<()> {
-        let Some(source) =
-            artifact_source(&output, relative, missing_reference).inspect_err(|_| {
-                use crate::diagnostics::{record::*, runtime};
-                runtime::event(
-                    Stage::SnapshotStaging,
-                    DiagnosticEvent::StageFinished,
-                    Severity::Error,
-                    [(
-                        Field::Artifact,
-                        FieldValue::Identity(SafeIdentity::fingerprint(
-                            relative.to_string_lossy().as_bytes(),
-                        )),
-                    )],
-                );
-            })?
-        else {
-            return Ok(());
-        };
-        if !copied.insert(relative.to_path_buf()) {
-            return Ok(());
-        }
-        let target = destination.join(relative);
-        let directory = target.parent().context("Staging path has no parent")?;
-        fs::create_dir_all(directory).with_context(|| {
-            format!(
-                "Cannot create deployment staging directory '{}'",
-                directory.display()
-            )
-        })?;
-        let expected_bytes = fs::metadata(&source)?.len();
-        let bytes = fs::copy(&source, &target).with_context(|| {
-            format!(
-                "Cannot stage deployment artifact '{}' from '{}' to '{}'",
-                relative.display(),
-                source.display(),
-                target.display()
-            )
-        })?;
-        ensure!(
-            bytes == expected_bytes,
-            "Report changed during deployment staging"
-        );
-        copied_bytes += bytes;
-        if copied.len() == dependency_count {
-            use crate::diagnostics::{record::*, runtime};
-            runtime::event(
-                Stage::SnapshotStaging,
-                DiagnosticEvent::Decision,
-                Severity::Info,
-                [
-                    (Field::FileCount, FieldValue::Number(copied.len() as u64)),
-                    (Field::Bytes, FieldValue::Number(copied_bytes)),
-                ],
-            );
-        }
-        if copied.len() == 1
-            || copied.len().is_multiple_of(50)
-            || last_update.elapsed().as_secs() >= 1
-        {
-            phase(&format!(
-                "Staged {} report files ({:.2} MiB)",
-                copied.len(),
-                copied_bytes as f64 / (1024.0 * 1024.0)
-            ));
-            last_update = std::time::Instant::now();
-        }
-        Ok(())
-    };
     let staged = (|| -> Result<()> {
-        for relative in dependencies {
-            copy(&relative, false)?;
+        {
+            let mut copy = |relative: &Path, missing_reference: bool| -> Result<()> {
+                let Some(source) = artifact_source(&output, relative, missing_reference)
+                    .inspect_err(|_| {
+                        use crate::diagnostics::{record::*, runtime};
+                        runtime::event(
+                            Stage::SnapshotStaging,
+                            DiagnosticEvent::StageFinished,
+                            Severity::Error,
+                            [(
+                                Field::Artifact,
+                                FieldValue::Identity(SafeIdentity::fingerprint(
+                                    relative.to_string_lossy().as_bytes(),
+                                )),
+                            )],
+                        );
+                    })?
+                else {
+                    return Ok(());
+                };
+                if !copied.insert(relative.to_path_buf()) {
+                    return Ok(());
+                };
+                let target = destination.join(relative);
+                let directory = target.parent().context("Staging path has no parent")?;
+                fs::create_dir_all(directory).with_context(|| {
+                    format!(
+                        "Cannot create deployment staging directory '{}'",
+                        directory.display()
+                    )
+                })?;
+                let expected_bytes = fs::metadata(&source)?.len();
+                let bytes = fs::copy(&source, &target).with_context(|| {
+                    format!(
+                        "Cannot stage deployment artifact '{}' from '{}' to '{}'",
+                        relative.display(),
+                        source.display(),
+                        target.display()
+                    )
+                })?;
+                ensure!(
+                    bytes == expected_bytes,
+                    "Report changed during deployment staging"
+                );
+                copied_bytes += bytes;
+                if copied.len() == dependency_count {
+                    use crate::diagnostics::{record::*, runtime};
+                    runtime::event(
+                        Stage::SnapshotStaging,
+                        DiagnosticEvent::Decision,
+                        Severity::Info,
+                        [
+                            (Field::FileCount, FieldValue::Number(copied.len() as u64)),
+                            (Field::Bytes, FieldValue::Number(copied_bytes)),
+                        ],
+                    );
+                }
+                if copied.len() == 1
+                    || copied.len() == dependency_count
+                    || copied.len().is_multiple_of(50)
+                    || last_update.elapsed().as_secs() >= 1
+                {
+                    phase(&format!(
+                        "Staged {} of {dependency_count} report files ({:.2} MiB)",
+                        copied.len(),
+                        copied_bytes as f64 / (1024.0 * 1024.0)
+                    ));
+                    last_update = std::time::Instant::now();
+                }
+                Ok(())
+            };
+            for relative in dependencies {
+                copy(&relative, false)?;
+            }
         }
+        phase(&format!(
+            "Verifying {} staged report files ({:.2} MiB)",
+            copied.len(),
+            copied_bytes as f64 / (1024.0 * 1024.0)
+        ));
         crate::snapshot::artifact_paths(destination, suite_ids)?;
         Ok(())
     })();
@@ -1208,8 +1239,9 @@ fn stage_reports_inner(output: &Path, suite_ids: &[String], destination: &Path) 
         return Err(error);
     }
     phase(&format!(
-        "Staging complete: {} files for {} suites",
+        "Staging complete: {} files ({:.2} MiB) for {} suites",
         copied.len(),
+        copied_bytes as f64 / (1024.0 * 1024.0),
         suite_ids.len()
     ));
     Ok(())
@@ -1378,6 +1410,7 @@ mod tests {
                 &result,
                 DeploymentStats {
                     file_count: 3,
+                    original_bytes: 8192,
                     total_bytes: 4096,
                 },
                 std::time::Duration::from_millis(1234),
@@ -1390,6 +1423,7 @@ mod tests {
                     "current_url": "https://reports.example.com/",
                     "provider": label,
                     "file_count": 3,
+                    "original_bytes": 8192,
                     "total_bytes": 4096,
                     "duration_ms": 1234,
                 })
@@ -1399,6 +1433,84 @@ mod tests {
                 Ok(Some(url)) if url == "https://reports.example.com/"
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn preparation_phases_and_resizing_record_readable_stage_diagnostics() -> Result<()> {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime};
+        let source = optimization::tests::report_fixture()?;
+        let report =
+            super::read_report_configuration(&source.path().join("one/html_report/config.js"))?;
+        std::fs::write(
+            source.path().join("one/bitmaps_test/run/report.json"),
+            serde_json::to_vec(&report)?,
+        )?;
+        let suites = vec!["one".into()];
+        let staged = tempfile::tempdir()?;
+        let staged_report = staged.path().join("report");
+        let operation =
+            runtime::Operation::start(source.path(), OperationKind::Deployment, None, None, None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        runtime::scope(Some(operation.context()), async {
+            runtime::stage(Stage::SnapshotStaging, [], async {
+                crate::snapshot::generate_site(
+                    source.path(),
+                    &suites,
+                    &crate::cli::args::SnapshotArgs {
+                        test_suite: suites.clone(),
+                        title: None,
+                        heading: None,
+                        subheading: None,
+                    },
+                    &crate::config::WorkspaceConfig::default(),
+                )
+            })
+            .await?;
+            super::stage_reports(source.path(), &suites, &staged_report)?;
+            let original =
+                optimization::prepare(&staged_report, u64::MAX, deadline)?.original_bytes();
+            let prepared = optimization::prepare(&staged_report, original * 85 / 100, deadline)?;
+            assert_eq!(prepared.original_bytes(), original);
+            super::with_heartbeat("Test deployment", async {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+        })
+        .await?;
+        let reference = operation.finish(Outcome::Success).await;
+        let mut artifacts = Vec::new();
+        let mut stages = Vec::new();
+        JournalReader::open(source.path(), &reference.operation_id)?.visit(|record| {
+            stages.push(record.stage);
+            if let Some(FieldValue::Identity(identity)) = record.fields.get(&Field::Artifact) {
+                artifacts.push((record.stage, identity.as_str().to_owned()));
+            }
+        })?;
+        assert!(stages.contains(&Stage::SnapshotStaging));
+        assert!(stages.contains(&Stage::PackagingOptimization));
+        for expected in [
+            "Preparing report snapshot for 1 suite",
+            "Loading snapshot suite 1/1: one",
+            "Resizing and staging",
+            "Resized ",
+            "Publishing ",
+            "Validating snapshot manifest and asset versions for 1 selected suite",
+            "Staging ",
+            "Verifying ",
+            "Staging complete:",
+            "Classifying report images by comparison role for optimization",
+            "Temporary optimization copy:",
+            "Optimizing ",
+            "Refreshing snapshot cache versions for optimized images",
+            "Temporary deployment report:",
+        ] {
+            assert!(
+                artifacts.iter().any(|(_, text)| text.contains(expected)),
+                "Missing expected preparation log '{expected}' in {artifacts:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

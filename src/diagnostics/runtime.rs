@@ -26,7 +26,7 @@ static ROUTES: OnceLock<Mutex<HashMap<OperationId, Weak<JournalSink>>>> = OnceLo
 tokio::task_local! {
     static CURRENT: Arc<OperationContext>;
     static ACTION: Vec<(Field, FieldValue)>;
-    static STAGE_SPAN: (SpanId, Option<SpanId>);
+    static STAGE_SPAN: (SpanId, Option<SpanId>, Stage);
 }
 
 pub struct JournalLayer;
@@ -122,7 +122,7 @@ impl OperationContext {
         record.outcome = completion.outcome;
         record.error_cause = completion.error;
         record.duration_ms = completion.duration_ms;
-        let _ = STAGE_SPAN.try_with(|(span, parent)| {
+        let _ = STAGE_SPAN.try_with(|(span, parent, _)| {
             record.span_id = span.clone();
             record.parent_span = parent.clone();
         });
@@ -397,6 +397,10 @@ pub fn current() -> Option<Arc<OperationContext>> {
     CURRENT.try_with(Arc::clone).ok()
 }
 
+pub fn current_stage() -> Option<Stage> {
+    STAGE_SPAN.try_with(|(_, _, stage)| *stage).ok()
+}
+
 /// Publish-safe one-line description of a failed capture for error markers,
 /// reports, and progress events: the failed step from typed diagnostic fields
 /// plus the error category, never the error text itself.
@@ -521,7 +525,8 @@ pub fn stage_sync<Output>(
 ) -> anyhow::Result<Output> {
     let span = (
         SpanId::new(),
-        STAGE_SPAN.try_with(|(span, _)| span.clone()).ok(),
+        STAGE_SPAN.try_with(|(span, _, _)| span.clone()).ok(),
+        stage,
     );
     STAGE_SPAN.sync_scope(span, || {
         let fields: Vec<_> = fields.into_iter().collect();
@@ -587,7 +592,8 @@ pub fn stage<Output>(
     async move {
         let span = (
             SpanId::new(),
-            STAGE_SPAN.try_with(|(span, _)| span.clone()).ok(),
+            STAGE_SPAN.try_with(|(span, _, _)| span.clone()).ok(),
+            stage,
         );
         STAGE_SPAN
             .scope(span, async move {

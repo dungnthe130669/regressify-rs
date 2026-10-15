@@ -482,9 +482,12 @@ successful deployment's URL fails, the app reports the local persistence error.
 
 Successful public report and landing deployments send `regressify_site_deployed`
 to PostHog US Cloud. Event properties include `url`, `provider`, `file_count`,
-`total_bytes`, `duration_ms`, and `app_version`, plus SDK/runtime metadata.
+`original_bytes`, `total_bytes`, `duration_ms`, and `app_version`, plus
+SDK/runtime metadata.
 Counts describe the final provider manifest or package after any optimization,
-including cached files and duplicate paths, not just newly uploaded blobs.
+including cached files and duplicate paths, not just newly uploaded blobs;
+`original_bytes` records the staged content size before provider-budget image
+optimization (matching `total_bytes` when no optimization runs).
 Bytes measure file content, excluding ZIP and transport overhead. Duration covers
 provider preparation, uploads, and publication confirmation, excluding snapshot
 generation, staging, and analytics delivery. Failed deployments, private sites,
@@ -774,8 +777,11 @@ The suite summary stays on one line, with an ellipsis for overflow, and deployme
 activity omits the reference/capture statistics row. Its read-only log editor
 fills the remaining container height and retains the full bounded run log, just
 like the Log tab. Select text to copy it, or use **Copy deployment log** for all
-retained text. Staging and
-packaging report file/byte counts, optimization reports actual savings, and
+retained text. Snapshot generation logs suite loading, capture preview resizing,
+log publication, and output writes; staging and
+packaging report file/byte counts, optimization reports image classification,
+per-image lossless and palette reduction progress, cache-version refreshes, and
+actual savings, and
 Netlify reports reused paths, per-file bytes sent, and accepted file/byte counts;
 Azure reports acknowledged bytes. Azure block commits,
 retry reasons/delays, and each provider polling state are logged. A five-second

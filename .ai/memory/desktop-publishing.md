@@ -50,8 +50,9 @@ Verified: 2026-10-15
   results clear stale URLs. Asset-option edits preserve URLs, routing edits clear
   them. The native target test covers production defaults and advanced settings.
 - [Shared analytics](../../src/analytics.rs) emits `regressify_site_deployed` from
-  provider-confirmed public completion. Stats reuse final Azure package and
-  Netlify/Cloudflare manifest counts and bytes, without rescanning files. The
+  provider-confirmed public completion. Stats reuse initial pre-optimization
+  (`original_bytes`) and final (`total_bytes`, `file_count`) Azure package and
+  Netlify/Cloudflare manifest inventories without rescanning files. The
   digest fixture counts three paths/15 bytes although only one blob uploads;
   the cached Cloudflare fixture excludes hosting-policy files. Analytics tests
   cover silent failures and client reuse across concurrent calls and new runtimes.

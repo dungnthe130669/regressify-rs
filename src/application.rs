@@ -100,7 +100,14 @@ pub async fn execute_identified(cli: Cli, operation_id: Option<OperationId>) -> 
                         );
                         Ok(())
                     }
-                    Command::Snapshot(args) => snapshot::snapshot(args),
+                    Command::Snapshot(args) => {
+                        let diagnostic_context = runtime::current();
+                        tokio::task::spawn_blocking(move || {
+                            runtime::in_scope(diagnostic_context, || snapshot::snapshot(args))
+                        })
+                        .await
+                        .map_err(|error| anyhow!("Snapshot generation task failed: {error}"))?
+                    }
                     Command::Optimize(args) => optimizer::optimize(args),
                     Command::Compare(args) => compare::compare(args),
                     Command::Approve(args) => compare::approve(args),

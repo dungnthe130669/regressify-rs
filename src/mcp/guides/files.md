@@ -40,9 +40,10 @@ may lack automatic desktop setup; compare CLI and server versions when diagnosin
   `profiles: {default: []}`.
 - `common/_override.css`: browser CSS injected into every page document before
   actions and capture when `useCssOverride` is true; override with
-  `cssOverridePath`.
+  `cssOverridePath`. See `get_example(task="css-override")`.
 - `common/_on-ready.js`: browser-side JavaScript run once per page document
-  before actions; override with `jsOnReadyPath`.
+  before actions; override with `jsOnReadyPath`. See
+  `get_example(task="ready-script")`.
 
 Configured paths must remain inside the canonical workspace and be regular
 files. Explicit missing paths are errors. The default cookie/CSS/ready files are

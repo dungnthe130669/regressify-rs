@@ -109,7 +109,7 @@ pub struct WorkspaceConfig {
     /// Workspace-relative viewport YAML file. Default: common/_viewports.yaml. An explicit path must exist inside the workspace.
     #[schemars(example = "common/_viewports.yaml")]
     pub viewports_path: Option<String>,
-    /// Positive whole milliseconds for element and frame existence, selector waits and readySelector visibility, URL waits, goto, select retries, switchTab, and document/Node hooks. Default: 30000; zero is invalid.
+    /// Positive whole milliseconds for element and frame existence, selector waits and readySelector visibility, URL waits, goto, select retries, switchTab, and injected browser hooks. Default: 30000; zero is invalid.
     #[schemars(range(min = 1), example = 30000)]
     pub element_timeout: Option<u64>,
     /// Positive whole milliseconds for visibility, stability, enabled, and unobscured-target checks. Default: 5000; zero is invalid.

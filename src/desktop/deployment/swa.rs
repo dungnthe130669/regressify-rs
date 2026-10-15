@@ -411,14 +411,16 @@ impl SwaClient {
             phase("Packaging selected reports");
             let directory = root.to_path_buf();
             let diagnostic_context = crate::diagnostics::runtime::current();
-            let package = tokio::task::spawn_blocking(move || crate::diagnostics::runtime::in_scope(diagnostic_context, || {
+            let (package, original_bytes) = tokio::task::spawn_blocking(move || crate::diagnostics::runtime::in_scope(diagnostic_context, || {
                 let prepared = optimization::prepare(&directory, tier.limit(), deadline)?;
+                let original_bytes = prepared.original_bytes();
                 let package = Package::create(prepared.path(), 100_000)?;
                 ensure!(package.bytes <= tier.limit(), "Report size changed during packaging and exceeds the Azure {} storage limit; retry deployment", tier.label());
-                Ok::<_, anyhow::Error>(package)
+                Ok::<_, anyhow::Error>((package, original_bytes))
             })).await??;
             *stats = super::DeploymentStats {
                 file_count: package.files,
+                original_bytes,
                 total_bytes: package.bytes,
             };
             let mut request = json!({
@@ -740,6 +742,7 @@ mod tests {
             "https://reports.azurestaticapps.net/"
         );
         assert_eq!(stats.file_count, 1);
+        assert_eq!(stats.original_bytes, 6);
         assert_eq!(stats.total_bytes, 6);
         let records = requests.lock().unwrap();
         assert_eq!(upload_count.load(Ordering::Relaxed), 2);

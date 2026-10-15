@@ -1369,9 +1369,7 @@ fn selector_capture_problem(
 ) -> (Option<crate::diagnostics::record::SafeValue>, String) {
     use crate::diagnostics::record::SafeValue;
     match error {
-        "invalidleft: rect.left,
-                top: rect.top,
-                _selector" => (
+        "invalid_selector" => (
             None,
             "invalid CSS selector; screenshot selectors accept standard CSS only".into(),
         ),
@@ -1441,6 +1439,8 @@ fn selector_capture_script(selector: &str) -> Result<String> {
                 ok: true,
                 x: window.scrollX + rect.left,
                 y: window.scrollY + rect.top,
+                left: rect.left,
+                top: rect.top,
                 width: rect.width,
                 height: rect.height,
                 restoreX,
@@ -2068,6 +2068,19 @@ mod tests {
         assert!(validate_screenshot_step_name("progress_diff").is_err());
         assert!(validate_screenshot_step_name("progress__step").is_err());
         assert!(validate_screenshot_step_name("CON").is_err());
+    }
+
+    #[test]
+    fn selector_capture_helpers_report_invalid_css_and_frame_coordinates() {
+        let (condition, message) = selector_capture_problem("invalid_selector");
+        assert!(condition.is_none());
+        assert_eq!(
+            message,
+            "invalid CSS selector; screenshot selectors accept standard CSS only"
+        );
+        let script = selector_capture_script("#card-holder").unwrap();
+        assert!(script.contains("left: rect.left"));
+        assert!(script.contains("top: rect.top"));
     }
 
     #[test]

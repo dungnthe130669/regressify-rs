@@ -257,14 +257,23 @@ browser developer tools, with authorization.
 ## Common Failures
 
 - Element not found or not actionable: confirm the URL, tab, frame, and
-  selector against the live page, then act on the condition. Wait for the URL
-  and a destination element after navigation, add `switchTab: new` after links
-  that open tabs, set `frame` for iframes, dismiss or remove covering overlays,
-  click the visible label of a visually hidden native checkbox, and use
-  `useFileChooser` for hidden file inputs. Do not blindly raise timeouts.
+  selector against the live page, then act on the condition. Selectors use the
+  first DOM match: when a responsive page keeps both a hidden mobile copy and a
+  visible desktop copy of a link or button in the DOM, an unscoped selector can
+  match the hidden copy first and fail with `element was not visible`
+  (`display_none`). Scope the selector to the active container, append
+  `:visible` or `>> visible=true` on action/wait/`readySelector` selectors, and
+  restrict viewport-specific steps with `viewportNames`. Wait for the URL and a
+  destination element after navigation, add `switchTab: new` after links that
+  open tabs, set `frame` for iframes, dismiss or remove covering overlays, use
+  `click` instead of `select`/`check`/`uncheck` for custom `role="combobox"`,
+  `role="switch"`, or `role="checkbox"` controls and visually hidden native
+  inputs, and use `useFileChooser` for hidden file inputs. Do not blindly raise
+  timeouts.
 - Screenshot selector failure: `Screenshot capture` or a `save` action is
-  missing, hidden, zero-sized, inside an iframe or shadow root, or written with
-  `text=` or another non-CSS engine (`InvalidData`).
+  missing, hidden, zero-sized, inside an iframe (unless `frame` is set on
+  `save`) or shadow root, or written with `text=`, `:visible`, or another
+  non-CSS engine (`InvalidData`).
 - Navigation or URL wait timeout: check the authorized URL, replacements,
   redirects, TLS, and `waitUntil`. A URL wait does not select a popup; end the
   pattern with `*` when a query string may follow; `networkidle` may never

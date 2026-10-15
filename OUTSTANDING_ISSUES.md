@@ -2,6 +2,31 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## MCP Authoring Guidance and Frame Selector Capture (2026-10-15)
+
+- Resolved in source: [selector capture](src/test/capture.rs) had `left: rect.left, top: rect.top`
+  pasted into the `"invalid_selector"` match arm of `selector_capture_problem`
+  instead of `selector_capture_script`, causing `save` actions with both `frame`
+  and `selector` to fail with `returned no valid left coordinate` and invalid CSS
+  screenshot selectors to lose their `InvalidData` diagnostic message. Both the
+  script coordinates and the match arm are restored and covered by unit tests.
+- Resolved in source: [managed agent instructions](src/init.rs) told consumer
+  agents to read `topic: "hooks"` before writing "browser or Node lifecycle
+  scripts" and omitted the browser-only hook rule, related-state `viewport`/full-page
+  capture rule, and mandatory `regressify ref --test-suite <suite-name>` verification
+  workflow. [Workspace schema help](src/config/mod.rs) also referred to
+  `document/Node hooks`, and [action schema help](src/types/actions.rs) described
+  preflight-checked `input` and `press` errors as runtime failures and omitted
+  the `__` and `frame` rules on `save`.
+- Resolved in source: [MCP startup instructions](src/mcp/catalog.rs) and
+  [guides](src/mcp/guides/overview.md) now list all 32 `get_example` tasks by
+  category and warn agents about first-match hidden responsive DOM duplicates
+  (`:visible` / `>> visible=true` and `viewportNames`), native `<select>` /
+  checkbox requirements versus custom `role="combobox"` / `role="switch"`
+  `click` interactions, `save` `__` and `frame` rules, and non-CSS JS/video
+  animations. Existing consumer workspaces need `init`/desktop folder open to
+  refresh `AGENTS.md`, and hosted MCP Workers need regeneration and redeployment.
+
 ## Desktop and Log Hardening (2026-10-15)
 
 - Resolved in source: [run polling](src/desktop/ui/runs.rs) redrew Activity every

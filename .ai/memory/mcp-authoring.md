@@ -1,6 +1,6 @@
 # MCP Authoring Export
 
-Verified: 2026-10-14
+Verified: 2026-10-15
 
 - [The CLI exporter](../../src/mcp/mod.rs) embeds its guides and Worker template;
   it does not scan the current workspace or need a source checkout. Output is a
@@ -8,16 +8,19 @@ Verified: 2026-10-14
   Failures may leave a partial export; there is no automatic recursive cleanup.
 - [The catalog](../../src/mcp/catalog.rs) derives six schemas from real Rust
   types, embeds nine guides (including `recipes`), and includes 32 synthetic
-  examples. The hooks and troubleshooting topics cover script contracts, local
-  evidence, and safe repair. Tests check real parsers, local schema references,
-  every property having direct or referenced help, action coverage, local
-  negative/boundary constraints, preflight action rules, and every guide YAML
-  fence as a complete file.
+  examples. The overview lists every example task name by category, and the
+  hooks and troubleshooting topics cover script contracts, local evidence, and
+  safe repair. Tests check real parsers, local schema references, property help,
+  action/example coverage, negative/boundary constraints, preflight action
+  rules, and every guide YAML fence as a complete file.
 - Runtime facts verified for the guides: `wait` with `url` matches the URL within
   `elementTimeout` first, then sleeps or waits for the selector; action selectors
-  use the bundled Playwright engines, but hide/remove and screenshot selectors
-  are plain CSS in the main document; captures and `report.json` share
-  `<output>/<suite>/bitmaps_test/<run>/` (there is no `tests/<run>` folder).
+  use the bundled Playwright engines (including `:visible` and `>> visible=true`
+  to avoid hidden responsive duplicates matched first in DOM order), while
+  hide/remove and screenshot selectors are plain CSS (`save.selector` also runs
+  inside `save.frame` when `frame` is set); `select`/`check`/`uncheck` require
+  native HTML controls (use `click` for custom combobox/switch widgets); captures
+  and `report.json` share `<output>/<suite>/bitmaps_test/<run>/`.
 - Suite preflight (`validate_action_fields`, `validate_action_files`, and
   screenshot selector prefixes) rejects schema-valid but unusable actions before
   browser launch; the actions guide lists them under "Checks Beyond the Schema".

@@ -4,8 +4,10 @@ The workspace root contains `regressify.yaml` or `regressify.yml`, a YAML object
 with optional fields. Prefer one file; if both exist, the CLI loads `.yaml`.
 Use `{}` to inherit defaults. Do not create a `workspace:` or `config:` wrapper.
 Use `get_schema(kind="workspace")` for the exact field set, descriptions,
-accepted types, and constraints. A JSON-looking value may be valid YAML, but a
-file named `regressify.json` is not automatically discovered as workspace config.
+accepted types, and constraints, and `get_example(task="workspace")` or
+`basic-auth` for synthetic templates. A JSON-looking value may be valid YAML,
+but a file named `regressify.json` is not automatically discovered as workspace
+config.
 
 ## Precedence and Exceptions
 

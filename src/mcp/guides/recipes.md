@@ -101,10 +101,14 @@ scenarios:
 ```
 
 Use synthetic data and an environment that accepts test submissions. Quote
-numeric-looking text. A native checkbox that is visually hidden fails visibility
-checks; click its visible label instead of using `check`. For uploads, set
-`useFileChooser: true` on the visible upload button when the file input is
-hidden.
+numeric-looking text. `select` requires a native `<select>`, and `check`/`uncheck`
+require native `<input type="checkbox">` or `<input type="radio">` elements.
+For custom dropdowns (`role="combobox"` or `<button>` triggers), `click` the
+trigger, `wait` for the option, and `click` the option; for custom switches
+(`role="switch"`), ARIA checkboxes (`role="checkbox"`), or visually hidden
+native inputs, `click` the visible button or `<label>` instead of using `check`.
+For uploads, set `useFileChooser: true` on the visible upload button when the
+file input is hidden.
 
 ## Sign In Without Committing Secrets
 
@@ -240,8 +244,10 @@ scenarios:
 ```
 
 Frames may be cross-origin; list nested frames from outermost to innermost.
-Screenshot selectors run in the main document, so capture the `iframe` element
-rather than a selector inside it. Never enter real payment data.
+Scenario-level screenshot selectors run in the main document, so capture the
+`iframe` element rather than a selector inside it, or use a `save` action with
+both `frame` and `selector` to clip a specific element inside the frame. Never
+enter real payment data.
 
 ## Components and Checkpoints
 
@@ -307,10 +313,14 @@ scenarios:
 
 Each page is scrolled once before actions to trigger lazy loading; set
 `noScrollTop: true` when scrolling changes state. Before every capture
-Regressify freezes animations, waits up to `settleTimeout` for fonts, images,
-and layout, and hides text carets. Use `readySelector` for content that must
-exist before any step, explicit waits for content created by steps, and a larger
-`delay` only as a last resort. Pause or hide carousels and videos.
+Regressify freezes CSS and Web Animations (`document.getAnimations`), waits up
+to `settleTimeout` for fonts, images, and layout, and hides text carets. Use
+`readySelector` for content that must exist before any step, explicit waits for
+content created by steps, and a larger `delay` only as a last resort. JavaScript
+timer/`requestAnimationFrame` loops (such as rotating hero text or JS carousels)
+and `<video>` elements are not frozen automatically and can keep DOM settling
+active until `settleTimeout` expires; pause or stabilize them in a browser ready
+script or mask nondeterministic regions.
 
 ## Staging Versus Production
 

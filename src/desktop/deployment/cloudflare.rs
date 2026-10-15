@@ -392,30 +392,33 @@ impl CloudflareClient {
         let html_handling = target.html_handling.clone();
         let diagnostic_context = crate::diagnostics::runtime::current();
         // Keep optimized files alive until asset uploads and public verification have finished.
-        let (manifest, headers, redirects, _prepared) = tokio::task::spawn_blocking(move || {
-            crate::diagnostics::runtime::in_scope(diagnostic_context, || {
-                let (manifest, prepared) =
-                    Manifest::prepare(&directory, deadline, MAX_CONTENT_BYTES, &exclude)?;
-                let directory = directory.canonicalize()?;
-                let patterns = exclude
-                    .iter()
-                    .map(|pattern| glob::Pattern::new(pattern))
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                let policy = |name: &str| {
-                    if patterns
+        let (manifest, headers, redirects, prepared) = super::with_heartbeat(
+            "Preparing Cloudflare deployment files",
+            tokio::task::spawn_blocking(move || {
+                crate::diagnostics::runtime::in_scope(diagnostic_context, || {
+                    let (manifest, prepared) =
+                        Manifest::prepare(&directory, deadline, MAX_CONTENT_BYTES, &exclude)?;
+                    let directory = directory.canonicalize()?;
+                    let patterns = exclude
                         .iter()
-                        .any(|pattern| pattern.matches_path(Path::new(name)))
-                    {
-                        Ok(String::new())
-                    } else {
-                        hosting_policy(&directory, name)
-                    }
-                };
-                let headers = policy("_headers")?;
-                let redirects = cloudflare_redirects(&policy("_redirects")?, &html_handling);
-                Ok::<_, anyhow::Error>((manifest, headers, redirects, prepared))
-            })
-        })
+                        .map(|pattern| glob::Pattern::new(pattern))
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    let policy = |name: &str| {
+                        if patterns
+                            .iter()
+                            .any(|pattern| pattern.matches_path(Path::new(name)))
+                        {
+                            Ok(String::new())
+                        } else {
+                            hosting_policy(&directory, name)
+                        }
+                    };
+                    let headers = policy("_headers")?;
+                    let redirects = cloudflare_redirects(&policy("_redirects")?, &html_handling);
+                    Ok::<_, anyhow::Error>((manifest, headers, redirects, prepared))
+                })
+            }),
+        )
         .await
         .context("Cloudflare file preparation task failed")?
         .with_context(|| {
@@ -426,6 +429,7 @@ impl CloudflareClient {
         })?;
         *stats = super::DeploymentStats {
             file_count: manifest.files.len() as u64,
+            original_bytes: prepared.original_bytes(),
             total_bytes: manifest.bytes,
         };
         let body = serde_json::to_vec(&serde_json::json!({"manifest": &manifest.files}))?;
@@ -1168,6 +1172,7 @@ impl Manifest {
         let manifest = if prepared.path() == manifest.root {
             manifest
         } else {
+            super::phase("Rehashing optimized report files for Cloudflare");
             Self::create_bounded(
                 prepared.path(),
                 deadline,
@@ -1182,6 +1187,12 @@ impl Manifest {
             "Cloudflare deployment exceeds its {} MiB client content limit",
             byte_limit as f64 / (1024.0 * 1024.0)
         );
+        super::phase(&format!(
+            "Cloudflare manifest ready: {} files ({:.2} MiB, {} unique assets)",
+            manifest.files.len(),
+            manifest.bytes as f64 / (1024.0 * 1024.0),
+            manifest.contents.len()
+        ));
         Ok((manifest, prepared))
     }
 
@@ -2193,6 +2204,7 @@ mod tests {
             Some(format!("{}/", site.origin))
         );
         assert_eq!(stats.file_count, 1);
+        assert_eq!(stats.original_bytes, 6);
         assert_eq!(stats.total_bytes, 6);
         let methods = methods.lock().unwrap();
         assert_eq!(
@@ -2915,6 +2927,8 @@ mod tests {
         std::fs::create_dir(root.path().join("_worker.js"))?;
         let excludes = ["*.map".into(), "_worker.js".into()];
         let (manifest, prepared) = Manifest::prepare(root.path(), deadline(), limit, &excludes)?;
+        assert_eq!(prepared.original_bytes(), original.bytes);
+        assert!(manifest.bytes < prepared.original_bytes());
         assert!(manifest.bytes <= limit);
         assert_eq!(manifest.files.len(), original.files.len());
         assert_eq!(manifest.root, prepared.path().canonicalize()?);

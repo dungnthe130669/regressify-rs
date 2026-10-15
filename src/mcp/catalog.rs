@@ -236,6 +236,12 @@ pub(super) fn build() -> Result<Value> {
             "recipes for complete common-page patterns. Use topic troubleshooting for failed tests, ",
             "reports, logs, or setup issues, and topic hooks before writing injected browser scripts. ",
             "Use get_schema for exact fields and get_example for synthetic templates. ",
+            "Selectors resolve to the first match in DOM order: when responsive pages keep hidden mobile ",
+            "and desktop duplicates in the DOM, scope selectors to the active container, use :visible or ",
+            ">> visible=true in action/wait/readySelector selectors, and restrict viewport-specific steps ",
+            "with viewportNames. Screenshot, hide, and remove selectors accept standard CSS only. ",
+            "select requires a native <select> element and check/uncheck require native checkbox or radio ",
+            "inputs; use click for custom dropdowns, switches, tabs, or visually hidden native inputs. ",
             "When a component's visible area changes between related scenarios, recommend the same larger capture area ",
             "for closed/default and opened/expanded states: viewport, or full page if needed to include the whole relevant area. ",
             "A header-only default capture can miss a menu incorrectly expanded before interaction. ",
@@ -576,6 +582,11 @@ mod tests {
         for contract in [
             "text=",
             "xpath=",
+            ":visible",
+            ">> visible=true",
+            "first match in DOM order",
+            "role=\"combobox\"",
+            "role=\"switch\"",
             "standard CSS only",
             "URL must match first",
             "case-sensitive",
@@ -583,6 +594,8 @@ mod tests {
             "Checks Beyond the Schema",
             "Invalid action #N in test suite",
             "missing upload files",
+            "without path separators or `__`",
+            "inside `save.frame`",
         ] {
             assert!(
                 actions.contains(contract),
@@ -599,11 +612,28 @@ mod tests {
             "even the element's own overflowing children",
             "viewport captures never scroll",
             "`viewport` in `selector`, `selectors`, or a `save` action's `selector`",
+            "document.getAnimations",
+            "requestAnimationFrame",
+            "without `__`",
         ] {
             assert!(
                 scenarios.contains(contract),
                 "Missing scenario contract: {contract}"
             );
+        }
+        let overview = catalog["guides"]["overview"]["content"].as_str().unwrap();
+        for (name, example) in catalog["examples"].as_object().unwrap() {
+            if example["kind"] == "action" {
+                assert!(
+                    overview.contains("action-<name>"),
+                    "Missing action-<name> in overview"
+                );
+            } else {
+                assert!(
+                    overview.contains(name.as_str()),
+                    "Overview is missing discoverable example task name: {name}"
+                );
+            }
         }
         let recipes = catalog["guides"]["recipes"]["content"].as_str().unwrap();
         for contract in [
@@ -949,6 +979,49 @@ mod tests {
                 .contains("Text to append")
         );
         assert_eq!(legacy_typing["examples"][0], "search terms");
+        let element_timeout =
+            catalog["schemas"]["workspace"]["properties"]["elementTimeout"]["description"]
+                .as_str()
+                .unwrap();
+        assert!(element_timeout.contains("injected browser hooks"));
+        assert!(!element_timeout.contains("Node"));
+        let action_defs = &catalog["schemas"]["action"]["$defs"];
+        assert!(
+            action_defs["InputAction"]["properties"]["input"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("preflight before any browser starts")
+        );
+        assert!(
+            action_defs["PressAction"]["properties"]["key"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("preflight before any browser starts")
+        );
+        assert!(
+            action_defs["SelectAction"]["properties"]["select"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("custom dropdowns or comboboxes")
+        );
+        assert!(
+            action_defs["CheckAction"]["properties"]["check"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("role=\"switch\"")
+        );
+        assert!(
+            action_defs["SaveAction"]["properties"]["save"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("or __")
+        );
+        assert!(
+            action_defs["SaveAction"]["properties"]["selector"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("target frame when frame is set")
+        );
     }
 
     #[test]

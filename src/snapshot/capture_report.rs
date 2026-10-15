@@ -479,19 +479,70 @@ pub(super) fn load_suite(
             diff.map(|item| item.source),
         ));
     }
+    let total_images = pending_images.len();
+    if total_images > 0 {
+        super::site::snapshot_phase(&format!(
+            "Resizing and staging {total_images} capture preview {} for suite '{id}' ({} {})",
+            if total_images == 1 { "image" } else { "images" },
+            prepared_tests.len(),
+            if prepared_tests.len() == 1 {
+                "capture"
+            } else {
+                "captures"
+            }
+        ));
+    }
+    let diagnostic_context = crate::diagnostics::runtime::current();
+    let completed = std::sync::atomic::AtomicUsize::new(0);
+    let last_update = std::sync::Mutex::new(std::time::Instant::now());
+    let process_pending = |pending: &PendingImage<'_>| -> Result<ImageAsset> {
+        let asset = store_pending_image(output, pending, decode_pending_image(pending)?)?;
+        let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let should_log = done == 1
+            || done == total_images
+            || done.is_multiple_of(10)
+            || last_update.lock().ok().is_some_and(|mut last| {
+                if last.elapsed() >= std::time::Duration::from_secs(1) {
+                    *last = std::time::Instant::now();
+                    true
+                } else {
+                    false
+                }
+            });
+        if should_log {
+            if let Ok(mut last) = last_update.lock() {
+                *last = std::time::Instant::now();
+            }
+            crate::diagnostics::runtime::in_scope(diagnostic_context.clone(), || {
+                super::site::snapshot_phase(&format!(
+                    "Resized {done} of {total_images} capture preview images for suite '{id}' ({}/{})",
+                    pending.role, pending.name
+                ));
+            });
+        }
+        Ok(asset)
+    };
     let stored_images = if pending_images.len() <= 1 {
         pending_images
             .iter()
-            .map(|pending| store_pending_image(output, pending, decode_pending_image(pending)?))
+            .map(process_pending)
             .collect::<Result<Vec<_>>>()?
     } else {
         pending_images
             .par_iter()
-            .map(|pending| store_pending_image(output, pending, decode_pending_image(pending)?))
+            .map(process_pending)
             .collect::<Result<Vec<_>>>()?
     };
     for (pending, asset) in pending_images.into_iter().zip(stored_images) {
         images.insert(pending.source, asset);
+    }
+    if prepared_tests
+        .iter()
+        .any(|(_, pair, ..)| pair.reference_log.is_some() || pair.test_log.is_some())
+    {
+        super::site::snapshot_phase(&format!(
+            "Publishing capture diagnostic logs for suite '{id}'"
+        ));
     }
     for (status, pair, scenario, capture_id, mismatch, reference_src, current_src, diff_src) in
         prepared_tests

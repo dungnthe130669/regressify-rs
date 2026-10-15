@@ -20,16 +20,25 @@ topic combines actions into complete scenarios for common page patterns.
 
 Element selectors in interactive actions, `scroll`, selector `wait`,
 `readySelector`, and `frame` accept CSS plus Playwright-style engines:
-`text=Sign in`, `xpath=//main//button`, `button:has-text("Sign in")`, and `>>`
-chains such as `css=#cart >> text=Checkout`. CSS and text matching search open
-shadow roots; closed shadow roots are unreachable. The first match is used.
+`text=Sign in`, `xpath=//main//button`, `button:has-text("Sign in")`,
+`:visible`, and `>>` chains such as `css=#cart >> text=Checkout` or
+`a[href="/pricing"] >> visible=true`. CSS and text matching search open shadow
+roots; closed shadow roots are unreachable. The first match in DOM order is used.
+When a responsive page renders both a hidden mobile copy and a visible desktop
+copy of a link or button, an unscoped selector can match the hidden copy first
+and fail with `element was not visible` (`display_none`). Scope the selector to
+the active container, append `:visible` or `>> visible=true`, and filter
+viewport-specific actions with `viewportNames`.
 
 `hide` and `remove` actions, `hideSelectors`, `removeSelectors`, and screenshot
 selectors (`selector`, `selectors`, `save.selector`) become CSS rules or
-`document.querySelector` calls, so they accept standard CSS only. A `text=`
-target can pass the `hide` existence check yet produce an ignored CSS rule.
-Screenshot selectors search only the selected tab's main document, not iframes
-or shadow roots; in them, `viewport` means the visible viewport, not an element.
+`document.querySelector` calls, so they accept standard CSS only (no `text=`,
+`:has-text()`, `:visible`, or `>>`). A `text=` target can pass the `hide`
+existence check yet produce an ignored CSS rule. Scenario `selector` and
+`selectors` search only the selected tab's main document, not iframes or shadow
+roots; `save.selector` searches the selected tab's main document, or the target
+`frame` when `frame` is set on `save`. In screenshot selectors, `viewport`
+means the visible viewport, not an element.
 
 Prefer stable hooks such as `[data-testid=...]`, IDs, form names, or accessible
 labels over layout paths like `div:nth-child(3)`. Inspect the real page before
@@ -41,13 +50,18 @@ YAML selectors that begin with `#`; unquoted, YAML reads them as comments.
 - `click`: element selector. Scrolls into view and waits for a stable, visible,
   enabled, unobscured target, then clicks its center with the real pointer.
 - `hover`: element selector. Moves the real pointer to an actionable target.
-- `check`: native checkbox or radio selector. Clicks only if not already checked.
-- `uncheck`: checkbox selector. Clicks only if checked; cannot clear a radio.
+- `check`: native `<input type="checkbox">` or `<input type="radio">` selector.
+  Clicks only if not already checked. Use `click` for custom `role="checkbox"`
+  or `role="switch"` controls or when the native input is visually hidden.
+- `uncheck`: native `<input type="checkbox">` selector. Clicks only if checked;
+  cannot clear a radio. Use `click` for custom switch/checkbox controls.
 - `focus`: element selector. Fails unless the target becomes the active element.
 - `input`: element selector plus exactly one of `value` (text) or `file` (upload).
 - `press`: element selector plus required `key`, such as `Enter` or `Ctrl+A`.
 - `select`: native `<select>` selector plus exactly one of `value` or `label`.
-  Multiple values require a multiple-select element.
+  Multiple values require a multiple-select element. For custom dropdowns or
+  comboboxes (`role="combobox"` or `<button>` triggers), use `click` on the
+  trigger, `wait` for the option, and `click` the option.
 - `scroll`: element selector to scroll into view; it does not click or focus.
 - `goto`: URL. Navigates the page or frame and waits until it is interactive.
 - `wait`: whole milliseconds or an element selector, with an optional `url`.
@@ -168,9 +182,13 @@ the example's phone/desktop labels in the viewport file before using it.
 
 ## Checkpoints and State
 
-`save.selector` crops that checkpoint to an element, or captures the visible
-viewport with `viewport`, independently of scenario final capture options. A
-last applicable `save` among the scenario's own actions replaces the
+`save` requires a non-empty portable checkpoint name of at most 100 UTF-8 bytes,
+without path separators or `__`, and not ending in `_diff`. Names must be unique
+within each scenario/viewport capture job, including saves inherited through
+`needs`. `save.selector` crops that checkpoint to an element in the selected
+tab's main document (or inside `save.frame` when `frame` is set), or captures
+the visible viewport with `viewport`, independently of scenario final capture
+options. A last applicable `save` among the scenario's own actions replaces the
 automatic final full-page or singular-selector capture, but explicit scenario
 `selectors` still produce captures. Saves inherited through `needs` still create
 checkpoints, named with the consuming scenario's ID, without suppressing its

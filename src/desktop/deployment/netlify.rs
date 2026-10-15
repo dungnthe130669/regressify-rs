@@ -219,8 +219,15 @@ impl NetlifyClient {
             .await??;
             *stats = super::DeploymentStats {
                 file_count: manifest.files.len() as u64,
+                original_bytes: manifest.bytes,
                 total_bytes: manifest.bytes,
             };
+            phase(&format!(
+                "Netlify manifest ready: {} files ({:.2} MiB, {} unique digests)",
+                manifest.files.len(),
+                manifest.bytes as f64 / (1024.0 * 1024.0),
+                manifest.contents.len()
+            ));
             {
                 use crate::diagnostics::{record::*, runtime};
                 runtime::event(
@@ -1100,6 +1107,7 @@ mod tests {
             "https://qa-reports.netlify.app/"
         );
         assert_eq!(stats.file_count, 3);
+        assert_eq!(stats.original_bytes, 15);
         assert_eq!(stats.total_bytes, 15);
         let records = requests.lock().unwrap();
         let posts = records

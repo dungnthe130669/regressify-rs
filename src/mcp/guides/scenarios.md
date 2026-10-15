@@ -44,9 +44,14 @@ Each selected viewport runs this sequence in its own fresh browser profile:
    carets, and capture each final target.
 
 The lazy-load scroll is not repeated, so hover and scroll states created by
-actions survive until capture. CSS and ready scripts apply once to each new
-document after navigation. The whole sequence must finish within the workspace
-`scenarioTimeout`; completed checkpoints are kept when it expires.
+actions survive until capture. `freezeAnimations` completes finite and pauses
+infinite CSS and Web Animations (`document.getAnimations`); it does not stop
+`<video>`, `<canvas>`, or JavaScript timer/`requestAnimationFrame` loops such as
+rotating hero text or auto-advancing carousels. Pause or stabilize those in a
+browser ready script, or mask only nondeterministic regions. CSS and ready
+scripts apply once to each new document after navigation. The whole sequence
+must finish within the workspace `scenarioTimeout`; completed checkpoints are
+kept when it expires.
 
 ## Reusing Actions
 
@@ -73,14 +78,17 @@ effective viewport set, not just the scenario where the actions were written.
   by actions, without scrolling. Otherwise `selectors` takes a string or list of
   CSS selectors and produces a separate capture for each target.
 - Screenshot selectors are standard CSS evaluated in the selected tab's main
-  document. The element must be visible with positive size; missing, hidden, or
-  invalid targets fail instead of falling back to the full page. To capture
-  framed content, target the `iframe` element itself.
+  document (or inside `save.frame` when `frame` is set on a `save` action). The
+  element must be visible with positive size; missing, hidden, or invalid
+  targets fail instead of falling back to the full page. To capture framed
+  content with scenario `selector` or `selectors`, target the `iframe` element
+  itself in the main document.
 - A plural selector list must be nonempty and contain no blank targets.
   `selectors: []` is invalid; omit it or use null for automatic full-page capture.
 - Do not combine singular `selector` with plural `selectors`.
-- A `save` action creates a named checkpoint; its own `selector` is independent
-  of the scenario's final `selector`.
+- A `save` action creates a named checkpoint (`at most 100 bytes, without '__',
+  and not ending in '_diff'`); its own `selector` is independent of the
+  scenario's final `selector`.
 - If the last applicable action among the scenario's own `actions` is `save`,
   the automatic final full-page or singular-selector capture is skipped.
   Explicit plural `selectors` still run. Action viewport filters decide which
@@ -91,9 +99,11 @@ effective viewport set, not just the scenario where the actions were written.
 Captures are saved as `<scenario-id>[_<viewport>]__<target>.png`. `<viewport>`
 is the slugified viewport label, omitted without a viewport file, and `<target>`
 is `FINAL`, `VIEWPORT`, `$<save-name>`, or `SELECTOR-<slug>-<hash>`. Inherited
-saves use the consuming scenario's ID. Use portable, distinct save names;
-preflight rejects colliding screenshot names. Do not rename IDs or checkpoints
-casually when existing references depend on them.
+saves use the consuming scenario's ID. Use portable, distinct save names
+without `__` or trailing `_diff`; preflight rejects colliding screenshot names
+within a suite or scenario/viewport job. Do not rename IDs or checkpoints
+casually when existing references depend on them. Use
+`get_example(task="scenario")` for a scenario object fragment.
 
 Comparison is strict about size: a test image whose dimensions differ from its
 reference always fails, whatever the thresholds. Full-page captures therefore

@@ -469,12 +469,18 @@ fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf
     }
     ordered.push(gitignore_rel);
     ordered.push(index_rel);
+    let total_files = ordered.len();
+    snapshot_phase(&format!(
+        "Publishing {total_files} snapshot {} to report output",
+        if total_files == 1 { "file" } else { "files" }
+    ));
 
     let mut applied: Vec<RollbackStep> = Vec::new();
     let mut verified_parents: BTreeSet<PathBuf> = BTreeSet::new();
     let mut backup_index = 0usize;
+    let mut last_update = std::time::Instant::now();
     let result = (|| -> Result<()> {
-        for relative in ordered {
+        for (index, relative) in ordered.into_iter().enumerate() {
             normal_relative(relative)?;
             let limit = if relative == gitignore_rel || relative == index_rel {
                 MAX_REPORT_BYTES
@@ -497,6 +503,16 @@ fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf
                 })?;
                 if existing_bytes == bytes {
                     ensure_exact_case(&existing, Some(&mut applied))?;
+                    if index + 1 == total_files
+                        || (index + 1).is_multiple_of(50)
+                        || last_update.elapsed().as_secs() >= 1
+                    {
+                        snapshot_phase(&format!(
+                            "Published {} of {total_files} snapshot files to report output",
+                            index + 1
+                        ));
+                        last_update = std::time::Instant::now();
+                    }
                     continue;
                 }
                 let backup = staged_root.join(format!(".prior-{backup_index}"));
@@ -520,6 +536,16 @@ fn publish_staged_files(staged_root: &Path, root: &Path, dependencies: &[PathBuf
                 prior,
             });
             ensure_exact_case(&path, Some(&mut applied))?;
+            if index + 1 == total_files
+                || (index + 1).is_multiple_of(50)
+                || last_update.elapsed().as_secs() >= 1
+            {
+                snapshot_phase(&format!(
+                    "Published {} of {total_files} snapshot files to report output",
+                    index + 1
+                ));
+                last_update = std::time::Instant::now();
+            }
         }
         Ok(())
     })();
@@ -599,6 +625,20 @@ pub(crate) fn escape_html(title: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+pub(super) fn snapshot_phase(name: &str) {
+    use crate::diagnostics::{record::*, runtime};
+    runtime::event(
+        runtime::current_stage().unwrap_or(Stage::SnapshotStaging),
+        DiagnosticEvent::Decision,
+        Severity::Info,
+        [(
+            Field::Artifact,
+            FieldValue::Identity(SafeIdentity::source(name)),
+        )],
+    );
+    crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
+}
+
 fn publish_index(root: &Path, manifest: &Manifest) -> Result<()> {
     let manifest_url = store_json(root, "_snapshot/data/manifest.json", manifest)?;
     output_file(
@@ -643,7 +683,19 @@ pub(crate) fn generate_site(
     let mut summaries = Vec::new();
     let mut images = BTreeMap::new();
     let mut logs = super::logs::LogCache::new();
-    for id in suites {
+    if !suites.is_empty() {
+        snapshot_phase(&format!(
+            "Preparing report snapshot for {} {}",
+            suites.len(),
+            if suites.len() == 1 { "suite" } else { "suites" }
+        ));
+    }
+    for (index, id) in suites.iter().enumerate() {
+        snapshot_phase(&format!(
+            "Loading snapshot suite {}/{}: {id}",
+            index + 1,
+            suites.len()
+        ));
         if let Some(report) =
             super::capture_report::load_suite(&root, &staged_root, id, &mut images, &mut logs)
                 .with_context(|| format!("Failed to process snapshot suite '{id}'"))?
@@ -713,6 +765,15 @@ pub(crate) fn generate_site(
         .iter()
         .map(|suite| suite.id.clone())
         .collect::<Vec<_>>();
+    snapshot_phase(&format!(
+        "Validating generated snapshot manifest and assets for {} {}",
+        manifest.suites.len(),
+        if manifest.suites.len() == 1 {
+            "suite"
+        } else {
+            "suites"
+        }
+    ));
     let dependencies = artifact_paths(&staged_root, &selected)?;
     // Invalid report input must never overwrite a stable path in the published site.
     publish_staged_files(&staged_root, &root, &dependencies)?;

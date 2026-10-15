@@ -21,6 +21,7 @@ const MIN_COMPARISON_QUALITY: u8 = 80;
 pub(super) struct PreparedReport {
     source: PathBuf,
     temporary: Option<tempfile::TempDir>,
+    original_bytes: u64,
 }
 
 impl PreparedReport {
@@ -28,6 +29,10 @@ impl PreparedReport {
         self.temporary
             .as_ref()
             .map_or(&self.source, |directory| directory.path())
+    }
+
+    pub fn original_bytes(&self) -> u64 {
+        self.original_bytes
     }
 }
 
@@ -273,6 +278,16 @@ fn reduce_images(
                 if *total <= limit {
                     break;
                 }
+                if index == 0 || last_update.elapsed().as_secs() >= 1 {
+                    phase(&format!(
+                        "Optimizing {label}: processing image {} of {candidates} ({}, {:.1} KiB) at quality floor {quality}; report {:.2} MiB",
+                        index + 1,
+                        file.relative.display(),
+                        file.bytes as f64 / 1024.0,
+                        *total as f64 / MIB as f64
+                    ));
+                    last_update = Instant::now();
+                }
                 let result = (|| -> Result<Option<(Vec<u8>, u8)>> {
                     let image = lodepng::decode32(&read_png(root, &file.relative)?)?;
                     let Some(bytes) = quantize(&image, quality, deadline)? else {
@@ -292,6 +307,7 @@ fn reduce_images(
                 })();
                 check_deadline(deadline)?;
                 if index == 0
+                    || index + 1 == candidates
                     || (index + 1).is_multiple_of(10)
                     || last_update.elapsed().as_secs() >= 1
                 {
@@ -308,12 +324,15 @@ fn reduce_images(
                             &destination.join(&file.relative),
                             &bytes,
                         )?;
+                        let previous_bytes = file.bytes;
                         *total -= file.bytes - bytes.len() as u64;
                         file.bytes = bytes.len() as u64;
                         file.quality = applied_quality;
                         phase(&format!(
-                            "Temporary image optimized: {}; quality floor {applied_quality}; report {:.2} MiB",
+                            "Temporary image optimized: {} ({:.1} -> {:.1} KiB); quality floor {applied_quality}; report {:.2} MiB",
                             file.relative.display(),
+                            previous_bytes as f64 / 1024.0,
+                            file.bytes as f64 / 1024.0,
                             *total as f64 / MIB as f64
                         ));
                     }
@@ -350,6 +369,7 @@ pub(super) fn prepare_files(
     let mut files = Vec::new();
     let mut total = 0_u64;
     check_deadline(deadline)?;
+    phase("Measuring uncompressed deployment content");
     for relative in paths {
         check_deadline(deadline)?;
         let source = super::artifact_source(root, &relative, false)?
@@ -427,13 +447,15 @@ fn prepare_report_inner(
             .then_with(|| left.relative.cmp(&right.relative))
     });
     phase(&format!(
-        "Deployment content: {:.2} MiB; storage budget: {:.2} MiB (uncompressed)",
+        "Deployment content: {} files, {:.2} MiB; storage budget: {:.2} MiB (uncompressed)",
+        files.len(),
         original_bytes as f64 / MIB as f64,
         limit as f64 / MIB as f64
     ));
     let mut prepared = PreparedReport {
         source: root.to_path_buf(),
         temporary: None,
+        original_bytes,
     };
     if original_bytes <= limit {
         use crate::diagnostics::{record::*, runtime};
@@ -446,10 +468,12 @@ fn prepare_report_inner(
                 (Field::Compression, FieldValue::Boolean(false)),
             ],
         );
+        phase("Deployment content fits within the storage budget; skipping image optimization");
         return Ok(prepared);
     }
 
     let source_root = root.canonicalize()?;
+    phase("Classifying report images by comparison role for optimization");
     classify_images(&source_root, &mut files, deadline)?;
     let temporary = tempfile::Builder::new()
         .prefix("regressify-deploy-")
@@ -458,6 +482,7 @@ fn prepare_report_inner(
             "Cannot create temporary report optimization directory; check available disk space",
         )?;
     phase("Creating an isolated temporary copy for report optimization");
+    let mut copied_bytes = 0_u64;
     let mut last_update = Instant::now();
     for (index, file) in files.iter().enumerate() {
         check_deadline(deadline)?;
@@ -479,11 +504,17 @@ fn prepare_report_inner(
             copied == file.bytes,
             "Report changed while preparing deployment; regenerate it and retry"
         );
-        if index == 0 || (index + 1).is_multiple_of(50) || last_update.elapsed().as_secs() >= 1 {
+        copied_bytes += copied;
+        if index == 0
+            || index + 1 == files.len()
+            || (index + 1).is_multiple_of(50)
+            || last_update.elapsed().as_secs() >= 1
+        {
             phase(&format!(
-                "Temporary optimization copy: {} of {} files",
+                "Temporary optimization copy: {} of {} files ({:.2} MiB)",
                 index + 1,
-                files.len()
+                files.len(),
+                copied_bytes as f64 / MIB as f64
             ));
             last_update = Instant::now();
         }
@@ -491,7 +522,6 @@ fn prepare_report_inner(
     prepared.temporary = Some(temporary);
     let mut total = original_bytes;
     let mut skipped = 0;
-    phase("Optimizing temporary report images losslessly");
     let mut options = oxipng::Options::from_preset(1);
     options.optimize_alpha = false;
     options.scale_16 = false;
@@ -506,6 +536,10 @@ fn prepare_report_inner(
                 .is_some_and(|extension| extension == "png")
         })
         .count();
+    phase(&format!(
+        "Optimizing {image_count} temporary report images losslessly ({:.2} MiB over budget)",
+        (total - limit) as f64 / MIB as f64
+    ));
     let mut processed = 0_usize;
     let mut last_update = Instant::now();
     for file in &mut files {
@@ -519,6 +553,16 @@ fn prepare_report_inner(
             .is_none_or(|extension| extension != "png")
         {
             continue;
+        }
+        if processed == 0 || last_update.elapsed().as_secs() >= 1 {
+            phase(&format!(
+                "Lossless optimization: processing image {} of {image_count} ({}, {:.1} KiB); report {:.2} MiB",
+                processed + 1,
+                file.relative.display(),
+                file.bytes as f64 / 1024.0,
+                total as f64 / MIB as f64
+            ));
+            last_update = Instant::now();
         }
         options.timeout = Some(deadline.saturating_duration_since(Instant::now()));
         let optimized = (|| -> Result<Vec<u8>> {
@@ -548,7 +592,11 @@ fn prepare_report_inner(
                 ));
             }
         }
-        if processed == 1 || processed.is_multiple_of(10) || last_update.elapsed().as_secs() >= 1 {
+        if processed == 1
+            || processed == image_count
+            || processed.is_multiple_of(10)
+            || last_update.elapsed().as_secs() >= 1
+        {
             phase(&format!(
                 "Lossless optimization: image {processed} of {image_count}; report {:.2} MiB",
                 total as f64 / MIB as f64
@@ -576,6 +624,7 @@ fn prepare_report_inner(
     );
     if crate::snapshot::image_roles(prepared.path())?.is_some() {
         check_deadline(deadline)?;
+        phase("Refreshing snapshot cache versions for optimized images");
         crate::snapshot::refresh_site_versions(prepared.path())?;
         total = inventory(prepared.path())?.1;
         ensure!(
@@ -715,6 +764,7 @@ pub(super) mod tests {
             .collect::<Result<BTreeMap<_, _>>>()?;
         let limit = original_total * 85 / 100;
         let prepared = prepare(root.path(), limit, deadline())?;
+        assert_eq!(prepared.original_bytes(), original_total);
         assert_ne!(prepared.path(), root.path());
         assert!(inventory(prepared.path())?.1 <= limit);
         let package = super::super::package::Package::create(prepared.path(), 100_000)?;
@@ -792,6 +842,7 @@ pub(super) mod tests {
         let root = tempfile::tempdir()?;
         fs::write(root.path().join("index.html"), "report")?;
         let prepared = prepare(root.path(), 6, deadline())?;
+        assert_eq!(prepared.original_bytes(), 6);
         assert!(prepared.temporary.is_none());
         assert_eq!(prepared.path(), root.path());
         assert_eq!(fs::read(root.path().join("index.html"))?, b"report");

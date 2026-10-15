@@ -84,4 +84,4 @@ Run the relevant `./ci/desktop-smoke.ps1` switch, such as `-SchemaFlows`, `-Comp
 
 ## Maintain
 
-Update [desktop docs](../../../docs/desktop.md), matching smoke scenarios, and this skill. Comment toolkit workarounds and ownership rules only where non-obvious.
+Update [desktop docs](../../../docs/desktop.md), matching smoke scenarios, [update-gpui](../update-gpui/SKILL.md), and this skill. Comment toolkit workarounds and ownership rules only where non-obvious.

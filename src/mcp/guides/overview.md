@@ -33,9 +33,15 @@ server's version; do not assume newer fields work in an older installed CLI.
   action, viewports, or replacement-profiles. These schemas also describe YAML
   values. Required keys, accepted types, examples, and field help are included.
 - `get_example(task=...)`: a synthetic YAML, JSON, CSS, or JavaScript example.
-  Inspect its target path and description. Action and scenario examples are
-  fragments; suite examples are complete files. Replace example URLs and
-  selectors with values verified against the user's application.
+  Inspect its target path and description. Complete suite tasks are
+  `minimal-suite`, `minimal-suite-json`, `responsive-checkout`,
+  `navigation-menus`, `reuse-actions`, and `hooked-suite`. Shared configuration
+  and hook tasks are `workspace`, `basic-auth`, `viewports`,
+  `replacement-profiles`, `cookies`, `css-override`, `ready-script`,
+  `before-script`, and `scenario-ready-script`. Fragment tasks are `scenario`
+  and `action-<name>` for each of the 16 actions (such as `action-click`,
+  `action-input`, `action-wait`, `action-save`, and `action-switchTab`). Replace
+  example URLs and selectors with values verified against the user's application.
 
 ## Essential Rules
 
@@ -45,6 +51,14 @@ server's version; do not assume newer fields work in an older installed CLI.
 - Element selectors in actions accept CSS, `text=`, `xpath=`, and `>>` chains;
   `hide`/`remove`, `hideSelectors`/`removeSelectors`, and screenshot selectors
   are standard CSS only.
+- Selectors resolve to the first match in DOM order. Responsive pages often keep
+  hidden mobile and desktop duplicates in the DOM; scope selectors to the active
+  container, use `:visible` or `>> visible=true` in action/wait/`readySelector`
+  selectors, and restrict viewport-specific steps with `viewportNames`.
+- `select` works only on native `<select>` elements, and `check`/`uncheck` work
+  only on native `<input type="checkbox">` or `<input type="radio">` controls.
+  Use `click` for custom dropdowns (`role="combobox"`), switches (`role="switch"`),
+  tabs, or visually hidden native inputs.
 - Interactive actions wait for a visible, stable, enabled, uncovered target.
   After navigation or client-side updates, wait for a URL and a visible element
   instead of sleeping.
@@ -76,7 +90,9 @@ server's version; do not assume newer fields work in an older installed CLI.
 
 1. Read relevant consumer project memory as described below, then inspect the
   local workspace, existing suite, shared configuration, and intended application
-  behavior. Preserve comments, unrelated fields, and unsaved work.
+  behavior. Inspect the rendered DOM and visibility at the configured viewports
+  rather than guessing selectors from URLs or static HTML. Preserve comments,
+  unrelated fields, and unsaved work.
 1. Choose the smallest appropriate scope. Read its guide and schema before
    adding fields. Use documented camelCase; unknown typed configuration keys fail.
 1. Explain the intended change and edit only the requested files. Keep selectors
