@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::DEFAULT_PIXEL_MATCH_THRESHOLD,
-    helpers::png::{MAX_VISUAL_IMAGE_PIXELS, read_bounded_png_dimensions_from_reader},
+    helpers::png::{
+        MAX_VISUAL_IMAGE_DIMENSION, MAX_VISUAL_IMAGE_PIXELS,
+        read_bounded_png_dimensions_from_reader,
+    },
 };
 
 const MAX_PNG_FILE_BYTES: u64 = 128 * 1024 * 1024;
@@ -92,7 +95,7 @@ const MIN_ALIGNED_ROWS: usize = 32;
 const MIN_TAIL_ALIGNED_ROWS: usize = 4;
 const MAX_ALIGNMENT_DEPTH: usize = 4;
 const MAX_SIGNATURE_SAMPLES: usize = 32;
-const MAX_HASH_FREQUENCY: usize = 8;
+const MAX_HASH_FREQUENCY: usize = 64;
 
 #[inline]
 fn blend_channel(c: f64, a: f64) -> f64 {
@@ -519,6 +522,33 @@ fn row_difference(
         .count()
 }
 
+#[inline]
+fn row_shift_gain(width: usize, unshifted: usize, shifted: usize) -> (i64, bool) {
+    let max_aligned_diff = width / 100;
+    let max_plausible_diff = (width / 2).max(1);
+    let min_plausible_gain = (width / 10).max(1);
+    let shifted_aligned = shifted <= max_aligned_diff && unshifted > shifted;
+    let shifted_plausible =
+        shifted <= max_plausible_diff && unshifted >= shifted.saturating_add(min_plausible_gain);
+    let unshifted_aligned = unshifted <= max_aligned_diff;
+
+    if unshifted_aligned && shifted > unshifted {
+        // Shifting this row breaks a clean unshifted match; penalize by the
+        // full row width so unrelated changes above an intact sparse middle
+        // section cannot pull `best_start` upward.
+        (
+            -((width as i64).max(shifted as i64 - unshifted as i64)),
+            false,
+        )
+    } else if shifted_aligned || shifted_plausible {
+        (unshifted as i64 - shifted as i64, true)
+    } else {
+        // Neither unshifted nor shifted aligns this row (in-place visual change);
+        // never let accidental partial overlap add positive shift gain.
+        ((unshifted as i64 - shifted as i64).min(0), false)
+    }
+}
+
 /// Find a single vertical insertion/deletion gap of size `taller.height - shorter.height`
 /// in `shorter` that maximizes aligned row matches below the gap without letting
 /// unrelated top-of-page visual changes pull the gap start across intact middle rows.
@@ -541,9 +571,6 @@ fn find_vertical_gap(
         return None;
     }
 
-    let max_aligned_diff = shorter.width / 100;
-    let max_plausible_diff = (shorter.width / 2).max(1);
-    let min_plausible_gain = (shorter.width / 10).max(1);
     let mut gain = 0_i64;
     let mut supporting_rows = 0_usize;
     let mut contested_rows = 0_usize;
@@ -558,27 +585,11 @@ fn find_vertical_gap(
         if unshifted > 0 || shifted > 0 {
             contested_rows += 1;
         }
-        let shifted_aligned = shifted <= max_aligned_diff && unshifted > shifted;
-        let shifted_plausible = shifted <= max_plausible_diff
-            && unshifted >= shifted.saturating_add(min_plausible_gain);
-        let unshifted_aligned = unshifted <= max_aligned_diff;
-
-        if shifted_aligned || shifted_plausible {
+        let (delta, supports_shift) = row_shift_gain(shorter.width, unshifted, shifted);
+        if supports_shift {
             supporting_rows += 1;
         }
-
-        if unshifted_aligned && shifted > unshifted {
-            // Shifting this row breaks a clean unshifted match; penalize by the
-            // full row width so unrelated changes above an intact sparse middle
-            // section cannot pull `best_start` upward.
-            gain -= (shorter.width as i64).max(shifted as i64 - unshifted as i64);
-        } else if shifted_aligned || shifted_plausible {
-            gain += unshifted as i64 - shifted as i64;
-        } else {
-            // Neither unshifted nor shifted aligns this row (in-place visual change);
-            // never let accidental partial overlap add positive shift gain.
-            gain += (unshifted as i64 - shifted as i64).min(0);
-        }
+        gain += delta;
 
         if gain > best_gain {
             best_gain = gain;
@@ -605,7 +616,9 @@ struct RowSignature {
     full: u64,
     left: u32,
     right: u32,
-    informative: bool,
+    full_informative: bool,
+    left_informative: bool,
+    right_informative: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -633,8 +646,12 @@ fn compute_row_signatures(image: ImageView<'_>) -> Vec<RowSignature> {
         let mut full = 0xcbf2_9ce4_8422_2325_u64;
         let mut left = 0x811c_9dc5_u32;
         let mut right = 0x811c_9dc5_u32;
-        let mut first_quantized = None;
-        let mut varied = false;
+        let mut first_full = None;
+        let mut first_left = None;
+        let mut first_right = None;
+        let mut full_varied = false;
+        let mut left_varied = false;
+        let mut right_varied = false;
 
         for sample_idx in 0..samples {
             let col = (sample_idx * image.width) / samples;
@@ -643,31 +660,86 @@ fn compute_row_signatures(image: ImageView<'_>) -> Vec<RowSignature> {
                 | ((p.g as u16 >> 3) << 6)
                 | ((p.b as u16 >> 3) << 1)
                 | (p.a as u16 >> 7);
-            if let Some(first) = first_quantized {
+            if let Some(first) = first_full {
                 if first != quantized {
-                    varied = true;
+                    full_varied = true;
                 }
             } else {
-                first_quantized = Some(quantized);
+                first_full = Some(quantized);
             }
             full = (full ^ u64::from(quantized)).wrapping_mul(0x0100_0000_01b3);
             if sample_idx < half {
+                if let Some(first) = first_left {
+                    if first != quantized {
+                        left_varied = true;
+                    }
+                } else {
+                    first_left = Some(quantized);
+                }
                 left = (left ^ u32::from(quantized)).wrapping_mul(0x0100_0193);
             } else {
+                if let Some(first) = first_right {
+                    if first != quantized {
+                        right_varied = true;
+                    }
+                } else {
+                    first_right = Some(quantized);
+                }
                 right = (right ^ u32::from(quantized)).wrapping_mul(0x0100_0193);
             }
         }
 
-        let informative = varied || prev_full.is_some_and(|prev| prev != full);
+        let full_informative = full_varied || prev_full.is_some_and(|prev| prev != full);
         prev_full = Some(full);
         signatures.push(RowSignature {
             full,
             left,
             right,
-            informative,
+            full_informative,
+            left_informative: left_varied,
+            right_informative: right_varied,
         });
     }
     signatures
+}
+
+fn vote_bucket_positions(
+    r_positions: &[usize],
+    t_positions: &[usize],
+    weight: usize,
+    shift_votes: &mut std::collections::HashMap<isize, usize>,
+) {
+    if r_positions.is_empty() || t_positions.is_empty() {
+        return;
+    }
+    if t_positions.len() <= MAX_HASH_FREQUENCY {
+        for &r in r_positions {
+            for &t in t_positions {
+                *shift_votes.entry(t as isize - r as isize).or_default() += weight;
+            }
+        }
+        return;
+    }
+    let t_len = t_positions.len();
+    let r_len = r_positions.len();
+    for (idx, &r) in r_positions.iter().enumerate() {
+        let tail_center = (t_len + idx).saturating_sub(r_len);
+        let ranges = [
+            0..8.min(t_len),
+            t_len.saturating_sub(8)..t_len,
+            idx.saturating_sub(8)..(idx + 9).min(t_len),
+            tail_center.saturating_sub(8)..(tail_center + 9).min(t_len),
+        ];
+        for (range_idx, range) in ranges.iter().enumerate() {
+            for j in range.clone() {
+                if ranges[..range_idx].iter().any(|prev| prev.contains(&j)) {
+                    continue;
+                }
+                let t = t_positions[j];
+                *shift_votes.entry(t as isize - r as isize).or_default() += weight;
+            }
+        }
+    }
 }
 
 fn find_best_shifted_anchor(
@@ -683,72 +755,78 @@ fn find_best_shifted_anchor(
         return None;
     }
 
-    let mut full_buckets: std::collections::HashMap<u64, Vec<usize>> =
+    let mut full_buckets: std::collections::HashMap<u64, (Vec<usize>, Vec<usize>)> =
         std::collections::HashMap::new();
-    let mut left_buckets: std::collections::HashMap<u32, Vec<usize>> =
+    let mut left_buckets: std::collections::HashMap<u32, (Vec<usize>, Vec<usize>)> =
         std::collections::HashMap::new();
-    let mut right_buckets: std::collections::HashMap<u32, Vec<usize>> =
+    let mut right_buckets: std::collections::HashMap<u32, (Vec<usize>, Vec<usize>)> =
         std::collections::HashMap::new();
+
+    for r in r_range.clone() {
+        let sig = ref_sigs[r];
+        if sig.full_informative {
+            full_buckets.entry(sig.full).or_default().0.push(r);
+        }
+        if sig.left_informative {
+            left_buckets.entry(sig.left).or_default().0.push(r);
+        }
+        if sig.right_informative {
+            right_buckets.entry(sig.right).or_default().0.push(r);
+        }
+    }
 
     for t in t_range.clone() {
         let sig = test_sigs[t];
-        if !sig.informative {
-            continue;
+        if sig.full_informative
+            && let Some(bucket) = full_buckets.get_mut(&sig.full)
+        {
+            bucket.1.push(t);
         }
-        let full_list = full_buckets.entry(sig.full).or_default();
-        if full_list.len() <= MAX_HASH_FREQUENCY {
-            full_list.push(t);
+        if sig.left_informative
+            && let Some(bucket) = left_buckets.get_mut(&sig.left)
+        {
+            bucket.1.push(t);
         }
-        let left_list = left_buckets.entry(sig.left).or_default();
-        if left_list.len() <= MAX_HASH_FREQUENCY {
-            left_list.push(t);
-        }
-        let right_list = right_buckets.entry(sig.right).or_default();
-        if right_list.len() <= MAX_HASH_FREQUENCY {
-            right_list.push(t);
+        if sig.right_informative
+            && let Some(bucket) = right_buckets.get_mut(&sig.right)
+        {
+            bucket.1.push(t);
         }
     }
 
     let mut shift_votes: std::collections::HashMap<isize, usize> = std::collections::HashMap::new();
-    for r in r_range.clone() {
-        let sig = ref_sigs[r];
-        if !sig.informative {
-            continue;
-        }
-        if let Some(matches) = full_buckets.get(&sig.full)
-            && matches.len() <= MAX_HASH_FREQUENCY
-        {
-            for &t in matches {
-                *shift_votes.entry(t as isize - r as isize).or_default() += 2;
-            }
-        }
-        if let Some(matches) = left_buckets.get(&sig.left)
-            && matches.len() <= MAX_HASH_FREQUENCY
-        {
-            for &t in matches {
-                *shift_votes.entry(t as isize - r as isize).or_default() += 1;
-            }
-        }
-        if let Some(matches) = right_buckets.get(&sig.right)
-            && matches.len() <= MAX_HASH_FREQUENCY
-        {
-            for &t in matches {
-                *shift_votes.entry(t as isize - r as isize).or_default() += 1;
-            }
-        }
+    for (r_pos, t_pos) in full_buckets.values() {
+        vote_bucket_positions(r_pos, t_pos, 2, &mut shift_votes);
+    }
+    for (r_pos, t_pos) in left_buckets.values() {
+        vote_bucket_positions(r_pos, t_pos, 1, &mut shift_votes);
+    }
+    for (r_pos, t_pos) in right_buckets.values() {
+        vote_bucket_positions(r_pos, t_pos, 1, &mut shift_votes);
     }
 
     let mut candidates: Vec<(isize, usize)> = shift_votes
         .into_iter()
         .filter(|&(_, votes)| votes >= MIN_TAIL_ALIGNED_ROWS)
         .collect();
-    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.abs().cmp(&b.0.abs())));
-    candidates.truncate(6);
+    candidates.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.abs().cmp(&b.0.abs()))
+            .then_with(|| b.0.cmp(&a.0))
+    });
+    candidates.truncate(8);
 
     let max_aligned_diff = reference.width / 100;
-    let max_plausible_diff = (reference.width / 2).max(1);
-    let min_plausible_gain = (reference.width / 10).max(1);
-    let mut best_anchor: Option<(usize, i64, AlignedAnchor)> = None;
+    type AnchorRank = (
+        usize,
+        usize,
+        i64,
+        usize,
+        std::cmp::Reverse<usize>,
+        bool,
+        std::cmp::Reverse<usize>,
+    );
+    let mut best_anchor: Option<(AnchorRank, AlignedAnchor)> = None;
 
     for (shift, _) in candidates {
         let r_start = (t_range.start as isize - shift).max(r_range.start as isize) as usize;
@@ -759,78 +837,121 @@ fn find_best_shifted_anchor(
 
         let mut run_start = None;
         let mut run_aligned = 0_usize;
+        let mut run_closely_aligned = 0_usize;
         let mut run_informative = 0_usize;
         let mut run_gain = 0_i64;
         let mut bad_streak = 0_usize;
         let mut last_good_r = r_start;
 
-        let mut consider_run =
-            |start: usize, end: usize, aligned: usize, informative: usize, gain: i64| {
-                let len = end.saturating_sub(start);
-                if len < MIN_TAIL_ALIGNED_ROWS
-                    || aligned < MIN_TAIL_ALIGNED_ROWS
-                    || informative < MIN_TAIL_ALIGNED_ROWS.min(len)
-                    || aligned * 4 < len * 3
-                    || gain <= 0
-                {
-                    return;
-                }
-                let candidate = AlignedAnchor {
-                    ref_start: start,
-                    test_start: (start as isize + shift) as usize,
-                    len,
-                };
-                if best_anchor
-                    .as_ref()
-                    .is_none_or(|&(best_aligned, best_gain, _)| {
-                        (aligned, gain) > (best_aligned, best_gain)
-                    })
-                {
-                    best_anchor = Some((aligned, gain, candidate));
-                }
+        let mut consider_run = |start: usize,
+                                end: usize,
+                                aligned: usize,
+                                closely_aligned: usize,
+                                informative: usize,
+                                gain: i64| {
+            let len = end.saturating_sub(start);
+            if len < MIN_TAIL_ALIGNED_ROWS
+                || aligned < MIN_TAIL_ALIGNED_ROWS
+                || closely_aligned < MIN_TAIL_ALIGNED_ROWS
+                || informative < MIN_TAIL_ALIGNED_ROWS.min(len)
+                || aligned * 4 < len * 3
+                || gain <= 0
+            {
+                return;
+            }
+            let candidate = AlignedAnchor {
+                ref_start: start,
+                test_start: (start as isize + shift) as usize,
+                len,
             };
+            let rank: AnchorRank = (
+                aligned,
+                closely_aligned,
+                gain,
+                len,
+                std::cmp::Reverse(shift.unsigned_abs()),
+                shift >= 0,
+                std::cmp::Reverse(start),
+            );
+            if best_anchor
+                .as_ref()
+                .is_none_or(|(best_rank, _)| rank > *best_rank)
+            {
+                best_anchor = Some((rank, candidate));
+            }
+        };
 
         for r in r_start..r_end {
             let t = (r as isize + shift) as usize;
             let shifted = row_difference(reference, test, r, t, max_delta);
-            let unshifted = if r < test.height {
+            let unshifted = if shift == 0 {
+                reference.width
+            } else if r < test.height {
                 row_difference(reference, test, r, r, max_delta)
             } else {
                 reference.width
             };
-            let is_good = shifted <= max_aligned_diff
-                || (shifted <= max_plausible_diff
-                    && unshifted >= shifted.saturating_add(min_plausible_gain));
+            let (row_gain, is_good) = if shift == 0 {
+                let good = shifted <= max_aligned_diff;
+                (
+                    if good {
+                        (reference.width - shifted) as i64
+                    } else {
+                        -(shifted as i64)
+                    },
+                    good,
+                )
+            } else {
+                row_shift_gain(reference.width, unshifted, shifted)
+            };
 
             if is_good {
                 if run_start.is_none() {
                     run_start = Some(r);
                     run_aligned = 0;
+                    run_closely_aligned = 0;
                     run_informative = 0;
                     run_gain = 0;
                 }
                 run_aligned += 1;
-                if ref_sigs[r].informative || test_sigs[t].informative {
+                if shifted <= max_aligned_diff {
+                    run_closely_aligned += 1;
+                }
+                if ref_sigs[r].full_informative || test_sigs[t].full_informative {
                     run_informative += 1;
                 }
-                run_gain += unshifted as i64 - shifted as i64;
+                run_gain += row_gain;
                 last_good_r = r + 1;
                 bad_streak = 0;
             } else if let Some(start) = run_start {
                 bad_streak += 1;
-                run_gain += unshifted as i64 - shifted as i64;
+                run_gain += row_gain;
                 if bad_streak > 2 {
-                    consider_run(start, last_good_r, run_aligned, run_informative, run_gain);
+                    consider_run(
+                        start,
+                        last_good_r,
+                        run_aligned,
+                        run_closely_aligned,
+                        run_informative,
+                        run_gain,
+                    );
                     run_start = None;
                 }
             }
         }
         if let Some(start) = run_start {
-            consider_run(start, last_good_r, run_aligned, run_informative, run_gain);
+            consider_run(
+                start,
+                last_good_r,
+                run_aligned,
+                run_closely_aligned,
+                run_informative,
+                run_gain,
+            );
         }
     }
 
-    best_anchor.map(|(_, _, anchor)| anchor)
+    best_anchor.map(|(_, anchor)| anchor)
 }
 
 fn collect_interior_anchors(
@@ -946,13 +1067,17 @@ fn find_transition_gap_offset(
         return 0;
     }
     let height = taller.height - shorter.height;
+    let top_equal = (0..shorter.height)
+        .take_while(|&row| shorter.row_slice(row) == taller.row_slice(row))
+        .count();
     let mut gain = 0_i64;
     let mut best_gain = 0_i64;
     let mut best_start = shorter.height;
-    for row in (0..shorter.height).rev() {
+    for row in (top_equal..shorter.height).rev() {
         let unshifted = row_difference(shorter, taller, row, row, max_delta);
         let shifted = row_difference(shorter, taller, row, row + height, max_delta);
-        gain += unshifted as i64 - shifted as i64;
+        let (delta, _) = row_shift_gain(shorter.width, unshifted, shifted);
+        gain += delta;
         if gain > best_gain {
             best_gain = gain;
             best_start = row;
@@ -989,6 +1114,7 @@ fn alignment_mismatch_score(
         ..test
     };
     let width = reference.width.max(test.width);
+    let max_aligned_diff = width / 100;
     let height = ref_view
         .aligned_height()
         .unwrap_or(reference.height)
@@ -997,7 +1123,14 @@ fn alignment_mismatch_score(
     for y in 0..height {
         match (ref_view.source_row(y), test_view.source_row(y)) {
             (Some(r_row), Some(t_row)) => {
-                total += row_difference(reference, test, r_row, t_row, max_delta) as u64;
+                let shifted = row_difference(reference, test, r_row, t_row, max_delta);
+                total += shifted as u64;
+                if r_row != t_row && r_row < test.height {
+                    let unshifted = row_difference(reference, test, r_row, r_row, max_delta);
+                    if unshifted <= max_aligned_diff && shifted > unshifted {
+                        total += width as u64;
+                    }
+                }
             }
             _ => {
                 total += width as u64;
@@ -1458,9 +1591,10 @@ pub fn compare_images_with_threshold(
                 .map(|t_h| r_h.max(t_h))
         })
         .unwrap_or(base_out_h);
-    if out_w
-        .checked_mul(out_h)
-        .is_none_or(|pixels| pixels > MAX_VISUAL_IMAGE_PIXELS as usize)
+    if out_h > MAX_VISUAL_IMAGE_DIMENSION as usize
+        || out_w
+            .checked_mul(out_h)
+            .is_none_or(|pixels| pixels > MAX_VISUAL_IMAGE_PIXELS as usize)
     {
         alignment = DiffAlignment::default();
         out_h = base_out_h;
@@ -1955,49 +2089,51 @@ mod tests {
         let patterned = patterned_image(width, height - gap_start);
         reference[gap_start * width..].copy_from_slice(&patterned);
 
-        let mut test = reference[..gap_start * width].to_vec();
-        // Top hero banner changed in place in test to solid orange (`unshifted = 64`).
-        for row in 0..40 {
-            for col in 0..width {
-                test[row * width + col] = RGBA8::new(240, 180, 120, 255);
+        for inserted_color in [RGBA8::new(0, 0, 0, 255), white] {
+            let mut test = reference[..gap_start * width].to_vec();
+            // Top hero banner changed in place in test to solid orange (`unshifted = 64`).
+            for row in 0..40 {
+                for col in 0..width {
+                    test[row * width + col] = RGBA8::new(240, 180, 120, 255);
+                }
             }
+            // Insert new block at `gap_start = 100`.
+            test.extend(vec![inserted_color; gap_height * width]);
+            test.extend_from_slice(&reference[gap_start * width..]);
+
+            fs::write(
+                &reference_path,
+                lodepng::encode32(&reference, width, height).unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                &test_path,
+                lodepng::encode32(&test, width, height + gap_height).unwrap(),
+            )
+            .unwrap();
+
+            let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+            assert_eq!(
+                result.alignment,
+                DiffAlignment {
+                    reference: Some(VerticalGap {
+                        start: gap_start,
+                        height: gap_height,
+                    }),
+                    test: None,
+                    ..Default::default()
+                }
+            );
+            let diff = lodepng::decode32(diff.unwrap()).unwrap();
+            let pink = RGBA8::new(255, 0, 255, 200);
+            // Intact sparse middle section (rows 40..100) must remain completely free of diffs.
+            assert!(
+                diff.buffer[40 * width..gap_start * width]
+                    .iter()
+                    .all(|pixel| *pixel != pink)
+            );
         }
-        // Insert new block at `gap_start = 100`.
-        test.extend(vec![RGBA8::new(0, 0, 0, 255); gap_height * width]);
-        test.extend_from_slice(&reference[gap_start * width..]);
-
-        fs::write(
-            &reference_path,
-            lodepng::encode32(&reference, width, height).unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            &test_path,
-            lodepng::encode32(&test, width, height + gap_height).unwrap(),
-        )
-        .unwrap();
-
-        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
-
-        assert_eq!(
-            result.alignment,
-            DiffAlignment {
-                reference: Some(VerticalGap {
-                    start: gap_start,
-                    height: gap_height,
-                }),
-                test: None,
-                ..Default::default()
-            }
-        );
-        let diff = lodepng::decode32(diff.unwrap()).unwrap();
-        let pink = RGBA8::new(255, 0, 255, 200);
-        // Intact sparse middle section (rows 40..100) must remain completely free of diffs.
-        assert!(
-            diff.buffer[40 * width..gap_start * width]
-                .iter()
-                .all(|pixel| *pixel != pink)
-        );
     }
 
     #[test]
@@ -2372,5 +2508,125 @@ mod tests {
             * 100.0;
         assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
         assert_eq!(result.mis_match_percentage, "15.56");
+    }
+
+    #[test]
+    fn symmetric_repeating_shifts_produce_deterministic_alignment_and_diff_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 32;
+        let height = 96;
+        let tile = patterned_image(width, 16);
+        let reference: Vec<RGBA8> = (0..height)
+            .flat_map(|row| {
+                tile[(row % 16) * width..(row % 16 + 1) * width]
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        let test: Vec<RGBA8> = (0..height)
+            .flat_map(|row| {
+                let shifted_row = (row + 8) % 16;
+                tile[shifted_row * width..(shifted_row + 1) * width]
+                    .iter()
+                    .copied()
+            })
+            .collect();
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(&test_path, lodepng::encode32(&test, width, height).unwrap()).unwrap();
+
+        let (first_result, first_diff) = compare_images(&reference_path, &test_path).unwrap();
+        let first_diff = first_diff.unwrap();
+        for _ in 0..64 {
+            let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+            assert_eq!(result.alignment, first_result.alignment);
+            assert_eq!(diff.as_deref(), Some(first_diff.as_slice()));
+        }
+    }
+
+    #[test]
+    fn multiple_inserted_bands_align_repeating_four_row_middle_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 32;
+        let height = 160;
+        let gap1 = VerticalGap {
+            start: 30,
+            height: 7,
+        };
+        let gap2 = VerticalGap {
+            start: 100,
+            height: 13,
+        };
+        let mut reference = patterned_image(width, height);
+        let pattern = patterned_image(width, 4);
+        for row in gap1.start..gap2.start {
+            let phase = (row - gap1.start) % 4;
+            reference[row * width..(row + 1) * width]
+                .copy_from_slice(&pattern[phase * width..(phase + 1) * width]);
+        }
+
+        let mut test = Vec::with_capacity((height + gap1.height + gap2.height) * width);
+        test.extend_from_slice(&reference[..gap1.start * width]);
+        test.extend(vec![RGBA8::new(0, 0, 0, 255); gap1.height * width]);
+        test.extend_from_slice(&reference[gap1.start * width..gap2.start * width]);
+        test.extend(vec![RGBA8::new(255, 255, 255, 255); gap2.height * width]);
+        test.extend_from_slice(&reference[gap2.start * width..]);
+
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height + gap1.height + gap2.height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, _) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert_eq!(
+            result.alignment,
+            DiffAlignment::from_gaps(vec![gap1, gap2], Vec::new())
+        );
+        assert_eq!(result.mis_match_percentage, "11.11");
+    }
+
+    #[test]
+    fn expanded_canvas_exceeding_max_dimension_falls_back_to_bounded_height() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let diff_path = dir.path().join("diff.png");
+        let width = 8;
+        let height = MAX_VISUAL_IMAGE_DIMENSION as usize;
+        let shift = 16;
+        let reference = patterned_image(width, height);
+        let mut test = Vec::with_capacity(width * height);
+        test.extend(vec![RGBA8::new(0, 0, 0, 255); shift * width]);
+        test.extend_from_slice(&reference[..(height - shift) * width]);
+
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(&test_path, lodepng::encode32(&test, width, height).unwrap()).unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+        assert_eq!(result.alignment, DiffAlignment::default());
+        let diff_bytes = diff.unwrap();
+        fs::write(&diff_path, &diff_bytes).unwrap();
+        assert_eq!(
+            crate::helpers::png::read_bounded_png_dimensions(&diff_path).unwrap(),
+            (width, height)
+        );
     }
 }

@@ -718,6 +718,18 @@ impl Workspace {
         kind: DocumentKind,
         source: &str,
     ) -> Result<OpenDocument> {
+        if kind == DocumentKind::Suite || entry_kind(relative) == DocumentKind::Suite {
+            let suite_name = Entry {
+                path: relative.into(),
+                kind: DocumentKind::Suite,
+                editable: true,
+            }
+            .suite_name()
+            .ok_or_else(|| {
+                anyhow!("Test suite files must use .tests.yaml, .tests.yml, or .tests.json")
+            })?;
+            crate::test::validate_suite_identifier("Suite name", Some(&suite_name))?;
+        }
         let document = Document::new(kind, Format::for_path(relative), source.to_string())?;
         document.validate()?;
         validate_typed_source(&document)?;
@@ -2240,6 +2252,33 @@ mod tests {
         assert!(
             workspace
                 .resolve(Path::new("common/my settings.yaml"))
+                .is_ok()
+        );
+        let suite = workspace.create_suite("checkout").unwrap();
+        for invalid_save_as in [
+            "visual_tests/.checkout.tests.yaml",
+            "visual_tests/all.tests.yaml",
+            "visual_tests/_snapshot.tests.yaml",
+            "common/not-a-suite.yaml",
+        ] {
+            assert!(
+                workspace
+                    .save_as(&suite, Path::new(invalid_save_as))
+                    .is_err(),
+                "{invalid_save_as}"
+            );
+            assert!(!directory.path().join(invalid_save_as).exists());
+        }
+        let dot_data = workspace
+            .create_document(
+                Path::new("common/.helper.js"),
+                DocumentKind::Data,
+                "// helper\n",
+            )
+            .unwrap();
+        assert!(
+            workspace
+                .save_as(&dot_data, Path::new("common/.helper-copy.js"))
                 .is_ok()
         );
     }
