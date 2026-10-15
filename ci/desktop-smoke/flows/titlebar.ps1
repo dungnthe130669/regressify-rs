@@ -52,7 +52,9 @@ function Test-TitlebarControlBounds([string]$Theme, [int[]]$Dimensions, [string]
             throw 'The title-bar version must share the application name and logo row.'
         }
     }
-    $workspaceControl = Find-Control ($workspace.Replace('\', '/'))
+    $workspaceControl = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $workspace.Replace('\', '/'))) |
+        Where-Object { $_.Current.BoundingRectangle.Bottom -le $bounds.Top + 38 * $scale } |
+        Select-Object -First 1
     if (($null -ne $workspaceControl) -ne ($clientWidth -ge 1400)) {
         throw 'The workspace name must be visible only at client widths of 1400px or wider.'
     }

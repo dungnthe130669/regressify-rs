@@ -2063,7 +2063,7 @@ pub(crate) mod tests {
         }
         if mode == "orphan-pipe" {
             let lock_path = std::env::var_os("REGRESSIFY_ORPHAN_LOCK").unwrap();
-            Command::new(std::env::current_exe().unwrap())
+            let child = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "desktop::runner::tests::process_fixture",
@@ -2076,6 +2076,9 @@ pub(crate) mod tests {
                 .stderr(Stdio::inherit())
                 .spawn()
                 .unwrap();
+            // Intentionally leave the descendant running when the parent exits so
+            // pipe-drain tests verify process-group cleanup.
+            std::mem::forget(child);
             return;
         }
         if mode == "fail" {

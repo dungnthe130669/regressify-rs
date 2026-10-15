@@ -187,8 +187,12 @@ mod tests {
         std::fs::write(&installed, "").unwrap();
         assert_eq!(
             find_executable(
-                &[missing.clone()],
-                &[missing, directory.path().to_path_buf(), installed.clone()]
+                std::slice::from_ref(&missing),
+                &[
+                    missing.clone(),
+                    directory.path().to_path_buf(),
+                    installed.clone()
+                ]
             )
             .unwrap(),
             installed
@@ -200,8 +204,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let relative = PathBuf::from(".");
         let error = find_executable(
-            &[relative.clone()],
-            &[relative, directory.path().join("missing")],
+            std::slice::from_ref(&relative),
+            &[relative.clone(), directory.path().join("missing")],
         )
         .unwrap_err();
         assert!(error.to_string().contains("Install Visual Studio Code"));

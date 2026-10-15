@@ -1795,7 +1795,13 @@ impl Workbench {
                     .disabled(self.busy || open.is_none())
                     .prepare_for_toolbar()
                     .with_size(gpui_kit::component::Size::Medium)
-                    .dropdown_menu(move |menu, _, _| {
+                    .dropdown_menu(move |menu, window, cx| {
+                        design::restore_dropdown_menu_focus(
+                            menu.focus_handle(cx),
+                            focus.clone(),
+                            window,
+                            cx,
+                        );
                         let mut menu = menu
                             .action_context(focus.clone())
                             .menu_with_disabled("Scenario", Box::new(AddScenario), !add_scenario)
@@ -1903,7 +1909,13 @@ impl Workbench {
                                 .disabled(self.busy || self.runs.read(cx).running())
                                 .prepare_for_toolbar()
                                 .with_size(gpui_kit::component::Size::Medium)
-                                .dropdown_menu(move |menu, _, _| {
+                                .dropdown_menu(move |menu, window, cx| {
+                                    design::restore_dropdown_menu_focus(
+                                        menu.focus_handle(cx),
+                                        focus.clone(),
+                                        window,
+                                        cx,
+                                    );
                                     menu.action_context(focus.clone())
                                         .menu(
                                             "Approve Results",

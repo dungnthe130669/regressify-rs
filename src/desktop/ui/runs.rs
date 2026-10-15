@@ -1750,7 +1750,13 @@ impl Render for RunPanel {
                                     .disabled(running || self.disabled || self.root.is_none())
                                     .prepare_for_toolbar()
                                     .with_size(gpui_kit::component::Size::Medium)
-                                    .dropdown_menu(move |menu, _, _| {
+                                    .dropdown_menu(move |menu, window, cx| {
+                                        design::restore_dropdown_menu_focus(
+                                            menu.focus_handle(cx),
+                                            focus.clone(),
+                                            window,
+                                            cx,
+                                        );
                                         let mut menu = menu.action_context(focus.clone());
                                         for (index, command) in RunCommand::ALL
                                             .iter()

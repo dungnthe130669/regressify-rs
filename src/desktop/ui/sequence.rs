@@ -1,4 +1,5 @@
 //! Inspect and arrange scenario actions without leaving their surrounding configuration.
+#![cfg_attr(test, allow(clippy::items_after_test_module))]
 
 use super::*;
 use std::rc::Rc;
@@ -1033,7 +1034,13 @@ impl Workbench {
             .icon(IconName::Plus)
             .label("Add action")
             .disabled(self.busy || !self.field_errors.is_empty())
-            .dropdown_menu(move |menu, _, _| {
+            .dropdown_menu(move |menu, window, cx| {
+                design::restore_dropdown_menu_focus(
+                    menu.focus_handle(cx),
+                    focus.clone(),
+                    window,
+                    cx,
+                );
                 let mut menu = menu.action_context(focus.clone()).scrollable(true);
                 let mut actions = ACTIONS.to_vec();
                 actions.sort_by_key(|kind| action_group(kind));

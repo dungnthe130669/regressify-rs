@@ -82,6 +82,27 @@ impl RenderOnce for CopyText {
     }
 }
 
+pub(super) fn restore_dropdown_menu_focus(
+    menu_focus: FocusHandle,
+    restore: FocusHandle,
+    window: &mut Window,
+    cx: &mut Context<gpui_kit::component::menu::PopupMenu>,
+) {
+    let menu = cx.entity();
+    window
+        .subscribe(&menu, cx, move |_, _: &DismissEvent, window, cx| {
+            let menu_focus = menu_focus.clone();
+            let restore = restore.clone();
+            window.defer(cx, move |window, cx| {
+                // Dropdown menu dismissal can leave focus on its disappearing popup; never override a newer focus owner.
+                if menu_focus.is_focused(window) || window.focused(cx).is_none() {
+                    window.focus(&restore, cx);
+                }
+            });
+        })
+        .detach();
+}
+
 pub(super) fn restore_managed_menu_focus<View: 'static>(
     owner: WeakEntity<View>,
     menu_focus: FocusHandle,
@@ -407,6 +428,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.focus.contains_focused(window, cx) {
+            window.focus(&self.focus, cx);
+        }
         if self.busy || self.preferences.theme_preference() == action.preference {
             return;
         }
@@ -448,7 +472,8 @@ impl Workbench {
             .accessibility_label(format!("Appearance: {label}"))
             .tooltip(format!("Appearance: {label}"))
             .disabled(self.busy)
-            .dropdown_menu(move |menu, _, _| {
+            .dropdown_menu(move |menu, window, cx| {
+                restore_dropdown_menu_focus(menu.focus_handle(cx), focus.clone(), window, cx);
                 let mut menu = menu.action_context(focus.clone());
                 for (choice, label) in [
                     (ThemePreference::System, "System"),

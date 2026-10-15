@@ -668,7 +668,13 @@ impl Workbench {
                                     .ghost()
                                     .label("Publish")
                                     .disabled(self.busy || self.runs.read(cx).running())
-                                    .dropdown_menu(move |menu, _, _| {
+                                    .dropdown_menu(move |menu, window, cx| {
+                                        design::restore_dropdown_menu_focus(
+                                            menu.focus_handle(cx),
+                                            focus.clone(),
+                                            window,
+                                            cx,
+                                        );
                                         menu.action_context(focus.clone())
                                             .menu("Landing apps", Box::new(OpenLandingApps))
                                             .menu(
@@ -682,7 +688,13 @@ impl Workbench {
                                 Button::new("help-menu")
                                     .ghost()
                                     .label("Help")
-                                    .dropdown_menu(move |menu, _, _| {
+                                    .dropdown_menu(move |menu, window, cx| {
+                                        design::restore_dropdown_menu_focus(
+                                            menu.focus_handle(cx),
+                                            focus.clone(),
+                                            window,
+                                            cx,
+                                        );
                                         menu.action_context(focus.clone())
                                             .menu("About", Box::new(ShowAbout))
                                     })

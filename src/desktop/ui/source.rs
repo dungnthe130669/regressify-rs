@@ -508,7 +508,13 @@ impl Workbench {
             .disabled(self.busy || self.session.open.is_none())
             .prepare_for_toolbar()
             .with_size(gpui_kit::component::Size::Medium)
-            .dropdown_menu(move |menu, _, cx| {
+            .dropdown_menu(move |menu, window, cx| {
+                design::restore_dropdown_menu_focus(
+                    menu.focus_handle(cx),
+                    focus.clone(),
+                    window,
+                    cx,
+                );
                 let state = source.read(cx);
                 let text = state.value();
                 let lines = selected_lines(&text, &state.selected_range());

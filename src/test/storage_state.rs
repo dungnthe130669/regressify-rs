@@ -219,8 +219,8 @@ impl StorageState {
             .map_err(|_| anyhow!("State tracker stopped"))?;
         response.await.map_err(|_| anyhow!("State tracker stopped"))
     }
-    #[cfg(test)]
 
+    #[cfg(test)]
     pub async fn capture(&self, page: &Page) -> Result<Value> {
         self.capture_with_target(page, None).await
     }

@@ -106,12 +106,13 @@ Verified: 2026-10-14
 - Windows interaction prerequisites and native commands remain in the
   [native UI skill](../../.github/skills/desktop-native-ui/SKILL.md).
 - [Titlebar smoke](../../ci/desktop-smoke/flows/titlebar.ps1) checks 1000x640 and
-  1600x1000 without widening for theme changes. Appearance uses actual Tab focus
-  and Enter/Escape; its dropdown has no InvokePattern. Default's Add uses Tab too,
-  retaining the exact backward-wrap assertion. Header menus are File/Publish/Help.
-  The [header regression](../../src/desktop/ui/tests.rs) checks equal group gaps,
-  aligned text, compact tab underlines, version visibility at 1080px, and workspace
-  visibility at 1400px, including live resize across both breakpoints.
+  1600x1000 without widening for theme changes, scoping the workspace-path UIA
+  lookup to the 38px header band so `GitPanel` body paths never collide below
+  1400px. Appearance uses Tab focus and Enter/Escape (`restore_dropdown_menu_focus`
+  returns workbench focus after menu confirmation), and Default's Add uses Tab too.
+  Header menus are File/Publish/Help. The [header regression](../../src/desktop/ui/tests.rs)
+  checks equal group gaps, aligned text, compact tab underlines, version visibility
+  at 1080px, and workspace visibility at 1400px across live resize.
 - Minimum-size flows bring scrollable targets into view: Actions via settings
   search, the Comparison suite via wheel, and landing removal via editor scroll.
   Artifact's added Rename size matrix uses the scoped context menu; original

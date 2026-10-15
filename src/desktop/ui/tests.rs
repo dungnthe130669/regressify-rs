@@ -10419,6 +10419,41 @@ async fn toolbar_dropdown_preserves_popup_and_modified_arrow_keys(cx: &mut TestA
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(window.focused(cx), Some(view.read(cx).focus.clone()));
+        window.click("theme-picker", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("popup-menu")
+            .is_some_and(|menu| menu.visible())
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(1_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.focused(cx), Some(view.read(cx).focus.clone()));
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-shift-f"
+            } else {
+                "ctrl-shift-f"
+            },
+            cx,
+        );
+        assert!(
+            view.read(cx)
+                .field_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window),
+            "Workbench shortcuts must stay active after confirming a dropdown menu item"
+        );
     })
     .unwrap();
 }

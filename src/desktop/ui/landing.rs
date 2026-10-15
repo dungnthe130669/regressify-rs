@@ -216,7 +216,8 @@ impl Workbench {
             body = body.child(div().flex().flex_shrink_0().gap_2().items_center()
                 .child(Button::new("landing-app-menu").flex_1().min_w_0().label(state.open.as_ref().map(|file| file.app.heading.clone()).unwrap_or_else(|| "New landing app".into()))
                     .icon(gpui_kit::assets::IconName::ChevronDown).disabled(locked || files.is_empty())
-                    .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
+                    .dropdown_menu({ let focus = focus.clone(); move |menu, window, cx| {
+                        design::restore_dropdown_menu_focus(menu.focus_handle(cx), focus.clone(), window, cx);
                         let mut menu = menu.action_context(focus.clone());
                         for (path, label) in &files { menu = menu.menu(label.clone(), Box::new(ChooseLandingApp { path: path.clone() })); }
                         menu

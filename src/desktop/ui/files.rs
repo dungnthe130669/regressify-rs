@@ -403,7 +403,13 @@ impl Workbench {
             .ghost()
             .label("File")
             .disabled(self.busy)
-            .dropdown_menu(move |menu, _, _| {
+            .dropdown_menu(move |menu, window, cx| {
+                design::restore_dropdown_menu_focus(
+                    menu.focus_handle(cx),
+                    focus.clone(),
+                    window,
+                    cx,
+                );
                 let mut menu = menu.action_context(focus.clone());
                 for (label, action, enabled) in &entries {
                     menu = menu.menu_with_disabled(*label, Box::new(action.clone()), !enabled);

@@ -218,7 +218,13 @@ impl Render for LogControls {
                         )
                         .prepare_for_toolbar()
                         .with_size(gpui_kit::component::Size::Medium)
-                        .dropdown_menu(move |menu, _, _| {
+                        .dropdown_menu(move |menu, window, cx| {
+                            super::design::restore_dropdown_menu_focus(
+                                menu.focus_handle(cx),
+                                focus.clone(),
+                                window,
+                                cx,
+                            );
                             let mut menu = menu.action_context(focus.clone());
                             for (index, choice) in LEVELS.iter().enumerate() {
                                 menu = menu.menu_with_check_and_disabled(
@@ -244,7 +250,13 @@ impl Render for LogControls {
                         )
                         .prepare_for_toolbar()
                         .with_size(gpui_kit::component::Size::Medium)
-                        .dropdown_menu(move |menu, _, _| {
+                        .dropdown_menu(move |menu, window, cx| {
+                            super::design::restore_dropdown_menu_focus(
+                                menu.focus_handle(cx),
+                                stage_focus.clone(),
+                                window,
+                                cx,
+                            );
                             let mut menu =
                                 menu.action_context(stage_focus.clone()).scrollable(true);
                             for (index, choice) in STAGES.iter().enumerate() {
