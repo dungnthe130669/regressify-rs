@@ -770,13 +770,22 @@ prevents old screenshots from being mixed into a new comparison.
 
 Comparison reports retain diff artifacts only for current mismatches. The standalone `compare` command accepts `--async-compare-limit` (default `2`); `test` and `ref` use the suite or workspace `asyncCompareLimit` value.
 
+For equal-width captures, comparison can align several inserted or deleted
+vertical bands, including an insertion that pushes content out of a fixed-height
+viewport. Partially changed rows can still support alignment through their
+unchanged content; the changed pixels remain highlighted. Common blank
+backgrounds alone do not justify a shift, and clean unshifted rows are protected
+from unrelated changes elsewhere on the page. The alignment search is bounded
+rather than exhaustive, and generated diffs stay within the image-size limits.
+Saved alignment is shared by desktop and web crosshairs.
+
 Two independent settings control comparison:
 
 - `pixelMatchThreshold` controls how different two pixel colors must be to count
   as a mismatch and receive a diff highlight. Range: `0` to `100`; default: `5`.
   Lower values detect subtler changes. The comparer divides this value by `100`,
   so `5` corresponds to a normalized tolerance of `0.05`. `0` removes color
-  tolerance; anti-alias filtering still applies to equal-size images.
+  tolerance; anti-alias filtering still applies to equal-width aligned images.
 - `misMatchThreshold` is the percentage of mismatched pixels allowed for a pass.
   Range: `0` to `100`; default: `0.1`. It does not change diff highlighting.
 

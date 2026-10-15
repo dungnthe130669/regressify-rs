@@ -101,13 +101,16 @@ Verified: 2026-10-15
   scrolling or no-upscaling policy.
 - [Comparer](../../src/compare/image_compare.rs) exports single-band and multi-band
   vertical-gap alignment (`reference`/`test` and `referenceGaps`/`testGaps`) through
-  saved reports and snapshots. Native/web crosshairs map source pixels through
+  saved reports and snapshots. Partial anchors use local informative full/half-row
+  signatures, including vertical variation, without relaxing clean-row penalties.
+  Native/web crosshairs map source pixels through
   aligned diff rows; missing band rows have no target pixel. Native
   [pointer geometry](../../src/desktop/ui/reports.rs) uses maximum-width/height
   canvas coordinates, including blank space beyond smaller images, without
   clamping guides to individual image sizes. `crosshairs_` includes a multi-band
   generated-PNG GPUI pointer test; web `aligned diff bands` covers multi-band
-  directions and zoom.
+  directions and zoom. The ignored `full_page_comparison_quality_and_timing`
+  release test checks exact alignments and reports synthetic 1440x10000 timings.
 - Native guides measure image coordinates separately from a stationary lane-sized
   overlay. `crosshairs_` covers hover outside the shared canvas, viewport bounds
   after scrolling, and unchanged overflow; native Comparison probes full-lane strokes.

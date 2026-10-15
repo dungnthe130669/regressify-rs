@@ -434,7 +434,7 @@ impl Workspace {
         Ok(Entry {
             editable: read_document(&resolved).is_ok(),
             path: relative.to_path_buf(),
-            kind: entry_kind(relative),
+            kind: entry_kind(resolved.strip_prefix(&self.root)?),
         })
     }
 
@@ -718,9 +718,14 @@ impl Workspace {
         kind: DocumentKind,
         source: &str,
     ) -> Result<OpenDocument> {
-        if kind == DocumentKind::Suite || entry_kind(relative) == DocumentKind::Suite {
+        let path = self.resolve(relative)?;
+        let resolved_relative = path.strip_prefix(&self.root)?;
+        // Validate the actual destination, including aliases into visual_tests.
+        let kind = if kind == DocumentKind::Suite
+            || entry_kind(resolved_relative) == DocumentKind::Suite
+        {
             let suite_name = Entry {
-                path: relative.into(),
+                path: resolved_relative.into(),
                 kind: DocumentKind::Suite,
                 editable: true,
             }
@@ -729,7 +734,10 @@ impl Workspace {
                 anyhow!("Test suite files must use .tests.yaml, .tests.yml, or .tests.json")
             })?;
             crate::test::validate_suite_identifier("Suite name", Some(&suite_name))?;
-        }
+            DocumentKind::Suite
+        } else {
+            kind
+        };
         let document = Document::new(kind, Format::for_path(relative), source.to_string())?;
         document.validate()?;
         validate_typed_source(&document)?;
@@ -739,7 +747,6 @@ impl Workspace {
         {
             anyhow::bail!("{}", issue.message);
         }
-        let path = self.resolve(relative)?;
         ensure!(
             !path.exists(),
             "A file already exists at '{}'",
@@ -1020,18 +1027,23 @@ fn entry_kind(relative: &Path) -> DocumentKind {
         .unwrap_or_default();
     let mut components = relative.components();
     let first = components.next().and_then(|part| part.as_os_str().to_str());
+    let in_folder = |folder: &str| {
+        first.is_some_and(|first| {
+            first == folder || (cfg!(windows) && first.eq_ignore_ascii_case(folder))
+        })
+    };
     if components.next().is_none() && matches!(name.as_str(), "regressify.yaml" | "regressify.yml")
     {
         return DocumentKind::Workspace;
     }
-    if first == Some("visual_tests")
+    if in_folder("visual_tests")
         && [".tests.yaml", ".tests.yml", ".tests.json"]
             .iter()
             .any(|suffix| name.ends_with(suffix))
     {
         return DocumentKind::Suite;
     }
-    if first == Some("common")
+    if in_folder("common")
         && Format::for_path(relative) != Format::Text
         && name.contains("viewports")
     {
@@ -2291,6 +2303,115 @@ mod tests {
         let workspace = Workspace::open(directory.path()).unwrap();
         std::os::unix::fs::symlink(external.path(), directory.path().join("outside")).unwrap();
         assert!(workspace.resolve(Path::new("outside/file.yaml")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_as_validates_case_aliased_suite_destinations() {
+        for existing_directory in [false, true] {
+            for folder in ["visual_tests", "VISUAL_TESTS", "Visual_Tests"] {
+                let directory = tempfile::tempdir().unwrap();
+                let workspace = Workspace::open(directory.path()).unwrap();
+                if existing_directory {
+                    fs::create_dir(directory.path().join("visual_tests")).unwrap();
+                }
+                let source = "scenarios:\n  - url: https://example.com\n";
+                let template = workspace
+                    .create_document(
+                        Path::new("common/template.yaml"),
+                        DocumentKind::Data,
+                        source,
+                    )
+                    .unwrap();
+                for name in [
+                    ".checkout",
+                    "all",
+                    "_snapshot",
+                    "_diagnostics",
+                    "_landing",
+                    "states",
+                ] {
+                    let relative = Path::new(folder)
+                        .join("nested")
+                        .join(format!("{name}.tests.yaml"));
+                    assert!(
+                        workspace.save_as(&template, &relative).is_err(),
+                        "{relative:?}, existing_directory={existing_directory}"
+                    );
+                    assert!(
+                        workspace
+                            .create_document(&relative, DocumentKind::Data, source)
+                            .is_err()
+                    );
+                    assert!(!directory.path().join(&relative).exists());
+                }
+                assert!(!directory.path().join(folder).join("nested").exists());
+                let relative = Path::new(folder).join("nested/checkout.tests.yaml");
+                let saved = workspace.save_as(&template, &relative).unwrap();
+                assert_eq!(saved.entry.kind, DocumentKind::Suite);
+                assert_eq!(
+                    workspace.classify_entry(&relative).unwrap().kind,
+                    DocumentKind::Suite
+                );
+                assert_eq!(workspace.runnable_suite(&saved.entry).unwrap(), "checkout");
+                assert_eq!(saved.document.source(), source);
+                assert!(workspace.save_as(&template, &relative).is_err());
+                assert_eq!(
+                    fs::read_to_string(workspace.resolve(&relative).unwrap()).unwrap(),
+                    source
+                );
+                assert_eq!(template.document.source(), source);
+            }
+        }
+    }
+
+    #[test]
+    fn save_as_applies_suite_validation_to_data_templates() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let template = workspace
+            .create_document(
+                Path::new("common/template.yaml"),
+                DocumentKind::Data,
+                "unknownSuiteField: true\n",
+            )
+            .unwrap();
+        let relative = Path::new("visual_tests/checkout.tests.yaml");
+        assert!(workspace.save_as(&template, relative).is_err());
+        assert!(!directory.path().join(relative).exists());
+        assert_eq!(template.document.source(), "unknownSuiteField: true\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_as_validates_symlinked_suite_destinations() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        fs::create_dir(directory.path().join("visual_tests")).unwrap();
+        std::os::unix::fs::symlink(
+            directory.path().join("visual_tests"),
+            directory.path().join("suite-alias"),
+        )
+        .unwrap();
+        let source = "scenarios:\n  - url: https://example.com\n";
+        let template = workspace
+            .create_document(
+                Path::new("common/template.yaml"),
+                DocumentKind::Data,
+                source,
+            )
+            .unwrap();
+        let relative = Path::new("suite-alias/.checkout.tests.yaml");
+        assert!(workspace.save_as(&template, relative).is_err());
+        assert!(!directory.path().join(relative).exists());
+        let relative = Path::new("suite-alias/checkout.tests.yaml");
+        let saved = workspace.save_as(&template, relative).unwrap();
+        assert_eq!(saved.entry.kind, DocumentKind::Suite);
+        assert_eq!(
+            workspace.classify_entry(relative).unwrap().kind,
+            DocumentKind::Suite
+        );
+        assert_eq!(workspace.runnable_suite(&saved.entry).unwrap(), "checkout");
     }
 
     #[test]

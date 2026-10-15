@@ -1183,7 +1183,13 @@ Open in File Explorer (Windows), Open in Finder (macOS), or Open in File Manager
 (Linux) opens the workspace folder in the operating system's default folder viewer.
 These actions require an open workspace and do not save or discard editor drafts.
 Save As takes a workspace-relative destination and never replaces an existing
-file. Reload discards a draft after confirmation. Suite-file deletion is
+file. Destinations under `visual_tests` use suite-name and suite-content
+validation even when saving a Data template. Windows directory casing and
+in-workspace path aliases cannot bypass these checks. Suite filenames must use
+`.tests.yaml`, `.tests.yml`, or `.tests.json`; their names cannot start with `.`
+or use the reserved names `all`, `_snapshot`, `_diagnostics`, `_landing`, or
+`states` (case-insensitive). Dot-prefixed helper files under `common` remain
+allowed. Reload discards a draft after confirmation. Suite-file deletion is
 confirmed but cannot be undone through document history.
 
 The open file is checked for external changes about once per second in the

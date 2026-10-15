@@ -621,6 +621,14 @@ struct RowSignature {
     right_informative: bool,
 }
 
+impl RowSignature {
+    fn has_informative_match(self, other: Self) -> bool {
+        (self.full_informative && other.full_informative && self.full == other.full)
+            || (self.left_informative && other.left_informative && self.left == other.left)
+            || (self.right_informative && other.right_informative && self.right == other.right)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct AlignedAnchor {
     ref_start: usize,
@@ -640,6 +648,8 @@ fn compute_row_signatures(image: ImageView<'_>) -> Vec<RowSignature> {
     let half = (samples / 2).max(1);
     let mut signatures = Vec::with_capacity(image.height);
     let mut prev_full = None;
+    let mut prev_left = None;
+    let mut prev_right = None;
 
     for row in 0..image.height {
         let slice = image.row_slice(row);
@@ -689,16 +699,19 @@ fn compute_row_signatures(image: ImageView<'_>) -> Vec<RowSignature> {
             }
         }
 
-        let full_informative = full_varied || prev_full.is_some_and(|prev| prev != full);
-        prev_full = Some(full);
+        // A uniform half can identify a vertical gradient, but a constant
+        // background must not inherit information from the other half.
         signatures.push(RowSignature {
             full,
             left,
             right,
-            full_informative,
-            left_informative: left_varied,
-            right_informative: right_varied,
+            full_informative: full_varied || prev_full.is_some_and(|prev| prev != full),
+            left_informative: left_varied || prev_left.is_some_and(|prev| prev != left),
+            right_informative: right_varied || prev_right.is_some_and(|prev| prev != right),
         });
+        prev_full = Some(full);
+        prev_left = Some(left);
+        prev_right = Some(right);
     }
     signatures
 }
@@ -838,7 +851,7 @@ fn find_best_shifted_anchor(
         let mut run_start = None;
         let mut run_aligned = 0_usize;
         let mut run_closely_aligned = 0_usize;
-        let mut run_informative = 0_usize;
+        let mut run_supported = 0_usize;
         let mut run_gain = 0_i64;
         let mut bad_streak = 0_usize;
         let mut last_good_r = r_start;
@@ -847,13 +860,12 @@ fn find_best_shifted_anchor(
                                 end: usize,
                                 aligned: usize,
                                 closely_aligned: usize,
-                                informative: usize,
+                                supported: usize,
                                 gain: i64| {
             let len = end.saturating_sub(start);
             if len < MIN_TAIL_ALIGNED_ROWS
                 || aligned < MIN_TAIL_ALIGNED_ROWS
-                || closely_aligned < MIN_TAIL_ALIGNED_ROWS
-                || informative < MIN_TAIL_ALIGNED_ROWS.min(len)
+                || supported < MIN_TAIL_ALIGNED_ROWS
                 || aligned * 4 < len * 3
                 || gain <= 0
             {
@@ -910,15 +922,20 @@ fn find_best_shifted_anchor(
                     run_start = Some(r);
                     run_aligned = 0;
                     run_closely_aligned = 0;
-                    run_informative = 0;
+                    run_supported = 0;
                     run_gain = 0;
                 }
                 run_aligned += 1;
                 if shifted <= max_aligned_diff {
                     run_closely_aligned += 1;
                 }
-                if ref_sigs[r].full_informative || test_sigs[t].full_informative {
-                    run_informative += 1;
+                // Partial matches need local signature evidence, not just votes
+                // elsewhere on this diagonal or a shared flat background.
+                if (shifted <= max_aligned_diff
+                    && (ref_sigs[r].full_informative || test_sigs[t].full_informative))
+                    || ref_sigs[r].has_informative_match(test_sigs[t])
+                {
+                    run_supported += 1;
                 }
                 run_gain += row_gain;
                 last_good_r = r + 1;
@@ -932,7 +949,7 @@ fn find_best_shifted_anchor(
                         last_good_r,
                         run_aligned,
                         run_closely_aligned,
-                        run_informative,
+                        run_supported,
                         run_gain,
                     );
                     run_start = None;
@@ -945,7 +962,7 @@ fn find_best_shifted_anchor(
                 last_good_r,
                 run_aligned,
                 run_closely_aligned,
-                run_informative,
+                run_supported,
                 run_gain,
             );
         }
@@ -2597,6 +2614,438 @@ mod tests {
             DiffAlignment::from_gaps(vec![gap1, gap2], Vec::new())
         );
         assert_eq!(result.mis_match_percentage, "11.11");
+    }
+
+    #[test]
+    fn multiband_alignment_preserves_partially_changed_rows_in_both_directions() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 100;
+        let height = 160;
+        let gaps = vec![
+            VerticalGap {
+                start: 30,
+                height: 7,
+            },
+            VerticalGap {
+                start: 100,
+                height: 13,
+            },
+        ];
+        let reference = patterned_image(width, height);
+        let pink = RGBA8::new(255, 0, 255, 200);
+
+        for changed_columns in [2, 20, 50] {
+            for first_column in [0, width - changed_columns] {
+                let columns = first_column..first_column + changed_columns;
+                let mut test = reference[..30 * width].to_vec();
+                test.extend(vec![RGBA8::new(0, 0, 0, 255); 7 * width]);
+                test.extend_from_slice(&reference[30 * width..100 * width]);
+                test.extend(vec![RGBA8::new(255, 255, 255, 255); 13 * width]);
+                test.extend_from_slice(&reference[100 * width..]);
+                for row in 37..107 {
+                    for column in columns.clone() {
+                        let pixel = &mut test[row * width + column];
+                        *pixel = RGBA8::new(pixel.r ^ 0xff, pixel.g ^ 0xff, pixel.b ^ 0xff, 255);
+                    }
+                }
+                for reversed in [false, true] {
+                    let (before, after) = if reversed {
+                        (&test, &reference)
+                    } else {
+                        (&reference, &test)
+                    };
+                    fs::write(
+                        &reference_path,
+                        lodepng::encode32(before, width, before.len() / width).unwrap(),
+                    )
+                    .unwrap();
+                    fs::write(
+                        &test_path,
+                        lodepng::encode32(after, width, after.len() / width).unwrap(),
+                    )
+                    .unwrap();
+
+                    let (result, diff) =
+                        compare_images_with_threshold(&reference_path, &test_path, 0.0).unwrap();
+                    let expected = if reversed {
+                        DiffAlignment::from_gaps(Vec::new(), gaps.clone())
+                    } else {
+                        DiffAlignment::from_gaps(gaps.clone(), Vec::new())
+                    };
+                    assert_eq!(
+                        result.alignment, expected,
+                        "columns={columns:?}, reversed={reversed}"
+                    );
+                    let expected_mismatch =
+                        (20 * width + 70 * changed_columns) as f64 / test.len() as f64 * 100.0;
+                    assert!((result.raw_mis_match_percentage - expected_mismatch).abs() < 1e-10);
+                    let diff = lodepng::decode32(diff.unwrap()).unwrap();
+                    assert_eq!((diff.width, diff.height), (width, height + 20));
+                    for (index, pixel) in diff.buffer.iter().enumerate() {
+                        let row = index / width;
+                        let column = index % width;
+                        let changed = (30..37).contains(&row)
+                            || (107..120).contains(&row)
+                            || ((37..107).contains(&row) && columns.contains(&column));
+                        assert_eq!(*pixel == pink, changed, "row={row}, column={column}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multiband_alignment_uses_vertically_varying_half_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 100;
+        let height = 160;
+        for border_column in [0, 96] {
+            let mut reference = patterned_image(width, height);
+            for row in 30..100 {
+                let background = RGBA8::new(
+                    ((row * 8) % 256) as u8,
+                    ((row * 11) % 256) as u8,
+                    ((row * 17) % 256) as u8,
+                    255,
+                );
+                reference[row * width..(row + 1) * width].fill(background);
+                reference[row * width + border_column] = RGBA8::new(240, 20, 20, 255);
+            }
+            let mut test = reference[..30 * width].to_vec();
+            test.extend(vec![RGBA8::new(0, 0, 0, 255); 7 * width]);
+            test.extend_from_slice(&reference[30 * width..100 * width]);
+            test.extend(vec![RGBA8::new(255, 255, 255, 255); 13 * width]);
+            test.extend_from_slice(&reference[100 * width..]);
+            for row in 37..107 {
+                test[row * width + border_column] = RGBA8::new(20, 20, 240, 255);
+            }
+            for reversed in [false, true] {
+                let (before, after) = if reversed {
+                    (&test, &reference)
+                } else {
+                    (&reference, &test)
+                };
+                fs::write(
+                    &reference_path,
+                    lodepng::encode32(before, width, before.len() / width).unwrap(),
+                )
+                .unwrap();
+                fs::write(
+                    &test_path,
+                    lodepng::encode32(after, width, after.len() / width).unwrap(),
+                )
+                .unwrap();
+                let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+                let gaps = vec![
+                    VerticalGap {
+                        start: 30,
+                        height: 7,
+                    },
+                    VerticalGap {
+                        start: 100,
+                        height: 13,
+                    },
+                ];
+                let expected = if reversed {
+                    DiffAlignment::from_gaps(Vec::new(), gaps)
+                } else {
+                    DiffAlignment::from_gaps(gaps, Vec::new())
+                };
+                assert_eq!(
+                    result.alignment, expected,
+                    "border_column={border_column}, reversed={reversed}"
+                );
+                assert_eq!(result.mis_match_percentage, "11.50");
+                let diff = lodepng::decode32(diff.unwrap()).unwrap();
+                let pink = RGBA8::new(255, 0, 255, 200);
+                for row in 37..107 {
+                    for column in 0..width {
+                        assert_eq!(
+                            diff.buffer[row * width + column] == pink,
+                            column == border_column
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn row_signatures_distinguish_vertical_variation_from_constant_halves() {
+        let width = 32;
+        let height = 8;
+        for varying_left in [false, true] {
+            let mut pixels = vec![RGBA8::new(255, 255, 255, 255); width * height];
+            for row in 0..height {
+                let columns = if varying_left { 0..16 } else { 16..32 };
+                let color = RGBA8::new((row * 32) as u8, 10, 90, 255);
+                for column in columns {
+                    pixels[row * width + column] = color;
+                }
+            }
+            let signatures = compute_row_signatures(ImageView {
+                pixels: &pixels,
+                width,
+                height,
+                gaps: &[],
+            });
+            assert!(!signatures[0].left_informative && !signatures[0].right_informative);
+            for signature in &signatures[1..] {
+                assert_eq!(signature.left_informative, varying_left);
+                assert_eq!(signature.right_informative, !varying_left);
+            }
+        }
+    }
+
+    #[test]
+    fn row_signatures_require_information_in_the_matching_half() {
+        let width = 32;
+        let height = 16;
+        let mut reference = patterned_image(width, height);
+        for row in 0..height {
+            reference[row * width + 16..(row + 1) * width].fill(RGBA8::new(255, 255, 255, 255));
+        }
+        let mut test = reference.clone();
+        for row in 0..height {
+            for pixel in &mut test[row * width..row * width + 16] {
+                *pixel = RGBA8::new(pixel.r ^ 0xff, pixel.g ^ 0xff, pixel.b ^ 0xff, 255);
+            }
+        }
+        let view = |pixels| ImageView {
+            pixels,
+            width,
+            height,
+            gaps: &[],
+        };
+        let reference_signatures = compute_row_signatures(view(&reference));
+        let test_signatures = compute_row_signatures(view(&test));
+        for (reference, test) in reference_signatures.into_iter().zip(test_signatures) {
+            assert_eq!(reference.right, test.right);
+            assert!(reference.full_informative && test.full_informative);
+            assert!(!reference.has_informative_match(test));
+        }
+        assert_eq!(
+            find_alignment_gaps(view(&reference), view(&test), 0.0),
+            DiffAlignment::default()
+        );
+    }
+
+    #[test]
+    fn partial_anchors_require_four_locally_supported_rows() {
+        let width = 100;
+        for height in [3, 4, 5] {
+            let reference = patterned_image(width, height);
+            let mut test = vec![RGBA8::new(255, 255, 255, 255); 6 * width];
+            test.extend_from_slice(&reference);
+            for row in 6..6 + height {
+                for pixel in &mut test[row * width..row * width + 20] {
+                    *pixel = RGBA8::new(pixel.r ^ 0xff, pixel.g ^ 0xff, pixel.b ^ 0xff, 255);
+                }
+            }
+            let reference = ImageView {
+                pixels: &reference,
+                width,
+                height,
+                gaps: &[],
+            };
+            let test = ImageView {
+                pixels: &test,
+                width,
+                height: height + 6,
+                gaps: &[],
+            };
+            let anchor = find_best_shifted_anchor(
+                reference,
+                test,
+                &compute_row_signatures(reference),
+                &compute_row_signatures(test),
+                0..height,
+                6..6 + height,
+                0.0,
+            );
+            if height < MIN_TAIL_ALIGNED_ROWS {
+                assert!(anchor.is_none());
+            } else {
+                let anchor = anchor.unwrap();
+                assert_eq!(
+                    (anchor.ref_start, anchor.test_start, anchor.len),
+                    (0, 6, height)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multiband_alignment_handles_partial_mixed_and_viewport_shifts() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 100;
+        let height = 200;
+        let reference = patterned_image(width, height);
+        for deleted_row in [130, height - 10] {
+            let mut test = reference[..30 * width].to_vec();
+            test.extend(vec![RGBA8::new(0, 0, 0, 255); 10 * width]);
+            test.extend_from_slice(&reference[30 * width..deleted_row * width]);
+            test.extend_from_slice(&reference[(deleted_row + 10) * width..]);
+            for row in 40..deleted_row + 10 {
+                for pixel in &mut test[row * width..row * width + 20] {
+                    *pixel = RGBA8::new(pixel.r ^ 0xff, pixel.g ^ 0xff, pixel.b ^ 0xff, 255);
+                }
+            }
+            for reversed in [false, true] {
+                let (before, after) = if reversed {
+                    (&test, &reference)
+                } else {
+                    (&reference, &test)
+                };
+                fs::write(
+                    &reference_path,
+                    lodepng::encode32(before, width, height).unwrap(),
+                )
+                .unwrap();
+                fs::write(&test_path, lodepng::encode32(after, width, height).unwrap()).unwrap();
+                let (result, diff) =
+                    compare_images_with_threshold(&reference_path, &test_path, 0.0).unwrap();
+                let ref_gaps = vec![VerticalGap {
+                    start: 30,
+                    height: 10,
+                }];
+                let test_gaps = vec![VerticalGap {
+                    start: deleted_row + 10,
+                    height: 10,
+                }];
+                let expected = if reversed {
+                    DiffAlignment::from_gaps(test_gaps, ref_gaps)
+                } else {
+                    DiffAlignment::from_gaps(ref_gaps, test_gaps)
+                };
+                assert!(result.is_same_dimensions);
+                assert_eq!(
+                    result.alignment, expected,
+                    "deleted_row={deleted_row}, reversed={reversed}"
+                );
+                let expected_count = 20 * width + (deleted_row - 30) * 20;
+                let expected_mismatch =
+                    expected_count as f64 / (width * (height + 10)) as f64 * 100.0;
+                assert!((result.raw_mis_match_percentage - expected_mismatch).abs() < 1e-10);
+                let diff = lodepng::decode32(diff.unwrap()).unwrap();
+                assert_eq!(diff.height, height + 10);
+                assert_eq!(
+                    diff.buffer
+                        .iter()
+                        .filter(|&&pixel| pixel == RGBA8::new(255, 0, 255, 200))
+                        .count(),
+                    expected_count
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "manual 1440x10000 quality/timing benchmark; run with --release --ignored --nocapture"]
+    fn full_page_comparison_quality_and_timing() {
+        assert!(!cfg!(debug_assertions), "Run this benchmark with --release");
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 1440;
+        let height = 10_000;
+        let reference = patterned_image(width, height);
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        for case in [
+            "identical",
+            "localized",
+            "partial-multiband",
+            "viewport-shift",
+        ] {
+            let (mut test, expected_alignment) = match case {
+                "partial-multiband" => {
+                    let mut test = reference[..2500 * width].to_vec();
+                    test.extend(vec![RGBA8::new(0, 0, 0, 255); 80 * width]);
+                    test.extend_from_slice(&reference[2500 * width..7000 * width]);
+                    test.extend(vec![RGBA8::new(255, 255, 255, 255); 120 * width]);
+                    test.extend_from_slice(&reference[7000 * width..]);
+                    for row in 2580..7080 {
+                        for pixel in &mut test[row * width..row * width + width / 5] {
+                            *pixel =
+                                RGBA8::new(pixel.r ^ 0xff, pixel.g ^ 0xff, pixel.b ^ 0xff, 255);
+                        }
+                    }
+                    (
+                        test,
+                        DiffAlignment::from_gaps(
+                            vec![
+                                VerticalGap {
+                                    start: 2500,
+                                    height: 80,
+                                },
+                                VerticalGap {
+                                    start: 7000,
+                                    height: 120,
+                                },
+                            ],
+                            Vec::new(),
+                        ),
+                    )
+                }
+                "viewport-shift" => {
+                    let mut test = reference[..2500 * width].to_vec();
+                    test.extend(vec![RGBA8::new(0, 0, 0, 255); 80 * width]);
+                    test.extend_from_slice(&reference[2500 * width..(height - 80) * width]);
+                    (
+                        test,
+                        DiffAlignment::from_gaps(
+                            vec![VerticalGap {
+                                start: 2500,
+                                height: 80,
+                            }],
+                            vec![VerticalGap {
+                                start: height,
+                                height: 80,
+                            }],
+                        ),
+                    )
+                }
+                _ => (reference.clone(), DiffAlignment::default()),
+            };
+            if case == "localized" {
+                for row in 4000..4040 {
+                    test[row * width + 100..row * width + 400].fill(RGBA8::new(255, 255, 255, 255));
+                }
+            }
+            fs::write(
+                &test_path,
+                lodepng::encode32(&test, width, test.len() / width).unwrap(),
+            )
+            .unwrap();
+            drop(test);
+            let mut timings = Vec::new();
+            for _ in 0..3 {
+                let started = Instant::now();
+                let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+                timings.push(started.elapsed());
+                assert_eq!(result.alignment, expected_alignment, "{case}");
+                assert_eq!(diff.is_none(), case == "identical");
+                if case == "identical" {
+                    assert_eq!(result.raw_mis_match_percentage, 0.0);
+                }
+            }
+            timings.sort();
+            eprintln!(
+                "{case}: median={:.3}s max={:.3}s (3 comparisons; PNG read/decode, alignment, diff encoding)",
+                timings[1].as_secs_f64(),
+                timings[2].as_secs_f64()
+            );
+        }
     }
 
     #[test]

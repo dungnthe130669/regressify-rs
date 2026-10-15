@@ -87,6 +87,10 @@ Verified: 2026-10-15
 - [Workspace saves](../../src/desktop/workspace.rs) validate the corrected draft,
   not the previous saved source. Unparseable old source skips optional report-label
   migration without weakening exact-byte external-conflict checks.
+- Create/Save As validates resolved suite destinations, including Windows case
+  aliases, and promotes Data templates to Suite validation before writing.
+  `save_as_` covers name/content rejection, no-clobber writes, and kept source bytes;
+  ordinary dot-prefixed helpers remain allowed.
 - Editor diagnostics describe the draft; suite catalog errors describe the saved
   file and refresh after Save succeeds. The `corrected_invalid_source` filter in
   `cargo test --locked --features gui-tests --lib corrected_invalid_source -- --test-threads=1`

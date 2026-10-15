@@ -40,6 +40,21 @@ Issues identified during adversarial review that remain after the September 2026
   anti-aliasing checks. Both [desktop Results](src/desktop/ui/reports.rs) and
   the [web viewer](frontend/src/components/ComparisonViewer.tsx) map crosshairs
   across multi-band alignments.
+- Resolved in source: the near-perfect-row requirement rejected supported
+  multi-band shifts when part of every middle row changed, and half-row
+  signatures ignored useful variation between otherwise uniform rows.
+  [Anchor selection](src/compare/image_compare.rs) now accepts local informative
+  signature matches as evidence for partially changed rows while retaining
+  clean-row penalties, constant-background rejection, deterministic ranking,
+  and bounded search. Regressions cover insertions/deletions, mixed and viewport
+  shifts, 2-50% changed columns, and the minimum supported-row boundary.
+- Resolved in source: [Save As](src/desktop/workspace.rs) classified the requested
+  path before resolution, allowing Windows case aliases to bypass suite-name
+  checks when the source was Data. Creation and file classification now use the
+  resolved destination with Windows folder-case handling. Saving a Data template
+  into a suite validates suite content and returns a Suite document; invalid
+  destinations do not create files, and ordinary dot-prefixed helpers remain
+  supported.
 - Resolved in source: [PNG loading and diff rendering](src/compare/image_compare.rs)
   decoded each file after a separate header open, cloned the decoded `RGBA8`
   buffer, decoded both images even when raw bytes were identical, and evaluated

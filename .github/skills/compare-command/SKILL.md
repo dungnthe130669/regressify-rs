@@ -19,6 +19,7 @@ description: 'Use when changing regressify compare, capture-run selection, image
 1. Missing references, capture errors, and visual mismatches remain report results. Malformed manifests, unreadable files, and report-write failures are process errors.
 1. Preserve PNG safety limits and signed dimension differences. Do not conflate a size mismatch with a decoding or I/O failure.
 1. Persist the comparer's chosen `alignment` on report `diff`: optional `reference`/`test` gaps and multi-band `referenceGaps`/`testGaps` contain strictly increasing source-row `start` and positive `height` with disjoint aligned intervals. Skip byte-identical prefix/row slices, prevent unaligned top-of-page changes from pulling `start` across intact middle sections, support large, near-bottom, multi-band, and same-height viewport insertions when contested rows align, and apply anti-aliasing detection across mapped source rows. Preserve the exact decision used to render the diff, including explicit unshifted metadata. Older reports omit it. Do not reconstruct alignment from dimensions or magenta pixels in consumers; rerun Compare for legacy captures.
+1. Partial-row anchors need local informative signature evidence, not mandatory near-perfect rows or votes from a different region. Track each half's horizontal and vertical variation independently; a constant half cannot inherit information from the other half. Retain clean-row penalties, minimum support, deterministic ties, bounded candidate/depth searches, and canvas pixel/dimension limits.
 1. Report-viewport approval recalculates the reviewed capture list, order, and per-pair thresholds, not a narrowed selection or the current workspace settings.
 1. Persist `pixelMatchThreshold` on report pairs. A reviewed legacy report without it used normalized 0.1, so deserialize that missing field as 10 for approval; do not substitute the new-capture default.
 
@@ -29,6 +30,14 @@ cargo test --lib compare::
 ```
 
 Cover explicit/latest run choice, missing/unexpected captures, repeat generation, threshold boundaries, parallel order, malformed images, and failed artifact writes.
+
+For alignment quality and latency, run the opt-in synthetic 1440x10000 benchmark:
+
+```sh
+cargo test --release --lib full_page_comparison_quality_and_timing -- --ignored --nocapture --test-threads=1
+```
+
+It verifies exact alignments and reports three-run median/max times including PNG reads, decoding, alignment, and diff encoding. Use the release profile; do not enforce wall-clock assertions in ordinary CI or increase search bounds without measurement.
 
 ## Maintain
 

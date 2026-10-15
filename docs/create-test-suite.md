@@ -41,6 +41,9 @@ scenario execution are written to the reports instead of stopping sibling
 scenarios.
 IDs cannot have leading or trailing whitespace, trailing dots, control
 characters, or Windows-reserved device names such as `CON` and `LPT1`.
+Suite names and suite output IDs also cannot start with a dot or use `all`,
+`_snapshot`, `_diagnostics`, `_landing`, or `states` (case-insensitive). These
+restrictions do not apply to ordinary helper/data filenames under `common`.
 
 Before capture, Regressify also resolves every scenario, viewport, saved step,
 and selector target to its actual screenshot filename. Any collision, including
