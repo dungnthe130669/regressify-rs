@@ -218,12 +218,9 @@ pub(super) fn valid_segment(value: &str) -> bool {
 }
 
 pub(super) fn valid_suite_id(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
     valid_segment(value)
-        && !matches!(lower.as_str(), "_snapshot" | "_diagnostics" | "states")
-        && !lower.starts_with(".snapshot-")
-        && !lower.starts_with(".suite-update-")
-        && !lower.starts_with(".compare-staging-")
+        && !value.starts_with('.')
+        && !crate::test::is_reserved_suite_identifier(value)
 }
 
 fn normal_relative(relative: &Path) -> Result<()> {

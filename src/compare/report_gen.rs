@@ -1844,7 +1844,7 @@ fn build_diff(result: &CompareResult) -> ReportDiff {
             width: result.dimension_difference.0,
             height: result.dimension_difference.1,
         },
-        alignment: Some(result.alignment),
+        alignment: Some(result.alignment.clone()),
         raw_mis_match_percentage: result.raw_mis_match_percentage,
         mis_match_percentage: result.mis_match_percentage.clone(),
         analysis_time: result.analysis_time_ms,
@@ -1867,20 +1867,43 @@ mod tests {
 
         for alignment in [
             DiffAlignment::default(),
-            DiffAlignment {
-                reference: Some(VerticalGap {
+            DiffAlignment::from_gaps(
+                vec![VerticalGap {
                     start: 24,
                     height: 5,
-                }),
-                test: None,
-            },
-            DiffAlignment {
-                reference: None,
-                test: Some(VerticalGap {
+                }],
+                Vec::new(),
+            ),
+            DiffAlignment::from_gaps(
+                Vec::new(),
+                vec![VerticalGap {
                     start: 24,
                     height: 5,
-                }),
-            },
+                }],
+            ),
+            DiffAlignment::from_gaps(
+                vec![
+                    VerticalGap {
+                        start: 24,
+                        height: 5,
+                    },
+                    VerticalGap {
+                        start: 80,
+                        height: 10,
+                    },
+                ],
+                Vec::new(),
+            ),
+            DiffAlignment::from_gaps(
+                vec![VerticalGap {
+                    start: 24,
+                    height: 5,
+                }],
+                vec![VerticalGap {
+                    start: 90,
+                    height: 5,
+                }],
+            ),
         ] {
             let result = CompareResult {
                 is_same_dimensions: alignment == DiffAlignment::default(),
@@ -1889,15 +1912,18 @@ mod tests {
                 ref_height: 128,
                 test_width: 32,
                 test_height: 133,
-                alignment,
+                alignment: alignment.clone(),
                 raw_mis_match_percentage: 1.0,
                 mis_match_percentage: "1.00".into(),
                 analysis_time_ms: 0,
             };
             let mut value = serde_json::to_value(build_diff(&result)).unwrap();
-            assert_eq!(value["alignment"], serde_json::to_value(alignment).unwrap());
+            assert_eq!(
+                value["alignment"],
+                serde_json::to_value(&alignment).unwrap()
+            );
             let parsed: ReportDiff = serde_json::from_value(value.clone()).unwrap();
-            assert_eq!(parsed.alignment, Some(alignment));
+            assert_eq!(parsed.alignment, Some(alignment.clone()));
             #[cfg(feature = "desktop")]
             {
                 let parsed: crate::desktop::results::Difference =

@@ -15,7 +15,7 @@ import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "re
 import {
   alignedRowToImageRow,
   type Capture,
-  imageAlignmentGap,
+  imageAlignmentGaps,
   imageRowToAlignedRow,
 } from "../data/report";
 import { CaptureInfo } from "./CaptureInfo";
@@ -211,13 +211,21 @@ export function ComparisonViewer({
       label: "Reference",
       path: capture.reference,
       size: referenceSize,
-      gap: imageAlignmentGap(capture.alignment?.reference, referenceSize.height, diffSize?.height),
+      gap: imageAlignmentGaps(
+        capture.alignment?.referenceGaps ?? capture.alignment?.reference,
+        referenceSize.height,
+        diffSize?.height,
+      ),
     },
     {
       label: "Test",
       path: capture.test,
       size: testSize,
-      gap: imageAlignmentGap(capture.alignment?.test, testSize.height, diffSize?.height),
+      gap: imageAlignmentGaps(
+        capture.alignment?.testGaps ?? capture.alignment?.test,
+        testSize.height,
+        diffSize?.height,
+      ),
     },
     ...(capture.diff
       ? [{ label: "Diff", path: capture.diff, size: diffSize || fallback, gap: null }]

@@ -995,14 +995,12 @@ fn bounded_read(file: fs::File, limit: usize, label: &str) -> Result<Vec<u8>> {
 }
 
 fn validate_suite_id(suite: &str) -> Result<()> {
-    let lower = suite.to_ascii_lowercase();
     ensure!(
         !suite.is_empty()
+            && !suite.starts_with('.')
             && suite == suite.trim()
             && suite.len() <= 200
-            && !matches!(lower.as_str(), "_snapshot" | "_diagnostics" | "states")
-            && !lower.starts_with(".snapshot-")
-            && !lower.starts_with(".suite-update-")
+            && !crate::test::is_reserved_suite_identifier(suite)
             && Path::new(suite).components().count() == 1
             && Path::new(suite)
                 .components()

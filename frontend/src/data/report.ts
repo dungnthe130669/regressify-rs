@@ -120,6 +120,58 @@ const verticalGapSchema = z.object({
 });
 type VerticalGap = z.infer<typeof verticalGapSchema>;
 
+function validGapIntervals(gaps: readonly VerticalGap[]): Array<[number, number]> | null {
+  const intervals: Array<[number, number]> = [];
+  let shift = 0;
+  let previousStart = -1;
+  for (const gap of gaps) {
+    if (gap.start <= previousStart) return null;
+    previousStart = gap.start;
+    const alignedStart = gap.start + shift;
+    const alignedEnd = alignedStart + gap.height;
+    intervals.push([alignedStart, alignedEnd]);
+    shift += gap.height;
+  }
+  return intervals;
+}
+
+const diffAlignmentSchema = z
+  .object({
+    reference: verticalGapSchema.nullable(),
+    test: verticalGapSchema.nullable(),
+    referenceGaps: z.array(verticalGapSchema).nonempty().optional(),
+    testGaps: z.array(verticalGapSchema).nonempty().optional(),
+  })
+  .refine((alignment) => {
+    if (!alignment.referenceGaps && !alignment.testGaps && alignment.reference && alignment.test) {
+      return false;
+    }
+    if (
+      alignment.referenceGaps &&
+      (!alignment.reference ||
+        alignment.reference.start !== alignment.referenceGaps[0]?.start ||
+        alignment.reference.height !== alignment.referenceGaps[0]?.height)
+    ) {
+      return false;
+    }
+    if (
+      alignment.testGaps &&
+      (!alignment.test ||
+        alignment.test.start !== alignment.testGaps[0]?.start ||
+        alignment.test.height !== alignment.testGaps[0]?.height)
+    ) {
+      return false;
+    }
+    const refGaps = alignment.referenceGaps ?? (alignment.reference ? [alignment.reference] : []);
+    const testGaps = alignment.testGaps ?? (alignment.test ? [alignment.test] : []);
+    const refIntervals = validGapIntervals(refGaps);
+    const testIntervals = validGapIntervals(testGaps);
+    if (!refIntervals || !testIntervals) return false;
+    return !refIntervals.some(([rStart, rEnd]) =>
+      testIntervals.some(([tStart, tEnd]) => rStart < tEnd && tStart < rEnd),
+    );
+  });
+
 export const captureSchema = z
   .object({
     id: segment,
@@ -134,10 +186,7 @@ export const captureSchema = z
     reference: artifact("images").nullable(),
     test: artifact("images").nullable(),
     diff: artifact("images").nullable(),
-    alignment: z
-      .object({ reference: verticalGapSchema.nullable(), test: verticalGapSchema.nullable() })
-      .refine((alignment) => !alignment.reference || !alignment.test)
-      .optional(),
+    alignment: diffAlignmentSchema.optional(),
     imageSizes: z
       .object({
         reference: imageSizeSchema.nullable(),
@@ -193,6 +242,23 @@ export type SuiteReport = z.infer<typeof suiteReportSchema>;
 export type Capture = z.infer<typeof captureSchema>;
 export type StatusFilter = "all" | "fail" | "pass" | "error";
 
+export function imageAlignmentGaps(
+  gaps: readonly VerticalGap[] | VerticalGap | null | undefined,
+  imageHeight: number,
+  diffHeight: number | undefined,
+): VerticalGap[] | null {
+  const list: readonly VerticalGap[] = Array.isArray(gaps) ? gaps : gaps ? [gaps] : [];
+  if (list.length === 0 || diffHeight === undefined) return null;
+  let totalHeight = 0;
+  let previousStart = -1;
+  for (const gap of list) {
+    if (gap.height <= 0 || gap.start > imageHeight || gap.start <= previousStart) return null;
+    previousStart = gap.start;
+    totalHeight += gap.height;
+  }
+  return imageHeight + totalHeight === diffHeight ? [...list] : null;
+}
+
 export function imageAlignmentGap(
   gap: VerticalGap | null | undefined,
   imageHeight: number,
@@ -201,13 +267,40 @@ export function imageAlignmentGap(
   return gap && gap.start <= imageHeight && imageHeight + gap.height === diffHeight ? gap : null;
 }
 
-export function imageRowToAlignedRow(row: number, gap: VerticalGap | null): number {
-  return gap && row >= gap.start ? row + gap.height : row;
+export function imageRowToAlignedRow(
+  row: number,
+  gap: VerticalGap | readonly VerticalGap[] | null,
+): number {
+  if (!gap) return row;
+  if (!Array.isArray(gap)) {
+    const single = gap as VerticalGap;
+    return row >= single.start ? row + single.height : row;
+  }
+  let shift = 0;
+  for (const item of gap) {
+    if (row >= item.start) shift += item.height;
+  }
+  return row + shift;
 }
 
-export function alignedRowToImageRow(row: number, gap: VerticalGap | null): number | null {
-  if (!gap || row < gap.start) return row;
-  return row < gap.start + gap.height ? null : row - gap.height;
+export function alignedRowToImageRow(
+  row: number,
+  gap: VerticalGap | readonly VerticalGap[] | null,
+): number | null {
+  if (!gap) return row;
+  if (!Array.isArray(gap)) {
+    const single = gap as VerticalGap;
+    if (row < single.start) return row;
+    return row < single.start + single.height ? null : row - single.height;
+  }
+  let shift = 0;
+  for (const item of gap) {
+    const alignedStart = item.start + shift;
+    if (row < alignedStart) return row - shift;
+    if (row < alignedStart + item.height) return null;
+    shift += item.height;
+  }
+  return row - shift;
 }
 
 export function suiteLabel(suite: { id: string; displayName?: string }): string {

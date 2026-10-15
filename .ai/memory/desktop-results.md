@@ -99,13 +99,15 @@ Verified: 2026-10-15
   fractional widths previously caused tall-image height drift. GUI one-pixel
   checks and native minimum/compact/large Comparison pass without changing zoom,
   scrolling or no-upscaling policy.
-- [Comparer](../../src/compare/image_compare.rs) exports its exact vertical-gap
-  alignment through saved reports and snapshots. Native/web crosshairs map source
-  pixels through aligned diff rows; a missing band has no target pixel. Native
+- [Comparer](../../src/compare/image_compare.rs) exports single-band and multi-band
+  vertical-gap alignment (`reference`/`test` and `referenceGaps`/`testGaps`) through
+  saved reports and snapshots. Native/web crosshairs map source pixels through
+  aligned diff rows; missing band rows have no target pixel. Native
   [pointer geometry](../../src/desktop/ui/reports.rs) uses maximum-width/height
   canvas coordinates, including blank space beyond smaller images, without
-  clamping guides to individual image sizes. `crosshairs_` includes a generated-band
-  GPUI pointer test; web `aligned diff bands` covers both directions and zoom.
+  clamping guides to individual image sizes. `crosshairs_` includes a multi-band
+  generated-PNG GPUI pointer test; web `aligned diff bands` covers multi-band
+  directions and zoom.
 - Native guides measure image coordinates separately from a stationary lane-sized
   overlay. `crosshairs_` covers hover outside the shared canvas, viewport bounds
   after scrolling, and unchanged overflow; native Comparison probes full-lane strokes.

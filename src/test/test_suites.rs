@@ -802,6 +802,14 @@ fn validate_pixel_match_threshold(name: &str, value: Option<f64>) -> Result<()> 
     Ok(())
 }
 
+pub(crate) fn is_reserved_suite_identifier(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "all" | "_snapshot" | "_diagnostics" | "_landing" | "states"
+    )
+}
+
 fn validate_output_identifier(name: &str, value: Option<&str>) -> Result<()> {
     let value = value.ok_or_else(|| anyhow!("{} is required", name))?;
     if value.trim().is_empty()
@@ -824,8 +832,21 @@ fn validate_output_identifier(name: &str, value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn validate_suite_identifier(name: &str, value: Option<&str>) -> Result<()> {
+    validate_output_identifier(name, value)?;
+    let value = value.unwrap_or_default();
+    if value.starts_with('.') {
+        anyhow::bail!("{} '{}' must not start with '.'", name, value);
+    }
+    if is_reserved_suite_identifier(value) {
+        anyhow::bail!("{} '{}' is reserved", name, value);
+    }
+    Ok(())
+}
+
 fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Result<()> {
-    validate_output_identifier("Test suite ID", suite.id.as_deref())?;
+    validate_suite_identifier("Test suite name", Some(input.name.as_str()))?;
+    validate_suite_identifier("Test suite ID", suite.id.as_deref())?;
     validate_percentage(
         &format!("test suite '{}' misMatchThreshold", input.name),
         suite.mis_match_threshold,
@@ -3067,10 +3088,35 @@ mod tests {
                 .contains("no longer than")
         );
 
-        for invalid_id in ["suite.", "suite ", "suite\nname", "CON", "LPT1.txt"] {
+        for invalid_id in [
+            "suite.",
+            "suite ",
+            "suite\nname",
+            "CON",
+            "LPT1.txt",
+            ".checkout",
+            "all",
+            "_snapshot",
+            "_diagnostics",
+            "_landing",
+            "states",
+        ] {
             let mut invalid_id_suite = suite(vec![scenario("home", None)]);
             invalid_id_suite.id = Some(invalid_id.to_string());
-            assert!(validate_test_suite_config(&input(), &invalid_id_suite).is_err());
+            assert!(
+                validate_test_suite_config(&input(), &invalid_id_suite).is_err(),
+                "{invalid_id}"
+            );
+            let invalid_name_input = TestSuiteInput {
+                name: invalid_id.to_string(),
+                path: PathBuf::from(format!("{invalid_id}.tests.yaml")),
+                format: TestSuiteFormat::Yaml,
+            };
+            let valid_suite = suite(vec![scenario("home", None)]);
+            assert!(
+                validate_test_suite_config(&invalid_name_input, &valid_suite).is_err(),
+                "{invalid_id}"
+            );
         }
 
         let mut reserved_scenario_suite = suite(vec![scenario("home", None)]);

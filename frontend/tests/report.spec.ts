@@ -3177,7 +3177,20 @@ for (const shorter of ["reference", "test"] as const) {
   }, info) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     const roles = ["reference", "test", "diff"] as const;
-    const gap = { start: 100, height: 48 };
+    const gaps = [
+      { start: 100, height: 24 },
+      { start: 200, height: 24 },
+    ];
+    const toSourceRow = (alignedRow: number): number | null => {
+      let shift = 0;
+      for (const gap of gaps) {
+        const alignedStart = gap.start + shift;
+        if (alignedRow < alignedStart) return alignedRow - shift;
+        if (alignedRow < alignedStart + gap.height) return null;
+        shift += gap.height;
+      }
+      return alignedRow - shift;
+    };
     const imageSizes = {
       reference: { width: 320, height: shorter === "reference" ? 400 : 448 },
       test: { width: 320, height: shorter === "test" ? 400 : 448 },
@@ -3192,8 +3205,9 @@ for (const shorter of ["reference", "test"] as const) {
       Object.assign(report.tests[0], paths, {
         imageSizes,
         alignment: {
-          reference: shorter === "reference" ? gap : null,
-          test: shorter === "test" ? gap : null,
+          reference: shorter === "reference" ? gaps[0] : null,
+          test: shorter === "test" ? gaps[0] : null,
+          ...(shorter === "reference" ? { referenceGaps: gaps } : { testGaps: gaps }),
         },
       });
       await route.fulfill({ response, json: report });
@@ -3219,10 +3233,11 @@ for (const shorter of ["reference", "test"] as const) {
     for (const zoomIn of [false, true]) {
       if (zoomIn) await page.getByRole("button", { name: "Zoom in", exact: true }).click();
       for (const [sourceIndex, source] of roles.entries()) {
-        for (const row of [50, 124, 220]) {
-          const inBand = row >= gap.start && row < gap.start + gap.height;
-          if (source === shorter && inBand) continue;
-          const sourceRow = source === shorter && row >= gap.start ? row - gap.height : row;
+        for (const row of [50, 112, 160, 236, 300]) {
+          const shorterRow = toSourceRow(row);
+          const inBand = shorterRow === null;
+          const sourceRow = source === shorter ? shorterRow : row;
+          if (sourceRow === null) continue;
           await lanes.nth(sourceIndex).hover();
           const bounds = await images.nth(sourceIndex).boundingBox();
           if (!bounds) throw new Error("Aligned comparison image is not visible");
@@ -3233,11 +3248,11 @@ for (const shorter of ["reference", "test"] as const) {
           await expect(page.locator(".comparison-crosshair")).toHaveCount(inBand ? 2 : 3);
           for (const [targetIndex, target] of roles.entries()) {
             const guide = lanes.nth(targetIndex).locator(".crosshair-horizontal");
-            if (target === shorter && inBand) {
+            const targetRow = target === shorter ? shorterRow : row;
+            if (targetRow === null) {
               await expect(guide).toHaveCount(0);
               continue;
             }
-            const targetRow = target === shorter && row >= gap.start ? row - gap.height : row;
             await expect
               .poll(() =>
                 lanes.nth(targetIndex).evaluate((lane, row) => {

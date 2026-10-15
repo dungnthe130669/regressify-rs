@@ -5,13 +5,18 @@ Issues identified during adversarial review that remain after the September 2026
 ## Compare Module Alignment, Performance, and Approval Hardening (2026-10-15)
 
 - Resolved in source: [vertical gap alignment](src/compare/image_compare.rs)
-  previously capped shifts at 512 rows, allowed unrelated top-of-page changes to
-  pull `best_start` across intact sparse middle sections, rejected short or
-  whitespace-padded footers below an insertion, and disabled anti-aliasing
-  detection whenever `ref_height != test_height`. It now aligns middle insertions
-  above 512 rows, penalizes breaking clean unshifted rows while capping unaligned
-  row gain, evaluates contested tail support across whitespace-padded footers, and
-  maps source rows for anti-aliasing checks.
+  previously supported at most one shift capped at 512 rows, allowed unrelated
+  top-of-page changes to pull `best_start` across intact sparse middle sections,
+  rejected short or whitespace-padded footers below an insertion, skipped
+  same-height viewport shifts, and disabled anti-aliasing detection whenever
+  `ref_height != test_height`. It now supports single-band and multi-band
+  vertical alignment (`referenceGaps`/`testGaps`), aligns middle insertions
+  above 512 rows and same-height viewport shifts, penalizes breaking clean
+  unshifted rows while capping unaligned row gain, evaluates contested tail
+  support across whitespace-padded footers, and maps source rows for
+  anti-aliasing checks. Both [desktop Results](src/desktop/ui/reports.rs) and
+  the [web viewer](frontend/src/components/ComparisonViewer.tsx) map crosshairs
+  across multi-band alignments.
 - Resolved in source: [PNG loading and diff rendering](src/compare/image_compare.rs)
   decoded each file after a separate header open, cloned the decoded `RGBA8`
   buffer, decoded both images even when raw bytes were identical, and evaluated

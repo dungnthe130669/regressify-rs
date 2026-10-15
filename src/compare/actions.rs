@@ -60,13 +60,7 @@ struct SelectedRun {
 }
 
 fn is_suite_output_directory(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    !name.is_empty()
-        && !name.starts_with('.')
-        && !matches!(
-            lower.as_str(),
-            "_snapshot" | "_diagnostics" | "_landing" | "states"
-        )
+    !name.is_empty() && !name.starts_with('.') && !crate::test::is_reserved_suite_identifier(name)
 }
 
 fn selected_runs(

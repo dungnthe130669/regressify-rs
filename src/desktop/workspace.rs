@@ -556,10 +556,14 @@ impl Workspace {
                 };
                 let parsed = (|| -> Result<crate::types::TestSuite> {
                     ensure!(input.name != "all", "The suite name 'all' is reserved");
+                    crate::test::validate_suite_identifier("Suite name", Some(&input.name))?;
                     let document = self.open_document(entry.clone())?.document;
                     let value = document.value()?;
                     super::document::validate_value(document.kind, &value)?;
                     let suite = parse_typed_source::<crate::types::TestSuite>(&document)?;
+                    if let Some(id) = suite.id.as_deref() {
+                        crate::test::validate_suite_identifier("Test suite ID", Some(id))?;
+                    }
                     ensure!(!suite.scenarios.is_empty(), "Suite contains no scenarios");
                     Ok(suite)
                 })();
@@ -596,6 +600,7 @@ impl Workspace {
             name != "all",
             "The suite name 'all' is reserved by the CLI wildcard filter"
         );
+        crate::test::validate_suite_identifier("Suite name", Some(&name))?;
         let suites = crate::test::discover_test_suites(&self.resolve(Path::new("visual_tests"))?)?;
         let actual = suites
             .into_iter()
@@ -918,13 +923,8 @@ impl Workspace {
                 id.len() <= 80 && id.trim() == id,
                 "Suite output IDs must be portable components no longer than 80 bytes without surrounding whitespace"
             );
-            let normalized = id.to_ascii_lowercase();
             ensure!(
-                !matches!(
-                    normalized.as_str(),
-                    "." | ".." | "_snapshot" | "_diagnostics" | "states"
-                ) && !normalized.starts_with(".suite-update-")
-                    && !normalized.starts_with(".snapshot-"),
+                !id.starts_with('.') && !crate::test::is_reserved_suite_identifier(id),
                 "Reserved suite output ID"
             );
         }
@@ -1049,6 +1049,14 @@ pub fn suite_path(name: &str) -> Result<PathBuf> {
         .find_map(|suffix| normalized.strip_suffix(suffix))
         .unwrap_or(&normalized);
     ensure!(stem != "all", "The suite name 'all' is reserved by the CLI");
+    ensure!(
+        !stem.is_empty() && !stem.starts_with('.'),
+        "Suite name must not start with '.'"
+    );
+    ensure!(
+        !crate::test::is_reserved_suite_identifier(stem),
+        "The suite name '{stem}' is reserved"
+    );
     let filename = if [".tests.yaml", ".tests.yml", ".tests.json"]
         .iter()
         .any(|suffix| name.to_ascii_lowercase().ends_with(suffix))
@@ -2214,7 +2222,19 @@ mod tests {
         ] {
             assert!(workspace.resolve(Path::new(path)).is_err(), "{path}");
         }
-        for name in ["../escape", "CON", "all", "a/b", "*.tests.yaml"] {
+        for name in [
+            "../escape",
+            "CON",
+            "all",
+            ".checkout",
+            ".checkout.tests.yaml",
+            "_snapshot",
+            "_diagnostics",
+            "_landing",
+            "states",
+            "a/b",
+            "*.tests.yaml",
+        ] {
             assert!(suite_path(name).is_err(), "{name}");
         }
         assert!(

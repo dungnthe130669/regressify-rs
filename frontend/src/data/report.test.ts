@@ -7,6 +7,7 @@ import {
   encodeArtifactPath,
   filterCaptures,
   imageAlignmentGap,
+  imageAlignmentGaps,
   imagePath,
   imageRowToAlignedRow,
   manifestSchema,
@@ -167,10 +168,13 @@ describe("snapshot contract", () => {
   test("diff alignment is optional and accepts only one bounded source gap", () => {
     expect(capture.alignment).toBeUndefined();
     const gap = { start: 24, height: 5 };
+    const gap2 = { start: 80, height: 10 };
     for (const alignment of [
       { reference: null, test: null },
       { reference: gap, test: null },
       { reference: null, test: gap },
+      { reference: gap, test: null, referenceGaps: [gap, gap2] },
+      { reference: gap, test: gap2, referenceGaps: [gap], testGaps: [gap2] },
     ]) {
       expect(captureSchema.parse({ ...capture, alignment }).alignment).toEqual(alignment);
     }
@@ -178,6 +182,8 @@ describe("snapshot contract", () => {
       null,
       {},
       { reference: gap, test: gap },
+      { reference: gap, test: null, referenceGaps: [gap, gap] },
+      { reference: gap, test: gap, referenceGaps: [gap], testGaps: [gap] },
       ...[
         { start: -1, height: 5 },
         { start: 0.5, height: 5 },
@@ -192,7 +198,10 @@ describe("snapshot contract", () => {
   });
   test("aligned rows map both ways and missing band pixels have no source coordinate", () => {
     const gap = { start: 24, height: 5 };
+    const multiGaps = [gap, { start: 80, height: 10 }];
     expect(imageAlignmentGap(gap, 128, 133)).toEqual(gap);
+    expect(imageAlignmentGaps(multiGaps, 128, 143)).toEqual(multiGaps);
+    expect(imageAlignmentGaps(multiGaps, 128, 133)).toBeNull();
     for (const [height, diffHeight] of [
       [128, 128],
       [128, undefined],
@@ -208,8 +217,15 @@ describe("snapshot contract", () => {
       expect(imageRowToAlignedRow(row, null)).toBe(row);
       expect(alignedRowToImageRow(row, null)).toBe(row);
     }
+    for (const row of [0, 23.5, 24, 79.5, 80, 120]) {
+      const aligned = imageRowToAlignedRow(row, multiGaps);
+      expect(aligned).toBe(row < 24 ? row : row < 80 ? row + 5 : row + 15);
+      expect(alignedRowToImageRow(aligned, multiGaps)).toBe(row);
+    }
     for (const row of [24, 24.5, 28.999]) expect(alignedRowToImageRow(row, gap)).toBeNull();
+    for (const row of [24, 28.5, 85, 94.5]) expect(alignedRowToImageRow(row, multiGaps)).toBeNull();
     expect(alignedRowToImageRow(29, gap)).toBe(24);
+    expect(alignedRowToImageRow(95, multiGaps)).toBe(80);
   });
   test("source image sizes are optional and distinct from signed comparison deltas", () => {
     expect(capture.imageSizes).toBeUndefined();
