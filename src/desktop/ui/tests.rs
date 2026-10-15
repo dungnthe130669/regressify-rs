@@ -1158,25 +1158,31 @@ async fn suite_name_dialog_close_cancel_and_escape_preserve_files(cx: &mut TestA
             .unwrap();
             settle_dialog(cx, handle).await;
             cx.update_window(handle.into(), |_, window, cx| {
-                assert!(window.find("close").visible());
+                assert!(window.within("dialog-close").find("close").visible());
                 window.input("abandoned-suite", cx);
                 match dismissal {
                     "escape" => window.press("escape", cx),
                     "cancel-enter" | "close-enter" => {
-                        let target = if dismissal == "cancel-enter" {
-                            "file-cancel"
-                        } else {
-                            "close"
-                        };
                         for _ in 0..6 {
-                            if window.find(target).focused() == Some(true) {
+                            let focused = if dismissal == "cancel-enter" {
+                                window.find("file-cancel").focused()
+                            } else {
+                                window.within("dialog-close").find("close").focused()
+                            };
+                            if focused == Some(true) {
                                 break;
                             }
                             window.press("tab", cx);
                         }
-                        assert_eq!(window.find(target).focused(), Some(true));
+                        let focused = if dismissal == "cancel-enter" {
+                            window.find("file-cancel").focused()
+                        } else {
+                            window.within("dialog-close").find("close").focused()
+                        };
+                        assert_eq!(focused, Some(true));
                         window.press("enter", cx);
                     }
+                    "close" => window.within("dialog-close").click("close", cx),
                     button => window.click(button, cx),
                 }
                 window.render_frame(cx);
@@ -1243,7 +1249,7 @@ async fn suite_name_dialog_failed_enter_preserves_input_and_allows_retry(cx: &mu
                 assert_ne!(view.read(cx).status, "File saved");
                 assert!(window.find("file-confirm").visible());
                 assert_eq!(window.find("file-name").value(), Some(invalid_name));
-                assert!(window.find("close").visible());
+                assert!(window.within("dialog-close").find("close").visible());
             })
             .unwrap();
             assert_eq!(std::fs::read(&original_path).unwrap(), original);
@@ -1299,7 +1305,7 @@ async fn suite_name_dialog_busy_state_blocks_submission_and_dismissal(cx: &mut T
                 this.sync_modal(cx);
             });
             window.render_frame(cx);
-            assert!(window.try_find("close").is_none());
+            assert!(window.try_find("dialog-close").is_none());
             window.press("enter", cx);
             window.press("escape", cx);
             window.click("file-confirm", cx);
@@ -1311,7 +1317,7 @@ async fn suite_name_dialog_busy_state_blocks_submission_and_dismissal(cx: &mut T
                 this.sync_modal(cx);
             });
             window.render_frame(cx);
-            window.click("close", cx);
+            window.within("dialog-close").click("close", cx);
         })
         .unwrap();
         cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
@@ -2363,6 +2369,7 @@ async fn accept_and_save_source_completion(
     }
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
+        assert!(window.find("completion-menu").visible());
         assert_eq!(
             window.find("source-completion-status").label(),
             Some("1 suggestion")
@@ -2427,6 +2434,8 @@ async fn accept_and_save_source_completion(
         reactivate_without_editor_focus(cx, handle).await;
     }
     cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("completion-menu").visible());
         let cursor = view.read(cx).source.read(cx).cursor();
         window.press("down", cx);
         window.press("up", cx);
@@ -5252,8 +5261,11 @@ fn overview_table_virtual_rows_keep_uniform_geometry(cx: &mut TestAppContext) {
                 window.render_frame(cx);
                 window.render_frame(cx);
                 let table = window.find("overview-table").bounds();
+                let header = window.find("overview-suite-header").bounds();
                 let first = window.find(("overview-row", 0_usize)).bounds();
                 let second = window.find(("overview-row", 1_usize)).bounds();
+                assert_eq!(header.size.height, px(31.));
+                assert_eq!(first.size.height, px(64.));
                 assert_eq!(first.size.height, second.size.height);
                 assert!(first.bottom() <= second.top());
                 assert!(window.try_find(("overview-row", 79_usize)).is_none());
@@ -10544,6 +10556,12 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
                 open.origin.x + open.size.width <= px(width - 95.),
                 "Titlebar overlaps window controls"
             );
+            if !cfg!(target_os = "macos") {
+                assert!(
+                    open.right() <= window.find("window-controls").bounds().left(),
+                    "Titlebar overlaps window controls"
+                );
+            }
             let navigation = window.find("workspace-navigation").bounds();
             assert!(navigation.origin.y <= px(39.));
             assert!(navigation.size.height >= px(height - 65.));
@@ -10552,6 +10570,11 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
             assert!(window.find("suite-run-test").visible());
             window.within("workbench-tabs").click(1_usize, cx);
             assert_eq!(view.read(cx).main_tab, 1);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("run-job-progress").label(),
+                Some("Scenario job progress")
+            );
             window.within("workbench-tabs").click(0_usize, cx);
             assert_eq!(view.read(cx).main_tab, 0);
             window.render_frame(cx);
@@ -10655,6 +10678,8 @@ async fn overview_suite_columns_align_with_headers_at_both_sizes(cx: &mut TestAp
                     ] {
                         let header = window.find(heading).bounds();
                         let value = window.find((cell, index)).bounds();
+                        assert_eq!(header.size.height, px(31.));
+                        assert_eq!(value.size.height, px(63.));
                         assert_eq!(value.left(), header.left(), "Misaligned {heading}");
                         assert_eq!(
                             value.size.width, header.size.width,

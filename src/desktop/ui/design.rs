@@ -4,7 +4,7 @@ use crate::desktop::workspace::ThemePreference;
 use gpui_kit::component::Size;
 
 pub(super) fn release_app_menu(bar: &Entity<gpui_kit::component::menu::AppMenuBar>, cx: &mut App) {
-    // Kit 0.7.1 menus own their bar; an empty reload breaks that cycle without changing the registry.
+    // Kit 0.7.3 menus own their bar; an empty reload breaks that cycle without changing the registry.
     let menus = gpui_kit::base::GlobalState::global(cx).app_menus().to_vec();
     gpui_kit::base::GlobalState::global_mut(cx).set_app_menus(Vec::new());
     bar.update(cx, |bar, cx| bar.reload(cx));
@@ -180,7 +180,7 @@ impl RenderOnce for ToolbarFocus {
                 };
                 let mut previous = start.clone();
                 let mut destination = start.clone();
-                // Kit 0.7.1 fails backward wrapping; choose scoped destinations from bounded forward order.
+                // Kit 0.7.3 fails backward wrapping; choose scoped destinations from bounded forward order.
                 for _ in 0..1024 {
                     window.focus_next(cx);
                     let Some(next) = window.focused(cx) else {

@@ -1,12 +1,12 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-14
+Verified: 2026-10-15
 
-- Run/download bars use Kit Progress with percentages and accessible names.
-  Native default smoke checks `Scenario job progress` as a ProgressBar with
-  range 0..100 and zero value for workspace initialization (no scenario jobs).
-  The update bar retains its observed `update-download-progress` wrapper;
-  styled Progress alone is not registered by Kit's headless test-support API.
+- Run/download bars use Kit 0.7.3 Progress with percentages and accessible names
+  (`Scenario job progress` verified as a 0..100 ProgressBar in default smoke).
+  Kit 0.7.3 registers `base::Progress`, `TitleBar`/`window-controls` (scope dialog
+  X assertions `.within("dialog-close")`), and `completion-menu` with `test_support()`
+  directly, retiring the `update-download-progress` outer wrapper.
 - The [entry point](../../ci/desktop-smoke.ps1) owns parameters, Windows safety
   guards, build, flow precedence, and the run/cleanup boundary. It dot-sources
   [support and flow scripts](../../ci/desktop-smoke) into the same script scope.

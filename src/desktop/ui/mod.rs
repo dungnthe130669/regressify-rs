@@ -2571,6 +2571,10 @@ impl Workbench {
             return false;
         }
         self.tab = index;
+        if index != 1 {
+            self.source
+                .update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+        }
         self.session.reconcile_selection();
         self.rebuild_fields(window, cx);
         cx.notify();

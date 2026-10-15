@@ -277,20 +277,14 @@ impl Workbench {
                 .when_some(state.download.as_ref(), |dialog, control| {
                     let progress = control.progress();
                     dialog.child(
-                        div()
-                            .id("update-download-progress")
-                            .test_support()
-                            .w_full()
-                            .child(
-                                progress::Progress::new("update-download-bar")
-                                    .accessibility_label("Installer download progress")
-                                    .value(
-                                        (progress.received as f32 / progress.total.max(1) as f32)
-                                            .clamp(0., 1.)
-                                            * 100.,
-                                    )
-                                    .color(cx.theme().primary),
-                            ),
+                        progress::Progress::new("update-download-progress")
+                            .accessibility_label("Installer download progress")
+                            .value(
+                                (progress.received as f32 / progress.total.max(1) as f32)
+                                    .clamp(0., 1.)
+                                    * 100.,
+                            )
+                            .color(cx.theme().primary),
                     )
                 })
                 .footer(
@@ -1225,6 +1219,10 @@ mod tests {
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             assert!(window.find("update-download-progress").visible());
+            assert_eq!(
+                window.find("update-download-progress").label(),
+                Some("Installer download progress")
+            );
             assert!(
                 view.read(cx)
                     .updates

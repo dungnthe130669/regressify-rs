@@ -658,7 +658,7 @@ impl GitPanel {
         let owner = cx.entity().downgrade();
         let tree = &self.trees[usize::from(comparison)];
         let scroll = tree.read(cx).scroll_handle().clone();
-        // The styled 0.7.1 Tree retains itself in its menu renderer, even without a menu.
+        // The styled 0.7.3 Tree retains itself in its menu renderer, even without a menu.
         div()
             .size_full()
             .child(

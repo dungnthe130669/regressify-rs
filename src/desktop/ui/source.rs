@@ -612,7 +612,7 @@ impl Workbench {
                 window,
                 cx,
             );
-            // Kit 0.7.1 collapses reversed ranges; keep the edited selection forward.
+            // Kit 0.7.3 collapses reversed ranges; keep the edited selection forward.
             state.set_selected_range(edit.selection, cx);
         });
     }
@@ -735,56 +735,11 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy || self.tab != 1 {
+        if self.busy || self.tab != 1 || self.session.open.is_none() {
             return;
         }
-        let state = self.source.read(cx);
-        let Some(provider) = state.lsp().completion_provider.clone() else {
-            return;
-        };
-        let text = state.text().clone();
-        let cursor = state.cursor();
-        let document = self
-            .session
-            .open
-            .as_ref()
-            .map(|open| open.entry.path.clone());
-        window.focus(&state.focus_handle(cx), cx);
-        let task = provider.completions(
-            &text,
-            cursor,
-            CompletionContext {
-                trigger_kind: lsp_types::CompletionTriggerKind::INVOKED,
-                trigger_character: None,
-            },
-            window,
-            cx,
-        );
-        cx.spawn_in(window, async move |view, cx| {
-            let Ok(response) = task.await else {
-                return;
-            };
-            let items = match response {
-                CompletionResponse::Array(items) => items,
-                CompletionResponse::List(list) => list.items,
-            };
-            let _ = view.update_in(cx, |this, window, cx| {
-                if this.session.open.as_ref().map(|open| &open.entry.path) != document.as_ref()
-                    || this.tab != 1
-                {
-                    return;
-                }
-                this.source.update(cx, |state, cx| {
-                    if state.cursor() == cursor
-                        && state.text() == &text
-                        && state.focus_handle(cx).is_focused(window)
-                    {
-                        state.present_completion_items(cursor, "", items, cx);
-                    }
-                });
-            });
-        })
-        .detach();
+        self.source
+            .update(cx, |state, cx| state.show_completions(window, cx));
     }
 
     pub(super) fn configure_source(&mut self, cx: &mut Context<Self>) {

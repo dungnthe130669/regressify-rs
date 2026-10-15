@@ -557,8 +557,9 @@ impl Workbench {
         {
             px(0.)
         } else {
-            // Kit 0.7.1 caption slots are 34px, also verified by the native smoke harness.
-            px(34.) * (1 + usize::from(controls.minimize) + usize::from(controls.maximize)) as f32
+            // Kit 0.7.3 caption slots match TITLE_BAR_HEIGHT (34px), also verified by the native smoke harness.
+            gpui_kit::component::TITLE_BAR_HEIGHT
+                * (1 + usize::from(controls.minimize) + usize::from(controls.maximize)) as f32
         };
         let header_width =
             (window.viewport_size().width - left_padding - controls_width).max(px(0.));
@@ -1144,6 +1145,7 @@ impl Workbench {
                 .child(
                     DataTable::new(&self.overview_table)
                         .bordered(false)
+                        .header_row_height(gpui_kit::component::Size::Medium.table_row_height())
                         .with_size(gpui_kit::component::Size::Size(px(64.))),
                 ),
         );

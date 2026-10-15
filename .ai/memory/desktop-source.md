@@ -1,6 +1,6 @@
 # Desktop Source Editing
 
-Verified: 2026-10-08
+Verified: 2026-10-15
 
 - [Source font size](../../src/desktop/ui/source.rs) uses a separate unmasked integer 10..24 NumberInput: invalid text never saves; Blur restores the last valid size.
   `source_font_size_` covers input/saved bytes, steps, Reset, reload and unchanged drafts. Activate GPUI fixtures for Blur; inactive windows suppress focus events.
@@ -9,7 +9,7 @@ Verified: 2026-10-08
 - [Fields groups](../../src/desktop/ui/mod.rs) use controlled Accordion with
   stable IDs and separate collapse preference. Search/errors/unsupported choices
   force open; closed inputs unmount and return focus to the disclosure.
-- Kit 0.7.1 AccordionTrigger is pointer-only; the approved label-focus adapter
+- Kit 0.7.3 AccordionTrigger is pointer-only; the approved label-focus adapter
   scopes Enter/Space away from inputs/popups. Ignore no-op content clicks.
   `controlled_group_` verifies these contracts. Workspace Button keyboard tests
   use Tab and the observed `workspace-files` wrapper, not pointer-focus assumptions.
@@ -39,7 +39,7 @@ Verified: 2026-10-08
   `schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows`
   (1) verifies centering, text bounds, scroll and both themes/sizes.
 - Numeric Fields use styled Kit NumberInput with explicit `MaskPattern::None`
-  and `set_step(None)`; 0.7.1 defaults to fixed step one. Step events call the
+  and `set_step(None)`; 0.7.3 defaults to fixed step one. Step events call the
   existing schema-aware `adjust_field`, while Change retains raw invalid drafts.
   `numeric_stepper_` (2) and `pixel_match_threshold_` (12) pass. Native tests
   observe `("input", state.entity_id())` inside the stable field wrapper.
@@ -48,13 +48,14 @@ Verified: 2026-10-08
   hints, reset, and semantic edits; `setting_search_`, numeric/threshold filters,
   and the invalid-draft/reset native regression pass after the migration.
 - [Native windows](../../src/desktop/ui/mod.rs) and
-  [test fixtures](../../src/desktop/ui/tests.rs) use GPUI Kit 0.7.1's
-  `open_window`, returning content under a Base root with automatic overlays.
-  The two `root_overlay_` tests pass for single dialog mounting, pointer/Escape
-  dismissal, focus return and workbench release after closing the window.
-- The schema jump/hover/save-guard test failed on both retained 0.6.1 and 0.7.1
-  binaries on offscreen diagnostic 3. Scroll before clicking; preserve every
-  cursor, hover, draft and save assertion.
+  [test fixtures](../../src/desktop/ui/tests.rs) use GPUI Kit 0.7.3's
+  `open_window` (`root_overlay_` tests). Kit 0.7.3 (`gpui-pre` 0.3.9) adds
+  `EditorState::show_completions` (adopted in `Workbench::request_completion`)
+  and `DataTable::header_row_height` (adopted in [Overview](../../src/desktop/ui/overview.rs));
+  patch-only `diff::Diff` was rejected so [Git review](../../src/desktop/ui/git/view.rs)
+  retains full-file aligned copies and change navigation.
+- The schema jump/hover/save-guard test failed on offscreen diagnostic 3 until
+  scrolled into view before clicking; preserve cursor, hover, draft and save checks.
 - [Action viewport choices](../../src/desktop/ui/choices.rs) reuse the native
   list picker and effective consumer labels. Workspace diagnostics call the
   shared CLI validator, point to own/inherited action fields, and retain invalid
@@ -67,20 +68,9 @@ Verified: 2026-10-08
 - [Viewport completion](../../src/desktop/completion.rs) uses parsed full value
   spans for spaces/hyphens and forces YAML block-list probes into value mode.
   The `action_viewport` desktop tests cover source preservation and these cases.
-- [Source commands](../../src/desktop/ui/source.rs) bind inside `RegressifySource > Input` and check the source focus handle and
-  busy/editable state. The Edit menu uses the same actions with `action_context`.
-- Line edits are a single `apply_lsp_edits` replacement, followed by selection
-  restoration. Do not use `set_value` for interactive commands: it resets native
-  history. JSON deliberately disables comment toggling.
-- Kit 0.7.1 normalizes `set_selected_range(end..start)` to an empty range. The
-  approved Source compatibility policy restores an ascending range after line
-  edits. The keyboard-created reverse CRLF/Unicode regression verifies exact
-  text, selected bounds, forward caret and repeat toggling; no toolkit fork.
-- gpui-kit 0.6.1 block indentation includes the line at an exclusive column-zero
-  selection end. Source uses shared line bounds for indentation, comments, moves,
-  duplication, and deletion; plain Tab and completion acceptance remain native.
-- On Windows/Linux, the toolkit's redo binding is Ctrl+Y. Source also binds
-  Ctrl+Shift+Z to native redo so it cannot fall through to document history.
+- [Source commands](../../src/desktop/ui/source.rs) bind inside `RegressifySource > Input`, check the source focus handle and busy/editable state, and apply line edits via `apply_lsp_edits` (never history-resetting `set_value`); the Edit menu uses `action_context` and JSON disables comment toggling.
+- Kit 0.7.3 normalizes `set_selected_range(end..start)` to an empty range; Source restores an ascending range after line edits, covered by the reverse CRLF/Unicode regression.
+- Block indentation uses shared line bounds (excluding column-zero selection ends) for indentation, comments, moves, duplication, and deletion; plain Tab and completion acceptance remain native, and Ctrl+Shift+Z binds to native redo alongside Ctrl+Y.
 - Native input-change notifications are deferred. [GUI tests](../../src/desktop/ui/tests.rs)
   settle the executor before asserting that Source edits reached the session.
 - [YAML field removal](../../src/desktop/document.rs) removes an orphaned preceding

@@ -31,7 +31,7 @@ Verified: 2026-10-15
   `run_log_hidden_` and `run_poll_` cover these UI-work bounds; they do not measure
   native input latency or establish a frame-time budget for large Activity lists.
 - [Capture Log](../../src/desktop/ui/reports/log.rs) uses segmented source tabs
-  with two public focus handles and Enter/Space hooks because Kit 0.7.1 tabs are
+  with two public focus handles and Enter/Space hooks because Kit 0.7.3 tabs are
   pointer-only. Real-handle GUI tests and native Right/Enter, Left/Space checks
   pass; source changes reset page one and retain generation-based rejection.
 - Capture failure summaries (`FailureSite` in the record module, tracked by
