@@ -415,7 +415,7 @@ function Test-DefaultFlows {
         Select-Theme 'System'
         Select-Theme 'Light'
         $capturedReports = Get-ChildItem (Join-Path $workspace '.regressify') -Recurse -Filter report.json |
-            Where-Object { $_.Directory.Name.StartsWith('desktop-') }
+            Where-Object { $_.Directory.Name.StartsWith('desktop-') -and $_.FullName -notin $referenceReports.FullName }
         $capturedPairs = @($capturedReports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
         if ($capturedPairs.Count -ne 3) { throw 'Expected three current test report entries.' }
         foreach ($pair in $capturedPairs) {
@@ -437,7 +437,7 @@ function Test-DefaultFlows {
         Wait-Control 'Completed' | Out-Null
         Wait-Control 'Passed: 1' | Out-Null
         $scenarioReports = Get-ChildItem (Join-Path $output 'bitmaps_test') -Recurse -Filter report.json |
-            Where-Object { $_.Directory.Name.StartsWith('desktop-') }
+            Where-Object { $_.Directory.Name.StartsWith('desktop-') -and $_.FullName -notin $referenceReports.FullName -and $_.FullName -notin $capturedReports.FullName }
         $scenarioPairs = @($scenarioReports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
         if ($scenarioPairs.Count -ne 1 -or $scenarioPairs[0].scenarioId -ne '8ac900fea19642cc0000') {
             throw 'Individual scenario execution captured an unselected sibling.'
@@ -446,9 +446,9 @@ function Test-DefaultFlows {
             if ((Get-FileHash $reference.Path).Hash -ne $reference.Hash) { throw 'A scenario test changed a sibling reference.' }
         }
         Invoke-Control 'View log: Checkout (phone)'
-        Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+        Wait-SourceText 'Target=#continue' 'Scenario run log'
         $scenarioLog = Read-ControlText 'Scenario run log'
-        if ($scenarioLog.Contains('Signed-in account') -or $scenarioLog.Contains('Executing scenario: Profile')) {
+        if ($scenarioLog.Contains('Signed-in account') -or $scenarioLog.Contains('signed-in-account') -or $scenarioLog.Contains('Executing scenario: Profile')) {
             throw 'Scenario log contains another scenario output.'
         }
         Capture-Window 'scenario-log'
@@ -458,14 +458,14 @@ function Test-DefaultFlows {
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
         foreach ($theme in @('Light', 'Dark')) {
             Select-Theme $theme
-            Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+            Wait-SourceText 'Target=#continue' 'Scenario run log'
             Capture-Window ('scenario-log-' + $theme.ToLowerInvariant() + '-minimum')
         }
         Select-Theme 'Light'
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
         Invoke-Control 'Back to Activity'
         Invoke-Control 'View run log: Checkout'
-        Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+        Wait-SourceText 'Target=#continue' 'Scenario run log'
         Invoke-Control 'All run logs'
         Wait-Control 'Run log' | Out-Null
         Invoke-Control 'Back to Activity'

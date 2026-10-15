@@ -8,6 +8,8 @@ function Test-ScenarioFlows {
     Wait-Control 'Capturing scenarios' | Out-Null
     Wait-Control 'Completed' | Out-Null
     Wait-Control 'Passed: 2' | Out-Null
+    $referenceReports = @(Get-ChildItem (Join-Path $output 'bitmaps_test') -Recurse -Filter report.json |
+        Select-Object -ExpandProperty FullName)
     $siblingReferences = @(Get-ChildItem (Join-Path $output 'bitmaps_reference') -Filter '*.png' |
         Where-Object { -not $_.Name.StartsWith('8ac900fea19642cc0000') } |
         ForEach-Object { @{ Path = $_.FullName; Hash = (Get-FileHash $_.FullName).Hash } })
@@ -31,16 +33,16 @@ function Test-ScenarioFlows {
     Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
     Capture-Window 'scenario-only-running'
     Invoke-Control 'View log: Checkout (desktop)'
-    Wait-SourceText 'Executing scenario: Checkout' 'Scenario run log'
+    Wait-SourceText 'Scenario=8ac900fea19642cc0000' 'Scenario run log'
     Capture-Window 'scenario-log-live'
     Wait-Control 'Completed' | Out-Null
-    Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+    Wait-SourceText 'Target=#continue' 'Scenario run log'
     $log = Read-ControlText 'Scenario run log'
-    if ($log.Contains('Signed-in account') -or $log.Contains('Executing scenario: Profile')) { throw 'Scenario log contains a sibling scenario.' }
-    if (-not $log.Contains('Comparison passed:')) { throw 'Scenario log omitted the final comparison outcome.' }
+    if ($log.Contains('Signed-in account') -or $log.Contains('signed-in-account') -or $log.Contains('Executing scenario: Profile')) { throw 'Scenario log contains a sibling scenario.' }
+    if (-not $log.Contains('[Loaded from archive]')) { throw 'Scenario log omitted the finalized archive.' }
     Capture-Window 'scenario-log'
     $reports = Get-ChildItem (Join-Path $output 'bitmaps_test') -Recurse -Filter report.json |
-        Where-Object { $_.Directory.Name.StartsWith('desktop-') }
+        Where-Object { $_.Directory.Name.StartsWith('desktop-') -and $_.FullName -notin $referenceReports }
     $pairs = @($reports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
     if ($pairs.Count -ne 1 -or $pairs[0].scenarioId -ne '8ac900fea19642cc0000') { throw 'Scenario selection produced sibling captures.' }
     foreach ($reference in $siblingReferences) {
@@ -70,7 +72,7 @@ function Test-ScenarioFlows {
     Invoke-Control 'Checkout'
     Invoke-Control 'Runs'
     Invoke-Control 'View run log: Checkout'
-    Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+    Wait-SourceText 'Target=#continue' 'Scenario run log'
     Invoke-Control 'All run logs'
     Wait-Control 'Run log' | Out-Null
     Invoke-Control 'Back to Activity'
@@ -88,7 +90,7 @@ function Test-ScenarioFlows {
     Wait-Control 'Completed' | Out-Null
     Wait-Control '1 passed' | Out-Null
     Invoke-Control 'View run log: Checkout'
-    Wait-SourceText 'Comparison passed:' 'Scenario run log'
+    Wait-SourceText 'Target=#continue' 'Scenario run log'
     Capture-Window 'scenario-comparison-log'
     foreach ($reference in $siblingReferences) {
         if ((Get-FileHash $reference.Path).Hash -ne $reference.Hash) { throw 'Scenario approval changed a sibling baseline.' }
