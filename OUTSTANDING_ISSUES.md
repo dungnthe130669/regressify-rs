@@ -4,6 +4,13 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Desktop and Log Hardening (2026-10-15)
 
+- Resolved in source: [run polling](src/desktop/ui/runs.rs) redrew Activity every
+  100 ms even without changes, and [hidden run logs](src/desktop/ui/runs/log.rs)
+  rebuilt up to 2 MiB of editor text on changed ticks during capture. Polling
+  remains at 100 ms, but unchanged elapsed-time redraws are once per second and
+  hidden capture logs load only when opened. Visible deployment logs and
+  completion archive health remain intact. Native scroll latency has not been
+  measured; expanded Activity scenario rows are still eagerly rendered.
 - Resolved in source: lossless [PNG optimization](src/optimizer/image_optimizer.rs)
   rewrote capture files without updating their `{image}.log.json` sidecar digests,
   turning optimized capture logs into `LoadingError` and erasing baseline log

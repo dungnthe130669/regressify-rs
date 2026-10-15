@@ -219,6 +219,7 @@ pub(super) struct RunPanel {
     expanded_selections: BTreeSet<String>,
     failed_only: bool,
     started: Option<Instant>,
+    elapsed_seconds: u64,
     executed_suites: Vec<(String, String)>,
     artifacts: artifacts::ArtifactScan,
     deployment_path: Option<PathBuf>,
@@ -306,6 +307,7 @@ impl RunPanel {
             expanded_selections: BTreeSet::new(),
             failed_only: false,
             started: None,
+            elapsed_seconds: 0,
             executed_suites: Vec::new(),
             artifacts: artifacts::ArtifactScan::default(),
             deployment_path: None,
@@ -372,8 +374,8 @@ impl RunPanel {
                             if this.manager.poll() {
                                 this.refresh_artifacts(cx);
                                 cx.emit(RunEvent::ProgressChanged);
+                                cx.notify();
                             }
-                            cx.notify();
                             this.running()
                         })
                         .unwrap_or(false);
@@ -1316,6 +1318,7 @@ impl RunPanel {
                 self.pending_request = None;
                 self.tab = 0;
                 self.started = Some(Instant::now());
+                self.elapsed_seconds = 0;
                 self.collapsed.clear();
                 self.status = format!("Running {}", self.command.label());
                 self.log_text.clear();
@@ -1335,21 +1338,7 @@ impl RunPanel {
                             .await;
                         let running = view
                             .update_in(cx, |this, window, cx| {
-                                let revision = this.manager.revision();
-                                let finished = this.manager.poll();
-                                if this.manager.revision() != revision {
-                                    cx.emit(RunEvent::ProgressChanged);
-                                    this.refresh_log(window, cx);
-                                }
-                                if finished {
-                                    this.status = this.completion_status();
-                                    cx.emit(RunEvent::Finished);
-                                    if review_after_run && this.executed_report_available() {
-                                        this.review_results(cx);
-                                    }
-                                }
-                                cx.notify();
-                                this.running()
+                                this.poll_run(review_after_run, window, cx)
                             })
                             .unwrap_or(false);
                         if !running {
@@ -1362,6 +1351,38 @@ impl RunPanel {
             Err(error) => self.status = format!("{error:#}"),
         }
         cx.notify();
+    }
+
+    fn poll_run(
+        &mut self,
+        review_after_run: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let revision = self.manager.revision();
+        let finished = self.manager.poll();
+        let changed = self.manager.revision() != revision;
+        if changed {
+            cx.emit(RunEvent::ProgressChanged);
+            self.refresh_log(window, cx);
+        }
+        if finished {
+            self.status = self.completion_status();
+            cx.emit(RunEvent::Finished);
+            if review_after_run && self.executed_report_available() {
+                self.review_results(cx);
+            }
+        }
+        let elapsed_seconds = self
+            .started
+            .map_or(0, |started| started.elapsed().as_secs());
+        // Keep completion polling prompt without rebuilding every Activity row
+        // ten times per second just to update the elapsed clock.
+        if changed || finished || elapsed_seconds != self.elapsed_seconds {
+            self.elapsed_seconds = elapsed_seconds;
+            cx.notify();
+        }
+        self.running()
     }
 }
 
@@ -2133,6 +2154,141 @@ mod tests {
                 .unwrap();
             }
         }
+    }
+
+    #[gpui_kit::test]
+    fn run_log_hidden_during_capture_does_not_rebuild_editor(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            let runs = view.read(cx).runs.clone();
+            runs.update(cx, |panel, cx| {
+                let (mut manager, _) = crate::desktop::runner::tests::polling_fixture();
+                manager.request = Some(RunRequest {
+                    root: directory.path().to_path_buf(),
+                    command: RunCommand::Reference,
+                    options: RunOptions::default(),
+                });
+                let text = "retained worker output\n".repeat(80_000);
+                manager.logs.push_back(crate::desktop::runner::LogLine {
+                    stderr: false,
+                    text: text.clone(),
+                });
+                panel.manager = manager;
+                panel.log_text = "previously viewed log".into();
+                panel.log.update(cx, |editor, cx| {
+                    editor.set_value("previously viewed log", window, cx);
+                });
+                for command in [RunCommand::Reference, RunCommand::Test] {
+                    panel.manager.request.as_mut().unwrap().command = command;
+                    for tab in 0..3 {
+                        panel.tab = tab;
+                        panel.refresh_log(window, cx);
+                        assert!(
+                            panel.log_text == "previously viewed log",
+                            "Hidden capture logs must not rebuild retained editor text"
+                        );
+                        assert!(
+                            panel.log.read(cx).value() == "previously viewed log",
+                            "Hidden capture logs must not reset the editor"
+                        );
+                        assert!(!panel.archive_loading);
+                        assert!(
+                            panel.manager.logs[0].text == text,
+                            "Retained output changed"
+                        );
+                    }
+                }
+                // Opening Log still starts the authoritative archive read on demand.
+                panel.show_all_logs(window, cx);
+                assert_eq!(panel.tab, 3);
+                assert!(panel.archive_loading);
+            });
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn run_poll_unchanged_ticks_do_not_notify_but_clock_and_progress_do(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        let (manager, progress) = crate::desktop::runner::tests::polling_fixture();
+        let runs = cx.update(|cx| view.read(cx).runs.clone());
+        cx.update(|cx| {
+            runs.update(cx, |panel, _| {
+                panel.manager = manager;
+                panel.started = None;
+                panel.elapsed_seconds = 0;
+            });
+        });
+        cx.run_until_parked();
+        let notifications = Rc::new(std::cell::Cell::new(0));
+        let observed = notifications.clone();
+        let _subscription =
+            cx.update(|cx| cx.observe(&runs, move |_, _| observed.set(observed.get() + 1)));
+        let events = Rc::new(std::cell::Cell::new(0));
+        let observed_events = events.clone();
+        let _events = cx.update(|cx| {
+            cx.subscribe(&runs, move |_, event: &RunEvent, _| {
+                if matches!(event, RunEvent::ProgressChanged) {
+                    observed_events.set(observed_events.get() + 1);
+                }
+            })
+        });
+        for _ in 0..10 {
+            cx.update_window(handle.into(), |_, window, cx| {
+                runs.update(cx, |panel, cx| assert!(panel.poll_run(false, window, cx)));
+            })
+            .unwrap();
+        }
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 0);
+        assert_eq!(events.get(), 0);
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            runs.update(cx, |panel, cx| {
+                panel.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
+                assert!(panel.poll_run(false, window, cx));
+                assert!(panel.elapsed_seconds >= 2);
+                panel.started = None;
+                panel.elapsed_seconds = 0;
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+        assert_eq!(
+            events.get(),
+            0,
+            "Clock changes do not invalidate the workbench"
+        );
+
+        let mut worker = progress.lock().unwrap();
+        worker.apply(crate::progress::Record {
+            version: 1,
+            elapsed_ms: 100,
+            event: crate::progress::Event::Phase {
+                name: "Capturing scenarios".into(),
+            },
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            runs.update(cx, |panel, cx| assert!(panel.poll_run(false, window, cx)));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1, "Contended polling must not redraw");
+        drop(worker);
+
+        cx.update_window(handle.into(), |_, window, cx| {
+            runs.update(cx, |panel, cx| {
+                assert!(panel.poll_run(false, window, cx));
+                assert_eq!(panel.manager.progress.phase, "Capturing scenarios");
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 2);
+        assert_eq!(events.get(), 1);
     }
 
     #[gpui_kit::test]

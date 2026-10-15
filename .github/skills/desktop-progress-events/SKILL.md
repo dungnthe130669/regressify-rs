@@ -13,6 +13,7 @@ description: 'Use when changing structured run events, scenario counts, UI polli
 
 1. Preserve stable job/suite/scenario/capture identities. Multiple screenshots from one scenario must not inflate scenario counts or lose viewport context.
 1. Bound event/log processing per UI tick; do not block on a worker-held progress mutex. Notify views only when their observable revision changes.
+1. Keep the 100 ms completion/cancellation poll separate from redraws: unchanged run activity needs only a one-second elapsed-time refresh. Do not rebuild hidden log editors during capture; preserve on-demand Log loading, visible deployment logs, and completion archive health. Cover this with `run_poll_` and `run_log_hidden_` GUI tests.
 1. Distinguish execution failure, cancellation, visual mismatch, capture error, and successful completion. Keep structural errors out of website-result counts.
 1. Persist only finished, supported activity for the matching workspace. Surface persistence errors and retain ownership until the write completes.
 1. Saved activity version 2 preserves optional report overrides. Loading version 1 converts only exact prefilled title/heading/subheading defaults to unset values; retain custom strings, explicit blanks, and version-2 overrides equal to defaults. Do not infer provenance from text in current-format activity.
@@ -31,6 +32,8 @@ description: 'Use when changing structured run events, scenario counts, UI polli
 ```sh
 cargo test --lib progress::tests
 cargo test --features desktop --lib desktop::runner::tests
+cargo test --features gui-tests --lib run_poll_ -- --test-threads=1
+cargo test --features gui-tests --lib run_log_ -- --test-threads=1
 ```
 
 Cover partial/invalid events, unchanged polling, contended locks, overflow/omission, late writes, reload without rerun, absent suites, and legacy metadata.

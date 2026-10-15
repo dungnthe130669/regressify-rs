@@ -1736,6 +1736,13 @@ omit chunks under heavy output; the omission count is displayed. Completion is
 tracked separately. Proxy input is masked and command lines are not echoed;
 CLI/script logs can still contain project-provided data.
 
+Capture execution runs in a separate worker process. Desktop progress polling
+remains nonblocking at 100 ms; unchanged activity redraws only once per second
+for elapsed time. While a capture is running, hidden log editors are not rebuilt:
+opening Log loads the current archive on demand without dropping retained output.
+Deployment Activity keeps its visible live log, and completion still refreshes
+archive health.
+
 Click a scenario/viewport row in Activity to open its timestamped run log. The
 terminal button beside a scenario in the sidebar or Runs checklist opens that
 scenario's combined viewport log. These routes work while running, after

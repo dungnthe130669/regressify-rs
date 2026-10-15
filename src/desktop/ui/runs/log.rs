@@ -123,6 +123,18 @@ impl RunPanel {
     }
 
     pub(super) fn refresh_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Captures retain output in the manager; rebuilding an unmounted editor can
+        // otherwise process megabytes on the UI thread every progress tick.
+        if self.running()
+            && self.tab != 3
+            && self
+                .manager
+                .request
+                .as_ref()
+                .is_some_and(|request| request.command != RunCommand::Deploy)
+        {
+            return;
+        }
         let legacy_deployment_activity = self.tab != 3
             && self.manager.request.as_ref().is_some_and(|request| {
                 request.command == RunCommand::Deploy

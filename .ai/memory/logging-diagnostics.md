@@ -22,6 +22,12 @@ Verified: 2026-10-15
   [Run logs](../../src/desktop/ui/runs/log.rs) hide numbering during Follow;
   disabling it loads the last aligned page. A cleared archive key permits a new
   read during loading, while key/generation checks reject stale completion.
+- [Run polling](../../src/desktop/ui/runs.rs) leaves capture execution in the
+  worker process and polls progress nonblockingly every 100 ms. Hidden capture
+  log editors previously rebuilt up to 2 MiB per changed tick; they now wait for
+  Log activation. Unchanged ticks redraw only for the one-second elapsed clock.
+  `run_log_hidden_` and `run_poll_` cover these UI-work bounds; they do not measure
+  native input latency or establish a frame-time budget for large Activity lists.
 - [Capture Log](../../src/desktop/ui/reports/log.rs) uses segmented source tabs
   with two public focus handles and Enter/Space hooks because Kit 0.7.1 tabs are
   pointer-only. Real-handle GUI tests and native Right/Enter, Left/Space checks
