@@ -324,6 +324,24 @@ pub(super) fn apply_theme(dark: bool, window: Option<&mut Window>, cx: &mut App)
         *color = readable_color(*color, &[muted]);
     }
     // Keep the stock visible tint while making contrast independent of the parent surface.
+    colors.button = colors.background.blend(colors.button);
+    colors.button_hover = colors.background.blend(colors.button_hover);
+    colors.button_active = colors.background.blend(colors.button_active);
+    colors.button_foreground = readable_color(
+        colors.button_foreground,
+        &[colors.button, colors.button_hover, colors.button_active],
+    );
+    colors.button_primary = colors.background.blend(colors.button_primary);
+    colors.button_primary_hover = colors.background.blend(colors.button_primary_hover);
+    colors.button_primary_active = colors.background.blend(colors.button_primary_active);
+    colors.button_primary_foreground = readable_color(
+        colors.button_primary_foreground,
+        &[
+            colors.button_primary,
+            colors.button_primary_hover,
+            colors.button_primary_active,
+        ],
+    );
     colors.button_danger = colors.background.blend(colors.button_danger);
     colors.button_danger_hover = colors.background.blend(colors.button_danger_hover);
     colors.button_danger_active = colors.background.blend(colors.button_danger_active);
@@ -342,27 +360,30 @@ pub(super) fn apply_theme(dark: bool, window: Option<&mut Window>, cx: &mut App)
     }
 }
 
-fn readable_color(color: Hsla, backgrounds: &[Hsla]) -> Hsla {
-    let luminance = |color: Hsla| {
-        let color = color.to_rgb();
-        let linear = |channel: f32| {
-            let channel = f64::from(channel);
-            if channel <= 0.04045 {
-                channel / 12.92
-            } else {
-                ((channel + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+fn luminance(color: Hsla) -> f64 {
+    let color = color.to_rgb();
+    let linear = |channel: f32| {
+        let channel = f64::from(channel);
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
     };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+}
+
+pub(super) fn contrast_ratio(foreground: Hsla, background: Hsla) -> f64 {
+    let foreground = luminance(background.blend(foreground));
+    let background = luminance(background);
+    (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+}
+
+fn readable_color(color: Hsla, backgrounds: &[Hsla]) -> Hsla {
     let contrast = |color: Hsla| {
-        let foreground = luminance(color);
         backgrounds
             .iter()
-            .map(|background| {
-                let background = luminance(*background);
-                (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
-            })
+            .map(|background| contrast_ratio(color, *background))
             .fold(f64::INFINITY, f64::min)
     };
     if contrast(color) >= 4.5 {
@@ -494,21 +515,8 @@ impl Workbench {
 
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests {
+    use gpui_kit::TestAppContext;
     use gpui_kit::component::ActiveTheme;
-    use gpui_kit::{Hsla, TestAppContext};
-
-    fn luminance(color: Hsla) -> f64 {
-        let color = color.to_rgb();
-        let linear = |channel: f32| {
-            let channel = f64::from(channel);
-            if channel <= 0.04045 {
-                channel / 12.92
-            } else {
-                ((channel + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
-    }
 
     #[gpui_kit::test]
     fn both_palettes_keep_text_readable_and_keyboard_focus_visible(cx: &mut TestAppContext) {
@@ -527,7 +535,27 @@ mod tests {
                         theme.button_primary_foreground,
                         theme.button_primary,
                     ),
+                    (
+                        "primary button hover",
+                        theme.button_primary_foreground,
+                        theme.button_primary_hover,
+                    ),
+                    (
+                        "primary button active",
+                        theme.button_primary_foreground,
+                        theme.button_primary_active,
+                    ),
                     ("neutral button", theme.button_foreground, theme.button),
+                    (
+                        "neutral button hover",
+                        theme.button_foreground,
+                        theme.button_hover,
+                    ),
+                    (
+                        "neutral button active",
+                        theme.button_foreground,
+                        theme.button_active,
+                    ),
                     (
                         "danger button",
                         theme.button_danger_foreground,
@@ -550,14 +578,19 @@ mod tests {
                     ("error", theme.danger, theme.muted),
                     ("info", theme.info, theme.muted),
                 ] {
-                    let front = luminance(foreground);
-                    let back = luminance(background);
-                    let contrast = (front.max(back) + 0.05) / (front.min(back) + 0.05);
-                    let readable = contrast >= 4.5;
-                    if !readable {
-                        failures.push(format!(
-                            "{name} contrast {contrast:.2} with dark={dark}: {foreground:?} on {background:?}"
-                        ));
+                    for (surface_name, surface) in [
+                        ("background", theme.background),
+                        ("muted", theme.muted),
+                        ("primary", theme.primary),
+                    ] {
+                        let background = surface.blend(background);
+                        let contrast = super::contrast_ratio(foreground, background);
+                        let readable = contrast >= 4.5;
+                        if !readable {
+                            failures.push(format!(
+                                "{name} on {surface_name} contrast {contrast:.2} with dark={dark}: {foreground:?} on {background:?}"
+                            ));
+                        }
                     }
                 }
                 assert!(theme.focus_ring, "Keyboard focus must stay visible");

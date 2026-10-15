@@ -121,6 +121,40 @@ impl Drop for UpdatePanel {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct UpdateBannerColors {
+    background: Hsla,
+    border: Hsla,
+    title: Hsla,
+    detail: Hsla,
+    #[cfg(all(test, feature = "gui-tests"))]
+    action_background: Hsla,
+    #[cfg(all(test, feature = "gui-tests"))]
+    action_hover: Hsla,
+    #[cfg(all(test, feature = "gui-tests"))]
+    action_active: Hsla,
+    #[cfg(all(test, feature = "gui-tests"))]
+    action_foreground: Hsla,
+}
+
+fn update_banner_colors(cx: &App) -> UpdateBannerColors {
+    let theme = cx.theme();
+    UpdateBannerColors {
+        background: theme.muted,
+        border: theme.border,
+        title: theme.foreground,
+        detail: theme.muted_foreground,
+        #[cfg(all(test, feature = "gui-tests"))]
+        action_background: theme.button_primary,
+        #[cfg(all(test, feature = "gui-tests"))]
+        action_hover: theme.button_primary_hover,
+        #[cfg(all(test, feature = "gui-tests"))]
+        action_active: theme.button_primary_active,
+        #[cfg(all(test, feature = "gui-tests"))]
+        action_foreground: theme.button_primary_foreground,
+    }
+}
+
 impl Workbench {
     pub(super) fn render_update_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let update = self.updates.read(cx);
@@ -149,6 +183,7 @@ impl Workbench {
         let version = update.prepared.as_ref()?.version();
         let title = format!("Regressify {version} is ready to install");
         let detail = update.message.clone();
+        let colors = update_banner_colors(cx);
         Some(
             div()
                 .id("update-banner")
@@ -158,6 +193,9 @@ impl Workbench {
                 .gap_3()
                 .w_full()
                 .flex_shrink_0()
+                .border_b_1()
+                .border_color(colors.border)
+                .bg(colors.background)
                 .child(
                     gpui_kit::component::marker::Marker::new()
                         .w_full()
@@ -166,8 +204,7 @@ impl Workbench {
                         .gap_3()
                         .px_4()
                         .py_3()
-                        .bg(cx.theme().primary)
-                        .text_color(cx.theme().primary_foreground)
+                        .text_color(colors.title)
                         .child(
                             Icon::new(gpui_kit::assets::IconName::Download)
                                 .size_5()
@@ -192,12 +229,14 @@ impl Workbench {
                                         .id("update-banner-detail")
                                         .test_support()
                                         .text_xs()
+                                        .text_color(colors.detail)
                                         .whitespace_normal()
                                         .child(detail),
                                 ),
                         )
                         .child(
                             Button::new("update-banner-action")
+                                .primary()
                                 .flex_shrink_0()
                                 .icon(gpui_kit::assets::IconName::RotateCw)
                                 .label("Install update")
@@ -1405,6 +1444,31 @@ mod tests {
                 });
                 for dark in [false, true] {
                     design::apply_theme(dark, Some(window), cx);
+                    let colors = super::update_banner_colors(cx);
+                    assert!(
+                        design::contrast_ratio(colors.title, colors.background) >= 4.5,
+                        "banner title contrast with dark={dark}: {colors:?}"
+                    );
+                    assert!(
+                        design::contrast_ratio(colors.detail, colors.background) >= 4.5,
+                        "banner detail contrast with dark={dark}: {colors:?}"
+                    );
+                    for (state, button_background) in [
+                        ("normal", colors.action_background),
+                        ("hover", colors.action_hover),
+                        ("active", colors.action_active),
+                    ] {
+                        let button_background = colors.background.blend(button_background);
+                        assert!(
+                            design::contrast_ratio(colors.action_foreground, button_background)
+                                >= 4.5,
+                            "banner action {state} text contrast with dark={dark}: {colors:?}"
+                        );
+                        assert!(
+                            design::contrast_ratio(button_background, colors.background) >= 4.5,
+                            "banner action {state} surface contrast with dark={dark}: {colors:?}"
+                        );
+                    }
                     for main_tab in 0..4 {
                         view.update(cx, |this, cx| {
                             this.main_tab = main_tab;
