@@ -20,8 +20,7 @@ description: 'Use when changing or reviewing regressify ref, baseline capture, r
    never delete good baselines first or promote error placeholders/sidecars.
 1. A failed website/action stops its scenario but not peers; it remains a report
    result with zero exit. Config, launch, and artifact-write failures are non-zero.
-1. Preserve manifests, report generation, and unselected references during partial
-   runs. Test failures at each stage, including promotion after some captures pass.
+1. Preserve manifests, self-approved report generation (`generate_reference_report`, without running pixel comparison against existing images), and unselected references during partial runs. Test failures at each stage, including promotion after some captures pass.
 
 ## Checks
 

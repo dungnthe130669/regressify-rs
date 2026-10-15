@@ -134,10 +134,13 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 fn collect_png_files(output_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut png_files = Vec::new();
     // Published image bytes must continue matching their immutable URL hashes.
-    for entry in WalkDir::new(output_dir)
-        .into_iter()
-        .filter_entry(|entry| entry.depth() != 1 || entry.file_name() != "_snapshot")
-    {
+    for entry in WalkDir::new(output_dir).into_iter().filter_entry(|entry| {
+        (entry.depth() != 1 || entry.file_name() != "_snapshot")
+            && !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".compare-staging-")
+    }) {
         let entry = entry.with_context(|| {
             format!(
                 "Failed to scan Regressify output directory '{}'",

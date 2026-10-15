@@ -76,7 +76,7 @@ pub(crate) fn write_suite_metadata(suite_dir: &Path, display_name: Option<&str>)
     write_file_atomically(&suite_dir.join(SUITE_METADATA_FILE), &bytes)
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct ReportTest {
     pair: ReportPair,
     status: String,
@@ -789,12 +789,24 @@ fn generate_selected_report(
             max_workers.max(1)
         );
     }
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".compare-staging-")
+        .tempdir_in(suite_dir)
+        .with_context(|| {
+            format!(
+                "Failed to create comparison staging directory in '{}'",
+                suite_dir.display()
+            )
+        })?;
     let outcomes = compare_report_work(&report_work, max_workers)?;
-    let mut report_tests = Vec::with_capacity(report_work.len());
+    let mut staged_entries = Vec::with_capacity(report_work.len());
 
     for (entry, outcome) in report_work.into_iter().zip(outcomes) {
         match entry {
-            ReportWork::Immediate(test) => report_tests.push(test),
+            ReportWork::Immediate(test) => staged_entries.push(StagedReportEntry {
+                test,
+                staged_diff_name: None,
+            }),
             ReportWork::Compare(job) => match outcome.ok_or_else(|| {
                 anyhow!(
                     "Comparison worker did not return an outcome for '{}'",
@@ -802,54 +814,13 @@ fn generate_selected_report(
                 )
             })? {
                 ComparisonOutcome::Compared { result, diff_png } => {
-                    let mut pair = job.pair;
-                    let diff_image_name = pair.file_name.replace(".png", "_diff.png");
-                    let diff_image_path = bitmaps_test_dir.join(&diff_image_name);
-
-                    pair.diff_image = if let Some(diff_data) = diff_png {
-                        write_file_atomically(&diff_image_path, &diff_data)?;
-                        Some(format!("../bitmaps_test/{}/{}", test_date, diff_image_name))
-                    } else {
-                        // A previous comparison in this run may have produced a
-                        // diff. Do not show that stale artifact for a current pass.
-                        if diff_image_path.exists() {
-                            fs::remove_file(&diff_image_path)?;
-                        }
-                        None
-                    };
-                    let passed = result.raw_mis_match_percentage <= pair.mis_match_threshold
-                        && result.is_same_dimensions;
-                    let status = if passed { "pass" } else { "fail" };
-                    let status_text = if passed {
-                        format!("{:.2}%", result.raw_mis_match_percentage).green()
-                    } else {
-                        format!("{:.2}%", result.raw_mis_match_percentage).red()
-                    };
-
-                    eprintln!(
-                        "    {} {} → mismatch: {}",
-                        if passed {
-                            "PASS:".green()
-                        } else {
-                            "FAIL:".red()
-                        },
-                        pair.file_name,
-                        status_text,
-                    );
-                    pair.diff = Some(build_diff(&result));
-                    if !result.is_same_dimensions {
-                        pair.engine_error_msg = Some(format!(
-                            "Dimensions differ: reference {}x{} vs test {}x{}",
-                            result.ref_width,
-                            result.ref_height,
-                            result.test_width,
-                            result.test_height
-                        ));
-                    }
-                    report_tests.push(ReportTest {
-                        pair,
-                        status: status.to_string(),
-                    });
+                    staged_entries.push(finish_compared_pair(
+                        staging_dir.path(),
+                        test_date,
+                        job.pair,
+                        result,
+                        diff_png,
+                    )?);
                 }
                 ComparisonOutcome::Failed(error) => {
                     let mut pair = job.pair;
@@ -860,99 +831,203 @@ fn generate_selected_report(
                         error
                     );
                     pair.engine_error_msg = Some(format!("Comparison error: {}", error));
-                    report_tests.push(ReportTest {
-                        pair,
-                        status: "fail".to_string(),
+                    staged_entries.push(StagedReportEntry {
+                        test: ReportTest {
+                            pair,
+                            status: "fail".to_string(),
+                        },
+                        staged_diff_name: None,
                     });
                 }
             },
         }
     }
 
-    for test in &mut report_tests {
-        use crate::diagnostics::{record::*, runtime};
-        let outcome = if test.status == "pass" {
-            Outcome::Success
-        } else if test.pair.engine_error_msg.is_some() {
-            Outcome::Failure
-        } else {
-            Outcome::Mismatch
-        };
-        test.pair.comparison_outcome = Some(outcome);
-        if let Some(context) = runtime::current() {
-            context.record(
-                Stage::CaptureArtifacts,
-                DiagnosticEvent::Compared,
-                outcome.severity(),
-                [
-                    (Field::Command, FieldValue::Kind(SafeValue::Compare)),
-                    (
-                        Field::Target,
-                        FieldValue::Identity(SafeIdentity::fingerprint(suite_id)),
-                    ),
-                    (
-                        Field::Destination,
-                        FieldValue::Identity(SafeIdentity::fingerprint(test_date)),
-                    ),
-                    (
-                        Field::Artifact,
-                        FieldValue::Identity(SafeIdentity::fingerprint(&test.pair.file_name)),
-                    ),
-                ],
-                runtime::Completion {
-                    outcome: Some(outcome),
-                    error: test
-                        .pair
-                        .engine_error_msg
-                        .as_ref()
-                        .map(|message| SanitizedError::capture(&anyhow!("{message}"))),
-                    duration_ms: None,
-                },
-            );
-        }
+    for entry in &mut staged_entries {
+        record_comparison_diagnostic(suite_id, test_date, &mut entry.test);
     }
 
-    // Generate report.json
     if progress::enabled() {
-        for test in &report_tests {
-            progress::emit(ProgressEvent::Compared {
-                suite_id: suite_id.into(),
-                capture: screenshot_key(&test.pair.file_name).into(),
-                label: test
-                    .pair
-                    .scenario_label
-                    .clone()
-                    .unwrap_or_else(|| test.pair.label.clone()),
-                scenario_id: test.pair.scenario_id.clone(),
-                passed: test.status == "pass",
-                error: test
-                    .pair
-                    .engine_error_msg
-                    .clone()
-                    .or_else(|| (test.status != "pass").then(|| "Visual mismatch".into())),
-            });
+        for entry in &staged_entries {
+            emit_compared_progress(suite_id, &entry.test);
         }
     }
-    let report = ReportConfig {
-        test_suite: suite_id.to_string(),
-        id: suite_id.to_string(),
+    let report = commit_staged_report(
+        staging_dir.path(),
+        &bitmaps_test_dir,
+        &html_report_dir,
+        suite_id,
         display_name,
-        tests: report_tests,
-    };
-
-    let report_json = serde_json::to_string_pretty(&report)?;
-    let report_path = bitmaps_test_dir.join("report.json");
-    write_file_atomically(&report_path, report_json.as_bytes())?;
-
-    // Generate config.js for Regressify React UI
-    let config_js = format!("report({});", report_json);
-    let config_path = html_report_dir.join("config.js");
-    write_file_atomically(&config_path, config_js.as_bytes())?;
+        staged_entries,
+    )?;
     progress::emit(ProgressEvent::SuiteFinished {
         id: suite_id.into(),
     });
 
-    // Print summary
+    print_comparison_summary(&report);
+
+    Ok(())
+}
+
+struct StagedReportEntry {
+    test: ReportTest,
+    staged_diff_name: Option<String>,
+}
+
+fn finish_compared_pair(
+    staging_dir: &Path,
+    test_date: &str,
+    mut pair: ReportPair,
+    result: CompareResult,
+    diff_png: Option<Vec<u8>>,
+) -> Result<StagedReportEntry> {
+    let diff_image_name = pair.file_name.replace(".png", "_diff.png");
+    let staged_diff_name = if let Some(diff_data) = diff_png {
+        write_file_atomically(&staging_dir.join(&diff_image_name), &diff_data)?;
+        pair.diff_image = Some(format!("../bitmaps_test/{}/{}", test_date, diff_image_name));
+        Some(diff_image_name)
+    } else {
+        pair.diff_image = None;
+        None
+    };
+    let passed =
+        result.raw_mis_match_percentage <= pair.mis_match_threshold && result.is_same_dimensions;
+    let status = if passed { "pass" } else { "fail" };
+    let status_text = if passed {
+        format!("{:.2}%", result.raw_mis_match_percentage).green()
+    } else {
+        format!("{:.2}%", result.raw_mis_match_percentage).red()
+    };
+
+    eprintln!(
+        "    {} {} → mismatch: {}",
+        if passed {
+            "PASS:".green()
+        } else {
+            "FAIL:".red()
+        },
+        pair.file_name,
+        status_text,
+    );
+    pair.diff = Some(build_diff(&result));
+    if !result.is_same_dimensions {
+        pair.engine_error_msg = Some(format!(
+            "Dimensions differ: reference {}x{} vs test {}x{}",
+            result.ref_width, result.ref_height, result.test_width, result.test_height
+        ));
+    }
+    Ok(StagedReportEntry {
+        test: ReportTest {
+            pair,
+            status: status.to_string(),
+        },
+        staged_diff_name,
+    })
+}
+
+fn record_comparison_diagnostic(suite_id: &str, test_date: &str, test: &mut ReportTest) {
+    use crate::diagnostics::{record::*, runtime};
+    let outcome = if test.status == "pass" {
+        Outcome::Success
+    } else if test.pair.engine_error_msg.is_some() {
+        Outcome::Failure
+    } else {
+        Outcome::Mismatch
+    };
+    test.pair.comparison_outcome = Some(outcome);
+    if let Some(context) = runtime::current() {
+        context.record(
+            Stage::CaptureArtifacts,
+            DiagnosticEvent::Compared,
+            outcome.severity(),
+            [
+                (Field::Command, FieldValue::Kind(SafeValue::Compare)),
+                (
+                    Field::Target,
+                    FieldValue::Identity(SafeIdentity::fingerprint(suite_id)),
+                ),
+                (
+                    Field::Destination,
+                    FieldValue::Identity(SafeIdentity::fingerprint(test_date)),
+                ),
+                (
+                    Field::Artifact,
+                    FieldValue::Identity(SafeIdentity::fingerprint(&test.pair.file_name)),
+                ),
+            ],
+            runtime::Completion {
+                outcome: Some(outcome),
+                error: test
+                    .pair
+                    .engine_error_msg
+                    .as_ref()
+                    .map(|message| SanitizedError::capture(&anyhow!("{message}"))),
+                duration_ms: None,
+            },
+        );
+    }
+}
+
+fn emit_compared_progress(suite_id: &str, test: &ReportTest) {
+    progress::emit(ProgressEvent::Compared {
+        suite_id: suite_id.into(),
+        capture: screenshot_key(&test.pair.file_name).into(),
+        label: test
+            .pair
+            .scenario_label
+            .clone()
+            .unwrap_or_else(|| test.pair.label.clone()),
+        scenario_id: test.pair.scenario_id.clone(),
+        passed: test.status == "pass",
+        error: test
+            .pair
+            .engine_error_msg
+            .clone()
+            .or_else(|| (test.status != "pass").then(|| "Visual mismatch".into())),
+    });
+}
+
+fn commit_staged_report(
+    staging_dir: &Path,
+    bitmaps_test_dir: &Path,
+    html_report_dir: &Path,
+    suite_id: &str,
+    display_name: Option<String>,
+    entries: Vec<StagedReportEntry>,
+) -> Result<ReportConfig> {
+    let report = ReportConfig {
+        test_suite: suite_id.to_string(),
+        id: suite_id.to_string(),
+        display_name,
+        tests: entries.iter().map(|entry| entry.test.clone()).collect(),
+    };
+
+    let report_json = serde_json::to_string_pretty(&report)?;
+    let config_js = format!("report({});", report_json);
+
+    let staged_report_path = staging_dir.join("staged-report.json");
+    let staged_config_path = staging_dir.join("staged-config.js");
+    write_file_atomically(&staged_report_path, report_json.as_bytes())?;
+    write_file_atomically(&staged_config_path, config_js.as_bytes())?;
+
+    for entry in &entries {
+        let diff_image_name = entry.test.pair.file_name.replace(".png", "_diff.png");
+        let diff_image_path = bitmaps_test_dir.join(&diff_image_name);
+        if let Some(staged_diff_name) = &entry.staged_diff_name {
+            copy_file_atomically(&staging_dir.join(staged_diff_name), &diff_image_path)?;
+        } else if diff_image_path.exists() {
+            // A previous comparison in this run may have produced a diff. Do
+            // not show that stale artifact for a current pass.
+            fs::remove_file(&diff_image_path)?;
+        }
+    }
+
+    copy_file_atomically(&staged_report_path, &bitmaps_test_dir.join("report.json"))?;
+    copy_file_atomically(&staged_config_path, &html_report_dir.join("config.js"))?;
+    Ok(report)
+}
+
+fn print_comparison_summary(report: &ReportConfig) {
     let pass_count = report.tests.iter().filter(|t| t.status == "pass").count();
     let fail_count = report.tests.iter().filter(|t| t.status == "fail").count();
     eprintln!(
@@ -965,8 +1040,417 @@ fn generate_selected_report(
         },
         report.tests.len()
     );
+}
 
+/// Generate a self-approved baseline report for `regressify ref` without
+/// running pixel comparison against existing images. Successful captures were
+/// just promoted as the baseline and are recorded as passed with zero diff;
+/// failed captures retain their capture error markers.
+pub(crate) fn generate_reference_report(
+    suite_dir: &Path,
+    suite_id: &str,
+    test_date: &str,
+) -> Result<()> {
+    let tests_dir = suite_dir.join("bitmaps_test").join(test_date);
+    if !tests_dir.exists() {
+        anyhow::bail!("Test screenshots directory does not exist: {:?}", tests_dir);
+    }
+    let display_name = read_suite_metadata(suite_dir)?.and_then(|metadata| metadata.display_name);
+    let reference_dir = suite_dir.join("bitmaps_reference");
+    let html_report_dir = suite_dir.join("html_report");
+    create_dir_all(&reference_dir)?;
+    create_dir_all(&tests_dir)?;
+    create_dir_all(&html_report_dir)?;
+
+    let mut test_screenshots = validate_capture_run_inventory(&tests_dir)?;
+    let order = read_report_order(&tests_dir)?
+        .map(|order| order.captures)
+        .unwrap_or_default();
+    let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
+    let pixel_thresholds = read_report_pixel_thresholds(&tests_dir)?.unwrap_or_default();
+    let report_urls = read_report_urls(&tests_dir)?;
+    if let Some(page_urls) = &report_urls {
+        let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
+        validate_capture_inventory(&tests_dir, &expected_captures, &test_screenshots)?;
+    }
+    let mut order_index = HashMap::with_capacity(order.len() * 2);
+    for (index, key) in order.iter().enumerate() {
+        order_index.insert(key.as_str(), index);
+        order_index.entry(screenshot_prefix(key)).or_insert(index);
+    }
+    test_screenshots.sort_by(|a, b| {
+        screenshot_order_key(a, &order_index)
+            .cmp(&screenshot_order_key(b, &order_index))
+            .then_with(|| a.cmp(b))
+    });
+
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".compare-staging-")
+        .tempdir_in(suite_dir)
+        .with_context(|| {
+            format!(
+                "Failed to create reference report staging directory in '{}'",
+                suite_dir.display()
+            )
+        })?;
+    let output_root = suite_dir.parent().unwrap_or(suite_dir);
+    let mut archive_states = BTreeMap::new();
+    let mut staged_entries = Vec::with_capacity(test_screenshots.len());
+
+    for screenshot_name in test_screenshots {
+        let test_path = tests_dir.join(&screenshot_name);
+        let reference_path = reference_dir.join(&screenshot_name);
+        let threshold = thresholds
+            .get(screenshot_key(&screenshot_name))
+            .or_else(|| thresholds.get(screenshot_prefix(&screenshot_name)))
+            .copied()
+            .unwrap_or(0.0);
+        let pixel_threshold = pixel_thresholds
+            .get(screenshot_key(&screenshot_name))
+            .or_else(|| pixel_thresholds.get(screenshot_prefix(&screenshot_name)))
+            .copied()
+            .unwrap_or(DEFAULT_PIXEL_MATCH_THRESHOLD);
+        let relative_test = format!("../bitmaps_test/{}/{}", test_date, screenshot_name);
+        let label = screenshot_name
+            .trim_end_matches(".png")
+            .replace("__", " ")
+            .replace('$', "");
+        let page_urls = report_urls
+            .as_ref()
+            .and_then(|urls| urls.get(screenshot_key(&screenshot_name)));
+        let mut pair = report_pair(
+            label,
+            &screenshot_name,
+            relative_test,
+            threshold,
+            pixel_threshold,
+            page_urls,
+        );
+        pair.reference_log = crate::test::capture::read_capture_log_cached(
+            output_root,
+            &reference_path,
+            &mut archive_states,
+        );
+        pair.test_log = crate::test::capture::read_capture_log_cached(
+            output_root,
+            &test_path,
+            &mut archive_states,
+        );
+
+        let status = if let Some(test_err) = read_error_marker(&test_path) {
+            pair.engine_error_msg = Some(format!("Test scenario failed to capture: {test_err}"));
+            pair.comparison_outcome = Some(crate::diagnostics::record::Outcome::Failure);
+            "fail"
+        } else {
+            pair.diff = Some(ReportDiff {
+                is_same_dimensions: true,
+                dimension_difference: DimensionDiff {
+                    width: 0,
+                    height: 0,
+                },
+                alignment: Some(DiffAlignment::default()),
+                raw_mis_match_percentage: 0.0,
+                mis_match_percentage: "0.00".to_string(),
+                analysis_time: 0,
+            });
+            pair.comparison_outcome = Some(crate::diagnostics::record::Outcome::Success);
+            "pass"
+        };
+
+        staged_entries.push(StagedReportEntry {
+            test: ReportTest {
+                pair,
+                status: status.to_string(),
+            },
+            staged_diff_name: None,
+        });
+    }
+
+    commit_staged_report(
+        staging_dir.path(),
+        &tests_dir,
+        &html_report_dir,
+        suite_id,
+        display_name,
+        staged_entries,
+    )?;
+    progress::emit(ProgressEvent::SuiteFinished {
+        id: suite_id.into(),
+    });
     Ok(())
+}
+
+/// Stages per-job visual comparison outputs in an intermediate temporary
+/// directory while scenario captures are still running. Diff images and report
+/// JSON/JS are only moved to `bitmaps_test/<run_id>` and `html_report` when all
+/// capture and comparison jobs complete.
+pub(crate) struct StagedSuiteComparison {
+    suite_dir: PathBuf,
+    suite_id: String,
+    test_date: String,
+    display_name: Option<String>,
+    tests_dir: PathBuf,
+    reference_dir: PathBuf,
+    html_report_dir: PathBuf,
+    staging_dir: tempfile::TempDir,
+    order: Vec<String>,
+    thresholds: HashMap<String, f64>,
+    pixel_thresholds: HashMap<String, f64>,
+    report_urls: Option<BTreeMap<String, ReportPageUrls>>,
+    default_mis_match_threshold: f64,
+    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    entries: std::sync::Mutex<HashMap<String, StagedReportEntry>>,
+}
+
+impl StagedSuiteComparison {
+    pub(crate) fn new(
+        suite_dir: &Path,
+        suite_id: &str,
+        test_date: &str,
+        mis_match_threshold: f64,
+        max_workers: usize,
+    ) -> Result<Self> {
+        let tests_dir = suite_dir.join("bitmaps_test").join(test_date);
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let html_report_dir = suite_dir.join("html_report");
+        create_dir_all(&reference_dir)?;
+        create_dir_all(&tests_dir)?;
+        create_dir_all(&html_report_dir)?;
+        let display_name =
+            read_suite_metadata(suite_dir)?.and_then(|metadata| metadata.display_name);
+        let order = read_report_order(&tests_dir)?
+            .map(|order| order.captures)
+            .unwrap_or_default();
+        let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
+        let pixel_thresholds = read_report_pixel_thresholds(&tests_dir)?.unwrap_or_default();
+        let report_urls = read_report_urls(&tests_dir)?;
+        let staging_dir = tempfile::Builder::new()
+            .prefix(".compare-staging-")
+            .tempdir_in(suite_dir)
+            .with_context(|| {
+                format!(
+                    "Failed to create comparison staging directory in '{}'",
+                    suite_dir.display()
+                )
+            })?;
+        Ok(Self {
+            suite_dir: suite_dir.to_path_buf(),
+            suite_id: suite_id.to_string(),
+            test_date: test_date.to_string(),
+            display_name,
+            tests_dir,
+            reference_dir,
+            html_report_dir,
+            staging_dir,
+            order,
+            thresholds,
+            pixel_thresholds,
+            report_urls,
+            default_mis_match_threshold: mis_match_threshold,
+            semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(max_workers.max(1))),
+            entries: std::sync::Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub(crate) async fn acquire_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        self.semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("Suite comparison semaphore closed"))
+    }
+
+    pub(crate) fn compare_job_captures(&self, capture_keys: &[String]) -> Result<()> {
+        let output_root = self.suite_dir.parent().unwrap_or(&self.suite_dir);
+        let mut archive_states = BTreeMap::new();
+        for key in capture_keys {
+            let screenshot_name = format!("{key}.png");
+            let entry =
+                self.compare_single_screenshot(output_root, &screenshot_name, &mut archive_states)?;
+            if progress::enabled() {
+                emit_compared_progress(&self.suite_id, &entry.test);
+            }
+            self.entries
+                .lock()
+                .map_err(|_| anyhow!("Staged comparison lock poisoned"))?
+                .insert(screenshot_name, entry);
+        }
+        Ok(())
+    }
+
+    fn compare_single_screenshot(
+        &self,
+        output_root: &Path,
+        screenshot_name: &str,
+        archive_states: &mut BTreeMap<
+            crate::diagnostics::record::OperationId,
+            crate::diagnostics::journal::ArchiveState,
+        >,
+    ) -> Result<StagedReportEntry> {
+        let test_path = self.tests_dir.join(screenshot_name);
+        let reference_path = self.reference_dir.join(screenshot_name);
+        let threshold = self
+            .thresholds
+            .get(screenshot_key(screenshot_name))
+            .or_else(|| self.thresholds.get(screenshot_prefix(screenshot_name)))
+            .copied()
+            .unwrap_or(self.default_mis_match_threshold);
+        let pixel_threshold = self
+            .pixel_thresholds
+            .get(screenshot_key(screenshot_name))
+            .or_else(|| {
+                self.pixel_thresholds
+                    .get(screenshot_prefix(screenshot_name))
+            })
+            .copied()
+            .unwrap_or(DEFAULT_PIXEL_MATCH_THRESHOLD);
+        let relative_test = format!("../bitmaps_test/{}/{}", self.test_date, screenshot_name);
+        let label = screenshot_name
+            .trim_end_matches(".png")
+            .replace("__", " ")
+            .replace('$', "");
+        let page_urls = self
+            .report_urls
+            .as_ref()
+            .and_then(|urls| urls.get(screenshot_key(screenshot_name)));
+        let mut pair = report_pair(
+            label,
+            screenshot_name,
+            relative_test,
+            threshold,
+            pixel_threshold,
+            page_urls,
+        );
+        pair.reference_log = crate::test::capture::read_capture_log_cached(
+            output_root,
+            &reference_path,
+            archive_states,
+        );
+        pair.test_log =
+            crate::test::capture::read_capture_log_cached(output_root, &test_path, archive_states);
+
+        let test_err = read_error_marker(&test_path);
+        let ref_err = if reference_path.exists() {
+            read_error_marker(&reference_path)
+        } else {
+            None
+        };
+        if test_err.is_some() || ref_err.is_some() {
+            let msg = match (ref_err.as_deref(), test_err.as_deref()) {
+                (Some(r), Some(t)) => format!(
+                    "Both reference and test scenarios failed to capture (reference: {r}; test: {t})"
+                ),
+                (Some(r), None) => format!("Reference scenario failed to capture: {r}"),
+                (None, Some(t)) => format!("Test scenario failed to capture: {t}"),
+                (None, None) => unreachable!(),
+            };
+            eprintln!("    {} {} → {}", "FAIL:".red(), screenshot_name, msg);
+            pair.engine_error_msg = Some(msg);
+            return Ok(StagedReportEntry {
+                test: ReportTest {
+                    pair,
+                    status: "fail".to_string(),
+                },
+                staged_diff_name: None,
+            });
+        }
+
+        if !reference_path.exists() {
+            eprintln!(
+                "    {} No reference for {}. Marking as new.",
+                "NEW:".yellow(),
+                screenshot_name
+            );
+            pair.engine_error_msg = Some("Reference image not found".to_string());
+            return Ok(StagedReportEntry {
+                test: ReportTest {
+                    pair,
+                    status: "fail".to_string(),
+                },
+                staged_diff_name: None,
+            });
+        }
+
+        match compare_images_with_threshold(&reference_path, &test_path, pair.pixel_match_threshold)
+        {
+            Ok((result, diff_png)) => finish_compared_pair(
+                self.staging_dir.path(),
+                &self.test_date,
+                pair,
+                result,
+                diff_png,
+            ),
+            Err(error) => {
+                eprintln!(
+                    "    {} Failed to compare {}: {}",
+                    "ERROR:".red(),
+                    pair.file_name,
+                    error
+                );
+                pair.engine_error_msg = Some(format!("Comparison error: {}", error));
+                Ok(StagedReportEntry {
+                    test: ReportTest {
+                        pair,
+                        status: "fail".to_string(),
+                    },
+                    staged_diff_name: None,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn finalize(&self) -> Result<()> {
+        let mut test_screenshots = validate_capture_run_inventory(&self.tests_dir)?;
+        if let Some(page_urls) = &self.report_urls {
+            let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
+            validate_capture_inventory(&self.tests_dir, &expected_captures, &test_screenshots)?;
+        }
+        let mut order_index = HashMap::with_capacity(self.order.len() * 2);
+        for (index, key) in self.order.iter().enumerate() {
+            order_index.insert(key.as_str(), index);
+            order_index.entry(screenshot_prefix(key)).or_insert(index);
+        }
+        test_screenshots.sort_by(|a, b| {
+            screenshot_order_key(a, &order_index)
+                .cmp(&screenshot_order_key(b, &order_index))
+                .then_with(|| a.cmp(b))
+        });
+
+        let mut staged_map = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow!("Staged comparison lock poisoned"))?;
+        let mut ordered_entries = Vec::with_capacity(test_screenshots.len());
+        let output_root = self.suite_dir.parent().unwrap_or(&self.suite_dir);
+        let mut archive_states = BTreeMap::new();
+        for screenshot_name in test_screenshots {
+            let mut entry = match staged_map.remove(&screenshot_name) {
+                Some(entry) => entry,
+                None => self.compare_single_screenshot(
+                    output_root,
+                    &screenshot_name,
+                    &mut archive_states,
+                )?,
+            };
+            record_comparison_diagnostic(&self.suite_id, &self.test_date, &mut entry.test);
+            ordered_entries.push(entry);
+        }
+        drop(staged_map);
+
+        let report = commit_staged_report(
+            self.staging_dir.path(),
+            &self.tests_dir,
+            &self.html_report_dir,
+            &self.suite_id,
+            self.display_name.clone(),
+            ordered_entries,
+        )?;
+        progress::emit(ProgressEvent::SuiteFinished {
+            id: self.suite_id.clone(),
+        });
+        print_comparison_summary(&report);
+        Ok(())
+    }
 }
 
 /// Promote test screenshots to reference (approve).
@@ -2421,6 +2905,123 @@ mod tests {
         assert_eq!(
             screenshot_prefix("shop__checkout_desktop__$after-login.png"),
             "shop__checkout_desktop"
+        );
+    }
+
+    #[test]
+    fn staged_suite_comparison_keeps_diffs_and_reports_in_staging_until_finalized() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test/run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        fs::write(reference_dir.join("first__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("first__FINAL.png"), png_bytes(200)).unwrap();
+        fs::write(reference_dir.join("second__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("second__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("second__FINAL_diff.png"), b"stale diff").unwrap();
+        fs::write(
+            test_dir.join(REPORT_ORDER_FILE),
+            serde_json::to_vec(&ReportOrderManifest {
+                version: REPORT_ORDER_VERSION,
+                captures: vec!["second__FINAL".into(), "first__FINAL".into()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let aborted = StagedSuiteComparison::new(&suite_dir, "basic", "run", 0.0, 2).unwrap();
+        aborted
+            .compare_job_captures(&["first__FINAL".into()])
+            .unwrap();
+        let aborted_staging = aborted.staging_dir.path().to_path_buf();
+        assert!(aborted_staging.join("first__FINAL_diff.png").is_file());
+        assert!(!test_dir.join("first__FINAL_diff.png").exists());
+        assert!(!test_dir.join("report.json").exists());
+        assert!(!suite_dir.join("html_report/config.js").exists());
+        drop(aborted);
+        assert!(!aborted_staging.exists());
+        assert!(!test_dir.join("first__FINAL_diff.png").exists());
+        assert!(!test_dir.join("report.json").exists());
+
+        let staged = StagedSuiteComparison::new(&suite_dir, "basic", "run", 0.0, 2).unwrap();
+        staged
+            .compare_job_captures(&["first__FINAL".into()])
+            .unwrap();
+        staged
+            .compare_job_captures(&["second__FINAL".into()])
+            .unwrap();
+        assert!(!test_dir.join("first__FINAL_diff.png").exists());
+        assert!(!test_dir.join("report.json").exists());
+        assert!(!suite_dir.join("html_report/config.js").exists());
+
+        staged.finalize().unwrap();
+        assert!(test_dir.join("first__FINAL_diff.png").is_file());
+        assert!(!test_dir.join("second__FINAL_diff.png").exists());
+        assert!(suite_dir.join("html_report/config.js").is_file());
+        let report: ReportConfig =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report.tests.len(), 2);
+        assert_eq!(report.tests[0].pair.file_name, "second__FINAL.png");
+        assert_eq!(report.tests[0].status, "pass");
+        assert_eq!(report.tests[1].pair.file_name, "first__FINAL.png");
+        assert_eq!(report.tests[1].status, "fail");
+    }
+
+    #[test]
+    fn reference_report_self_approves_passed_captures_and_retains_capture_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test/ref-run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        // Even if reference and test bytes differ on disk, `generate_reference_report`
+        // self-approves successful baseline captures without running pixel comparison.
+        fs::write(reference_dir.join("passed__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("passed__FINAL.png"), png_bytes(200)).unwrap();
+        fs::write(test_dir.join("failed__FINAL.png"), png_bytes(200)).unwrap();
+        fs::write(
+            crate::test::capture::error_marker_path(&test_dir.join("failed__FINAL.png")),
+            r#"{"error":true,"message":"Action 1 (click): element missing"}"#,
+        )
+        .unwrap();
+        fs::write(
+            test_dir.join(REPORT_ORDER_FILE),
+            serde_json::to_vec(&ReportOrderManifest {
+                version: REPORT_ORDER_VERSION,
+                captures: vec!["passed__FINAL".into(), "failed__FINAL".into()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        generate_reference_report(&suite_dir, "basic", "ref-run").unwrap();
+
+        let report: ReportConfig =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report.tests.len(), 2);
+        assert_eq!(report.tests[0].pair.file_name, "passed__FINAL.png");
+        assert_eq!(report.tests[0].status, "pass");
+        assert_eq!(
+            report.tests[0]
+                .pair
+                .diff
+                .as_ref()
+                .unwrap()
+                .raw_mis_match_percentage,
+            0.0
+        );
+        assert!(report.tests[0].pair.diff_image.is_none());
+        assert!(report.tests[0].pair.engine_error_msg.is_none());
+        assert_eq!(report.tests[1].pair.file_name, "failed__FINAL.png");
+        assert_eq!(report.tests[1].status, "fail");
+        assert_eq!(
+            report.tests[1].pair.engine_error_msg.as_deref(),
+            Some("Test scenario failed to capture: Action 1 (click): element missing")
         );
     }
 }

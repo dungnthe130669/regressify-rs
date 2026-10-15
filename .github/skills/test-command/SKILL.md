@@ -14,9 +14,9 @@ description: 'Use when changing regressify test orchestration, scenario isolatio
 1. Validate configuration and selection before launching browser jobs. Keep scenario/suite/output IDs distinct when translating exact selections.
 1. Test mode applies validated replacement profiles to initial, goto, wait, and new-tab URL filters. Keep raw reference URLs in capture metadata for later review links.
 1. Bound capture concurrency and launch ramping. Isolate each job's browser and profile; stop subsequent actions only within the failing scenario.
-1. Compare captured output unless `--skip-compare` is set. Missing references, mismatches, and website/action failures are report results, not non-zero exits.
+1. Compare captured output right after each scenario/viewport capture finishes unless `--skip-compare` is set, staging diff images and comparison outcomes in `.compare-staging-*` and committing `*_diff.png`, `report.json`, and `html_report/config.js` only when 100% of jobs complete without infrastructure failures. Missing references, mismatches, and website/action failures are report results, not non-zero exits.
 1. Preserve infrastructure/artifact error classification through spawned tasks and joins. A failed error-placeholder write must not masquerade as page failure.
-1. Keep progress job identities stable across intermediate/target captures; process completion and visual pass/fail are different states in the desktop UI.
+1. Keep progress job identities stable across intermediate/target captures; during compared `test` runs, each job transitions `Running -> Comparing -> Passed/Failed` so overall job progress advances monotonically from 0% to 100% without resetting.
 
 ## Checks
 

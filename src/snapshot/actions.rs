@@ -147,6 +147,7 @@ mod tests {
             "states",
             ".snapshot-staging",
             ".suite-update-staging",
+            ".compare-staging-123",
         ] {
             std::fs::create_dir_all(temp.path().join(name)).unwrap();
         }

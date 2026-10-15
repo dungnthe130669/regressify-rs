@@ -96,6 +96,14 @@ pub enum Event {
         error: Option<String>,
         infrastructure: bool,
     },
+    JobComparing {
+        id: usize,
+        error: Option<String>,
+    },
+    JobApproved {
+        id: usize,
+        error: Option<String>,
+    },
     Comparing {
         suite_id: String,
     },
@@ -509,6 +517,46 @@ impl LiveProgress {
                     scenario.finished_ms = Some(record.elapsed_ms);
                 }
             }
+            Event::JobComparing { id, error } => {
+                self.push_log(
+                    id,
+                    record.elapsed_ms,
+                    error
+                        .as_ref()
+                        .map(|error| format!("Capture failed: {error}"))
+                        .unwrap_or_else(|| "Capture completed".into()),
+                );
+                self.push_log(id, record.elapsed_ms, "Comparing screenshots".into());
+                if let Some(scenario) = self.scenarios.get_mut(&id) {
+                    scenario.status = Status::Comparing;
+                    scenario.message = error;
+                    scenario.infrastructure = false;
+                }
+            }
+            Event::JobApproved { id, error } => {
+                self.push_log(
+                    id,
+                    record.elapsed_ms,
+                    error
+                        .as_ref()
+                        .map(|error| format!("Capture failed: {error}"))
+                        .unwrap_or_else(|| "Capture completed".into()),
+                );
+                if let Some(scenario) = self.scenarios.get_mut(&id) {
+                    let passed = error.is_none();
+                    for capture in scenario.job.captures.clone() {
+                        scenario.compared.insert(capture, passed);
+                    }
+                    scenario.status = if passed {
+                        Status::Passed
+                    } else {
+                        Status::Failed
+                    };
+                    scenario.message = error;
+                    scenario.infrastructure = false;
+                    scenario.finished_ms = Some(record.elapsed_ms);
+                }
+            }
             Event::Comparing { suite_id } => {
                 self.phase = "Comparing screenshots".into();
                 self.suites
@@ -579,12 +627,12 @@ impl LiveProgress {
                 );
                 if let Some(scenario) = self.scenarios.get_mut(&id) {
                     scenario.compared.insert(capture, passed);
-                    scenario.status = if scenario.compared.values().any(|passed| !passed) {
-                        Status::Failed
-                    } else if scenario.compared.len() == scenario.job.captures.len() {
-                        Status::Passed
-                    } else {
+                    scenario.status = if scenario.compared.len() < scenario.job.captures.len() {
                         Status::Comparing
+                    } else if scenario.compared.values().any(|passed| !passed) {
+                        Status::Failed
+                    } else {
+                        Status::Passed
                     };
                     if !scenario.infrastructure {
                         if error.is_some() {
@@ -1291,5 +1339,98 @@ mod tests {
         assert_eq!(live.counts(Some("existing")).passed, 1);
         live.apply(record(Event::Finished { error: None }));
         assert_eq!(live.scenarios[&1].status, Status::Passed);
+    }
+
+    #[test]
+    fn test_progress_advances_monotonically_as_each_job_captures_and_compares() {
+        let mut live = LiveProgress::default();
+        let mut first = job(1, "shop");
+        first.captures = vec!["step".into(), "final".into()];
+        let mut second = job(2, "shop");
+        second.captures = vec!["home".into()];
+        live.apply(record(Event::Queued { job: first }));
+        live.apply(record(Event::Queued { job: second }));
+        assert_eq!(live.counts(None).fraction(), 0.0);
+
+        live.apply(record(Event::Started { id: 1 }));
+        live.apply(record(Event::JobComparing { id: 1, error: None }));
+        assert_eq!(live.scenarios[&1].status, Status::Comparing);
+        assert_eq!(live.counts(None).captured, 0);
+        assert_eq!(live.counts(None).running, 1);
+        assert_eq!(live.counts(None).complete(), 0);
+        assert_eq!(live.counts(None).fraction(), 0.0);
+
+        // A multi-screenshot job stays Comparing until every capture in the job is compared.
+        live.apply(record(Event::Compared {
+            suite_id: "shop".into(),
+            capture: "step".into(),
+            label: "Scenario 1".into(),
+            scenario_id: Some("scenario-1".into()),
+            passed: false,
+            error: Some("Visual mismatch".into()),
+        }));
+        assert_eq!(live.scenarios[&1].status, Status::Comparing);
+        assert_eq!(live.counts(None).complete(), 0);
+        assert_eq!(live.counts(None).fraction(), 0.0);
+
+        live.apply(record(Event::Compared {
+            suite_id: "shop".into(),
+            capture: "final".into(),
+            label: "Scenario 1".into(),
+            scenario_id: Some("scenario-1".into()),
+            passed: true,
+            error: None,
+        }));
+        assert_eq!(live.scenarios[&1].status, Status::Failed);
+        assert_eq!(live.counts(None).complete(), 1);
+        assert_eq!(live.counts(None).fraction(), 0.5);
+
+        live.apply(record(Event::Started { id: 2 }));
+        live.apply(record(Event::JobComparing { id: 2, error: None }));
+        assert_eq!(live.counts(None).fraction(), 0.5);
+
+        live.apply(record(Event::Compared {
+            suite_id: "shop".into(),
+            capture: "home".into(),
+            label: "Scenario 2".into(),
+            scenario_id: Some("scenario-2".into()),
+            passed: true,
+            error: None,
+        }));
+        assert_eq!(live.scenarios[&2].status, Status::Passed);
+        assert_eq!(live.counts(None).complete(), 2);
+        assert_eq!(live.counts(None).fraction(), 1.0);
+    }
+
+    #[test]
+    fn reference_progress_self_approves_jobs_without_comparing_phase() {
+        let mut live = LiveProgress::default();
+        live.apply(record(Event::Queued {
+            job: job(1, "shop"),
+        }));
+        live.apply(record(Event::Queued {
+            job: job(2, "shop"),
+        }));
+        live.apply(record(Event::Started { id: 1 }));
+        live.apply(record(Event::JobApproved { id: 1, error: None }));
+        assert_eq!(live.scenarios[&1].status, Status::Passed);
+        assert_eq!(live.counts(None).captured, 0);
+        assert_eq!(live.counts(None).passed, 1);
+        assert_eq!(live.counts(None).fraction(), 0.5);
+
+        live.apply(record(Event::Started { id: 2 }));
+        live.apply(record(Event::JobApproved {
+            id: 2,
+            error: Some("Missing selector".into()),
+        }));
+        assert_eq!(live.scenarios[&2].status, Status::Failed);
+        assert_eq!(live.counts(None).captured, 0);
+        assert_eq!(live.counts(None).passed, 1);
+        assert_eq!(live.counts(None).failed, 1);
+        assert_eq!(live.counts(None).fraction(), 1.0);
+        let comparisons = live.comparison_counts(None);
+        assert_eq!(comparisons.total, 2);
+        assert_eq!(comparisons.passed, 1);
+        assert_eq!(comparisons.failed, 1);
     }
 }

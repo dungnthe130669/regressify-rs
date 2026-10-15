@@ -13,7 +13,7 @@ description: 'Use when changing regressify compare, capture-run selection, image
 
 1. Honor explicit run IDs before latest-run fallback. Resolve suite globs and scenario IDs against output/capture metadata, not current source ordering.
 1. Validate manifests and expected capture inventory. Generated diffs are not source captures; stale diffs must disappear when a pair becomes a pass.
-1. Bound parallel comparison with `asyncCompareLimit`; preserve manifest ordering, per-capture thresholds, labels, target names, and reference/test page URLs.
+1. Bound parallel comparison with `asyncCompareLimit`; stage generated diff PNGs and report files in `.compare-staging-*` before committing to `bitmaps_test/<run_id>` and `html_report`, and preserve manifest ordering, per-capture thresholds, labels, target names, and reference/test page URLs.
 1. Keep pixel sensitivity separate from pass/fail percentage. `pixelMatchThreshold` uses 0-100 (default 5), normalized by 100 only in the image comparer. Read per-capture values from `.report-pixel-thresholds.json`, including prefix fallback for intermediate captures; absent metadata uses 5, malformed metadata is an artifact error.
 1. Read optional suite-root `suite.json` through the bounded metadata reader and emit `displayName` independently of `id`/`testSuite`. Captures write metadata even with skip-compare. Malformed metadata is an artifact error, not an absent label.
 1. Missing references, capture errors, and visual mismatches remain report results. Malformed manifests, unreadable files, and report-write failures are process errors.

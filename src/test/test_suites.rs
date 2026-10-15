@@ -14,7 +14,9 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::{RefArgs, ScenarioFilter, SnapshotArgs, TestArgs},
     common,
-    compare::report_gen::{generate_comparison_report, validate_capture_run_inventory},
+    compare::report_gen::{
+        StagedSuiteComparison, generate_reference_report, validate_capture_run_inventory,
+    },
     config::{self, replacements},
     helpers::{OnceLockExtensions, copy_file_atomically, is_windows_reserved_path_component},
     progress::{self, Event as ProgressEvent},
@@ -58,6 +60,8 @@ struct CaptureJob {
     scenario_idx: usize,
     viewport: Option<config::viewports::ViewportDef>,
     index: usize,
+    captures: Vec<String>,
+    comparison: Option<Arc<StagedSuiteComparison>>,
 }
 
 fn suite_output_dir(regressify_dir: &Path, suite: &TestSuite) -> Result<PathBuf> {
@@ -181,6 +185,11 @@ fn build_capture_jobs(
         for (scenario_idx, scenario) in selected_scenarios(&input.name, suite, filters) {
             let viewports = scenario_capture_viewports(workspace_config, suite, scenario)?;
             for viewport in viewports {
+                let captures = capture_progress_keys(
+                    scenario,
+                    &suite.scenarios,
+                    viewport.as_ref().map(|viewport| viewport.label.as_str()),
+                )?;
                 jobs.push(CaptureJob {
                     suite: suite.clone(),
                     suite_name: input.name.clone(),
@@ -188,6 +197,8 @@ fn build_capture_jobs(
                     scenario_idx,
                     viewport,
                     index: 0,
+                    captures,
+                    comparison: None,
                 });
             }
         }
@@ -217,13 +228,7 @@ fn build_capture_jobs(
                         .as_ref()
                         .map(|viewport| viewport.label.clone())
                         .unwrap_or_else(|| "Default".into()),
-                    captures: capture_progress_keys(
-                        scenario,
-                        &job.suite.scenarios,
-                        job.viewport
-                            .as_ref()
-                            .map(|viewport| viewport.label.as_str()),
-                    )?,
+                    captures: job.captures.clone(),
                 },
             });
         }
@@ -257,6 +262,8 @@ fn spawn_capture_jobs(
             scenario_idx,
             viewport,
             index,
+            captures,
+            comparison,
         } = job;
         let sem = semaphore.clone();
         let suite_sem = suite_semaphore.clone();
@@ -319,7 +326,7 @@ fn spawn_capture_jobs(
                     "Initial capture log linkage could not be written",
                 );
             }
-            let status =
+            let (status, error, infrastructure) =
                 runtime::scope(operation.as_ref().map(runtime::Operation::context), async {
                     let resolved =
                         config::resolve_config(&ws_config, &suite, &suite.scenarios[scenario_idx]);
@@ -356,12 +363,11 @@ fn spawn_capture_jobs(
                         )],
                     );
                     let Ok((_suite_permit, _global_permit)) = permits else {
-                        progress::emit(ProgressEvent::Captured {
-                            id: index,
-                            error: Some("Capture semaphore closed".into()),
-                            infrastructure: true,
-                        });
-                        return TaskStatus::InfraFailed;
+                        return (
+                            TaskStatus::InfraFailed,
+                            Some("Capture semaphore closed".into()),
+                            true,
+                        );
                     };
                     progress::emit(ProgressEvent::Started { id: index });
                     let outcome = exec_single_scenario(
@@ -411,16 +417,12 @@ fn spawn_capture_jobs(
                             detail,
                         );
                     }
-                    progress::emit(ProgressEvent::Captured {
-                        id: index,
-                        error,
-                        infrastructure,
-                    });
-                    match outcome {
+                    let status = match outcome {
                         ScenarioOutcome::Passed => TaskStatus::Passed,
                         ScenarioOutcome::PageFailed(_) => TaskStatus::PageFailed,
                         ScenarioOutcome::InfraFailed(_) => TaskStatus::InfraFailed,
-                    }
+                    };
+                    (status, error, infrastructure)
                 })
                 .await;
             if let Some(operation) = operation {
@@ -447,6 +449,42 @@ fn spawn_capture_jobs(
                         message: "Capture log linkage unavailable".into(),
                     });
                 }
+            }
+            if infrastructure {
+                progress::emit(ProgressEvent::Captured {
+                    id: index,
+                    error,
+                    infrastructure: true,
+                });
+                return status;
+            }
+            if let Some(comparison) = comparison {
+                progress::emit(ProgressEvent::JobComparing { id: index, error });
+                let Ok(_compare_permit) = comparison.acquire_permit().await else {
+                    return TaskStatus::InfraFailed;
+                };
+                let compared =
+                    tokio::task::spawn_blocking(move || comparison.compare_job_captures(&captures))
+                        .await;
+                match compared {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        eprintln!("Visual comparison failed for capture job #{index}: {error:?}");
+                        return TaskStatus::InfraFailed;
+                    }
+                    Err(error) => {
+                        eprintln!("Comparison task panicked for capture job #{index}: {error:?}");
+                        return TaskStatus::InfraFailed;
+                    }
+                }
+            } else if !apply_url_replacements {
+                progress::emit(ProgressEvent::JobApproved { id: index, error });
+            } else {
+                progress::emit(ProgressEvent::Captured {
+                    id: index,
+                    error,
+                    infrastructure: false,
+                });
             }
             status
         }));
@@ -1449,7 +1487,32 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // Flatten every scenario/viewport pair into an independent capture job (own
     // browser, own dedicated index) and spawn them — matching the TS/BackstopJS
     // model where pairs are scaffolded upfront and run independently.
-    let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref(), &scenarios)?;
+    let mut jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref(), &scenarios)?;
+    let mut staged_comparisons = HashMap::new();
+    if !skip_compare {
+        let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+        for (input, suite) in &parsed_suites {
+            if let (Some(suite_id), Some(test_date)) =
+                (suite.id.as_deref(), suite.test_date.as_deref())
+            {
+                let suite_dir = suite_output_dir(regressify_dir, suite)?;
+                let threshold = suite.mis_match_threshold.unwrap_or(mis_match_threshold);
+                let async_compare_limit =
+                    config::resolve_async_compare_limit(workspace_config.as_ref(), suite);
+                let staged = Arc::new(StagedSuiteComparison::new(
+                    &suite_dir,
+                    suite_id,
+                    test_date,
+                    threshold,
+                    async_compare_limit,
+                )?);
+                staged_comparisons.insert(input.name.clone(), staged);
+            }
+        }
+        for job in &mut jobs {
+            job.comparison = staged_comparisons.get(&job.suite_name).cloned();
+        }
+    }
 
     let exe_path = Some(prepare_browser(fetch_browser).await?);
 
@@ -1485,7 +1548,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     }
 
     // Only infrastructure failures (browser could not be launched or artifact
-    // write failed) fail the capture phase immediately before comparison.
+    // write failed) fail the capture phase immediately before committing reports.
     if infra_failures > 0 {
         anyhow::bail!(
             "Test run failed: {} scenario(s) had browser or artifact failures",
@@ -1493,36 +1556,24 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         );
     }
 
-    // Run visual comparison per suite
+    // Commit staged visual comparison reports per suite once 100% of jobs complete.
     let mut comparison_failures = 0usize;
     for (input, suite) in &parsed_suites {
-        if !skip_compare
-            && let (Some(suite_id), Some(test_date)) =
-                (suite.id.as_deref(), suite.test_date.as_deref())
-        {
-            let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
-            let suite_dir = suite_output_dir(regressify_dir, suite)?;
-
-            let threshold = suite.mis_match_threshold.unwrap_or(mis_match_threshold);
-            let async_compare_limit =
-                config::resolve_async_compare_limit(workspace_config.as_ref(), suite);
-
-            eprintln!("Running visual comparison for '{}'...", input.name);
-            if let Err(e) = generate_comparison_report(
-                &suite_dir,
-                suite_id,
-                test_date,
-                threshold,
-                async_compare_limit,
-            ) {
+        if let Some(staged) = staged_comparisons.get(&input.name) {
+            eprintln!(
+                "Finalizing visual comparison report for '{}'...",
+                input.name
+            );
+            if let Err(e) = staged.finalize() {
                 eprintln!("Visual comparison failed for '{}': {:?}", input.name, e);
                 comparison_failures += 1;
             }
+        } else {
+            progress::emit(ProgressEvent::SuiteFinished {
+                id: suite.id.clone().unwrap_or_else(|| input.name.clone()),
+            });
         }
         eprintln!("Test suite '{}' completed.", input.name);
-        progress::emit(ProgressEvent::SuiteFinished {
-            id: suite.id.clone().unwrap_or_else(|| input.name.clone()),
-        });
     }
 
     if page_failures > 0 {
@@ -1721,21 +1772,16 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             );
         }
 
-        // Run comparison so results show all scenarios as passed. A failing
-        // comparison here only means a scenario hit a page error (and produced
-        // an error placeholder); that must not fail the `ref` command, which is
-        // about capturing baselines, not asserting them.
-        eprintln!("Running visual comparison...");
-        let async_compare_limit =
-            config::resolve_async_compare_limit(workspace_config.as_ref(), suite);
-        generate_comparison_report(&suite_dir, suite_id, current_run, 0.0, async_compare_limit)
-            .map_err(|error| {
-                anyhow!(
-                    "Failed to generate reference comparison report for '{}': {}",
-                    input.name,
-                    error
-                )
-            })?;
+        // Write the self-approved baseline report directly without comparing
+        // against another image. Successful captures were just promoted to
+        // references; failed captures retain their error markers.
+        generate_reference_report(&suite_dir, suite_id, current_run).map_err(|error| {
+            anyhow!(
+                "Failed to generate reference report for '{}': {}",
+                input.name,
+                error
+            )
+        })?;
     }
 
     generate_snapshot_reports()?;

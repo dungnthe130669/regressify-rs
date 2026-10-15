@@ -223,6 +223,7 @@ pub(super) fn valid_suite_id(value: &str) -> bool {
         && !matches!(lower.as_str(), "_snapshot" | "_diagnostics" | "states")
         && !lower.starts_with(".snapshot-")
         && !lower.starts_with(".suite-update-")
+        && !lower.starts_with(".compare-staging-")
 }
 
 fn normal_relative(relative: &Path) -> Result<()> {
