@@ -1,4 +1,4 @@
-use std::{path::Path, time::Instant};
+use std::{fs::File, io::Read, path::Path, time::Instant};
 
 use anyhow::{Result, anyhow};
 use lodepng::Image;
@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::DEFAULT_PIXEL_MATCH_THRESHOLD,
-    helpers::png::{MAX_VISUAL_IMAGE_PIXELS, read_bounded_png_dimensions},
+    helpers::png::{MAX_VISUAL_IMAGE_PIXELS, read_bounded_png_dimensions_from_reader},
 };
+
+const MAX_PNG_FILE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Result of comparing two images.
 pub struct CompareResult {
@@ -24,15 +26,35 @@ pub struct CompareResult {
     pub analysis_time_ms: u128,
 }
 
-/// Load a PNG file as RGBA pixels.
-pub(super) fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
-    let (expected_width, expected_height) = read_bounded_png_dimensions(path)?;
+fn read_png_bytes(path: &Path) -> Result<(Vec<u8>, usize, usize)> {
+    let file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PNG_FILE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PNG_FILE_BYTES {
+        anyhow::bail!(
+            "PNG '{}' exceeds the {} MiB file size limit",
+            path.display(),
+            MAX_PNG_FILE_BYTES / (1024 * 1024)
+        );
+    }
+    let (expected_width, expected_height) =
+        read_bounded_png_dimensions_from_reader(bytes.as_slice(), path)?;
+    Ok((bytes, expected_width, expected_height))
+}
+
+fn decode_png_bytes(
+    bytes: &[u8],
+    path: &Path,
+    expected_width: usize,
+    expected_height: usize,
+) -> Result<(Vec<RGBA8>, usize, usize)> {
     let mut decoder = lodepng::Decoder::new();
     decoder.color_convert(true);
+    decoder.read_text_chunks(false);
     decoder.info_raw_mut().colortype = lodepng::ColorType::RGBA;
     decoder.info_raw_mut().set_bitdepth(8);
 
-    let decoded = decoder.decode_file(path)?;
+    let decoded = decoder.decode(bytes)?;
     match decoded {
         Image::RGBA(img) => {
             let width = img.width;
@@ -47,8 +69,7 @@ pub(super) fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
                     expected_height
                 ));
             }
-            let pixels: Vec<RGBA8> = img.buffer.to_vec();
-            Ok((pixels, width, height))
+            Ok((img.buffer, width, height))
         }
         _ => Err(anyhow!(
             "Failed to decode PNG as RGBA: {:?}",
@@ -57,12 +78,18 @@ pub(super) fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
     }
 }
 
+/// Load a PNG file as RGBA pixels.
+pub(super) fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
+    let (bytes, expected_width, expected_height) = read_png_bytes(path)?;
+    decode_png_bytes(&bytes, path, expected_width, expected_height)
+}
+
 // ─── Perceptual comparison (pixelmatch-style) ────────────────────────────────
 
 /// Maximum possible YIQ color delta squared (pixelmatch constant).
 const MAX_YIQ_DELTA: f64 = 35215.0;
-const MAX_VERTICAL_SHIFT: usize = 512;
 const MIN_ALIGNED_ROWS: usize = 32;
+const MIN_TAIL_ALIGNED_ROWS: usize = 4;
 
 #[inline]
 fn blend_channel(c: f64, a: f64) -> f64 {
@@ -71,13 +98,16 @@ fn blend_channel(c: f64, a: f64) -> f64 {
 
 /// Signed perceptual color delta (YIQ) between pixel `k` in `a` and `m` in `b`.
 /// When `y_only` is true, returns only the brightness delta (used for AA detection).
+#[inline]
 fn color_delta(a: &[RGBA8], b: &[RGBA8], k: usize, m: usize, y_only: bool) -> f64 {
-    let (mut r1, mut g1, mut b1, a1) = (a[k].r as f64, a[k].g as f64, a[k].b as f64, a[k].a as f64);
-    let (mut r2, mut g2, mut b2, a2) = (b[m].r as f64, b[m].g as f64, b[m].b as f64, b[m].a as f64);
-
-    if (a1 - a2).abs() < f64::EPSILON && r1 == r2 && g1 == g2 && b1 == b2 {
+    let p1 = a[k];
+    let p2 = b[m];
+    if p1 == p2 {
         return 0.0;
     }
+
+    let (mut r1, mut g1, mut b1, a1) = (p1.r as f64, p1.g as f64, p1.b as f64, p1.a as f64);
+    let (mut r2, mut g2, mut b2, a2) = (p2.r as f64, p2.g as f64, p2.b as f64, p2.a as f64);
 
     if a1 < 255.0 {
         let a1n = a1 / 255.0;
@@ -117,7 +147,7 @@ fn has_many_siblings(img: &[RGBA8], x1: usize, y1: usize, w: usize, h: usize) ->
     let y0 = y1.saturating_sub(1);
     let x2 = (x1 + 1).min(w - 1);
     let y2 = (y1 + 1).min(h - 1);
-    let pos = y1 * w + x1;
+    let center = img[y1 * w + x1];
     let mut zeroes = if x1 == 0 || y1 == 0 || x1 == w - 1 || y1 == h - 1 {
         1
     } else {
@@ -129,12 +159,7 @@ fn has_many_siblings(img: &[RGBA8], x1: usize, y1: usize, w: usize, h: usize) ->
             if x == x1 && y == y1 {
                 continue;
             }
-            let q = y * w + x;
-            if img[pos].r == img[q].r
-                && img[pos].g == img[q].g
-                && img[pos].b == img[q].b
-                && img[pos].a == img[q].a
-            {
+            if center == img[y * w + x] {
                 zeroes += 1;
                 if zeroes > 2 {
                     return true;
@@ -145,8 +170,9 @@ fn has_many_siblings(img: &[RGBA8], x1: usize, y1: usize, w: usize, h: usize) ->
     false
 }
 
-/// Determine whether the pixel at (x1, y1) is likely anti-aliasing rather than a
-/// real difference (pixelmatch algorithm).
+/// Determine whether the pixel at `(x1, y1)` in `img` (aligned against
+/// `(x1, other_y1)` in `other`) is likely anti-aliasing rather than a real
+/// difference (pixelmatch algorithm).
 fn is_antialiased(
     img: &[RGBA8],
     x1: usize,
@@ -154,6 +180,8 @@ fn is_antialiased(
     w: usize,
     h: usize,
     other: &[RGBA8],
+    other_y1: usize,
+    other_h: usize,
 ) -> bool {
     let x0 = x1.saturating_sub(1);
     let y0 = y1.saturating_sub(1);
@@ -197,9 +225,19 @@ fn is_antialiased(
         return false;
     }
 
-    (has_many_siblings(img, min_x, min_y, w, h) && has_many_siblings(other, min_x, min_y, w, h))
+    let map_other_y = |y: usize| -> Option<usize> {
+        let offset = y as isize - y1 as isize;
+        let mapped = other_y1 as isize + offset;
+        (0 <= mapped && (mapped as usize) < other_h).then_some(mapped as usize)
+    };
+
+    (has_many_siblings(img, min_x, min_y, w, h)
+        && map_other_y(min_y)
+            .is_some_and(|other_min_y| has_many_siblings(other, min_x, other_min_y, w, other_h)))
         || (has_many_siblings(img, max_x, max_y, w, h)
-            && has_many_siblings(other, max_x, max_y, w, h))
+            && map_other_y(max_y).is_some_and(|other_max_y| {
+                has_many_siblings(other, max_x, other_max_y, w, other_h)
+            }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -249,8 +287,9 @@ struct ImageView<'a> {
     gap: Option<VerticalGap>,
 }
 
-impl ImageView<'_> {
-    fn pixel_index(self, column: usize, row: usize) -> Option<usize> {
+impl<'a> ImageView<'a> {
+    #[inline]
+    fn source_row(self, row: usize) -> Option<usize> {
         let source_row = match self.gap {
             Some(gap) if row >= gap.start => {
                 if row < gap.start + gap.height {
@@ -260,8 +299,13 @@ impl ImageView<'_> {
             }
             _ => row,
         };
-        (column < self.width && source_row < self.height)
-            .then_some(source_row * self.width + column)
+        (source_row < self.height).then_some(source_row)
+    }
+
+    #[inline]
+    fn row_slice(self, source_row: usize) -> &'a [RGBA8] {
+        let start = source_row * self.width;
+        &self.pixels[start..start + self.width]
     }
 }
 
@@ -272,13 +316,18 @@ fn row_difference(
     taller_row: usize,
     max_delta: f64,
 ) -> usize {
+    if shorter.row_slice(row) == taller.row_slice(taller_row) {
+        return 0;
+    }
+    let shorter_offset = row * shorter.width;
+    let taller_offset = taller_row * taller.width;
     (0..shorter.width)
-        .filter(|column| {
+        .filter(|&column| {
             color_delta(
                 shorter.pixels,
                 taller.pixels,
-                row * shorter.width + column,
-                taller_row * taller.width + column,
+                shorter_offset + column,
+                taller_offset + column,
                 false,
             )
             .abs()
@@ -287,57 +336,99 @@ fn row_difference(
         .count()
 }
 
+/// Find a single vertical insertion/deletion gap of size `taller.height - shorter.height`
+/// in `shorter` that maximizes aligned row matches below the gap without letting
+/// unrelated top-of-page visual changes pull the gap start across intact middle rows.
 fn find_vertical_gap(
     shorter: ImageView<'_>,
     taller: ImageView<'_>,
     max_delta: f64,
 ) -> Option<VerticalGap> {
-    if shorter.width != taller.width || shorter.height >= taller.height {
+    if shorter.width == 0 || shorter.width != taller.width || shorter.height >= taller.height {
         return None;
     }
     let height = taller.height - shorter.height;
-    if height > MAX_VERTICAL_SHIFT {
+
+    // Rows in `0..top_equal` are already byte-identical unshifted (`unshifted == 0`),
+    // so scanning into that prefix can never increase `gain` or `supporting_rows`.
+    let top_equal = (0..shorter.height)
+        .take_while(|&row| shorter.row_slice(row) == taller.row_slice(row))
+        .count();
+    if top_equal == shorter.height {
         return None;
     }
 
+    let max_aligned_diff = shorter.width / 100;
+    let max_plausible_diff = (shorter.width / 10).max(1);
     let mut gain = 0_i64;
-    let mut supporting_rows = 0;
-    let mut best_gain = 0;
+    let mut supporting_rows = 0_usize;
+    let mut contested_rows = 0_usize;
+    let mut best_gain = 0_i64;
     let mut best_start = shorter.height;
-    let mut best_support = 0;
+    let mut best_support = 0_usize;
+    let mut best_contested = 0_usize;
 
-    for row in (0..shorter.height).rev() {
+    for row in (top_equal..shorter.height).rev() {
         let unshifted = row_difference(shorter, taller, row, row, max_delta);
         let shifted = row_difference(shorter, taller, row, row + height, max_delta);
-        gain += unshifted as i64 - shifted as i64;
-        if shifted * 100 <= shorter.width && unshifted > shifted {
+        if unshifted > 0 || shifted > 0 {
+            contested_rows += 1;
+        }
+        let shifted_aligned = shifted <= max_aligned_diff && unshifted > shifted;
+        let shifted_plausible = shifted <= max_plausible_diff
+            && unshifted >= shifted.saturating_add(max_plausible_diff);
+        let unshifted_aligned = unshifted <= max_aligned_diff;
+
+        if shifted_aligned || shifted_plausible {
             supporting_rows += 1;
         }
+
+        if shifted <= max_plausible_diff {
+            gain += unshifted as i64 - shifted as i64;
+        } else if unshifted_aligned {
+            // Shifting this row breaks a clean unshifted match without producing
+            // a plausible shifted match; penalize by the full row width so noise
+            // above an intact sparse section cannot pull `best_start` upward.
+            gain -= (shorter.width as i64).max(shifted as i64 - unshifted as i64);
+        } else {
+            // Neither unshifted nor shifted aligns this row (in-place visual change);
+            // never let accidental partial overlap add positive shift gain.
+            gain += (unshifted as i64 - shifted as i64).min(0);
+        }
+
         if gain > best_gain {
             best_gain = gain;
             best_start = row;
             best_support = supporting_rows;
+            best_contested = contested_rows;
         }
     }
 
-    (best_support >= MIN_ALIGNED_ROWS).then_some(VerticalGap {
-        start: best_start,
-        height,
-    })
+    let has_tail_support = best_support >= MIN_TAIL_ALIGNED_ROWS
+        && best_contested > 0
+        && best_support * 4 >= best_contested * 3
+        && best_gain >= (best_contested * shorter.width.min(8)) as i64;
+    (best_gain > 0 && (best_support >= MIN_ALIGNED_ROWS || has_tail_support)).then_some(
+        VerticalGap {
+            start: best_start,
+            height,
+        },
+    )
 }
 
 fn matching_reference_pixel(
     reference: ImageView<'_>,
     test: ImageView<'_>,
     x: usize,
-    y: usize,
+    ref_row: usize,
+    test_row: usize,
     max_delta: f64,
 ) -> Option<usize> {
-    let (Some(reference_index), Some(test_index)) =
-        (reference.pixel_index(x, y), test.pixel_index(x, y))
-    else {
+    if x >= reference.width || x >= test.width {
         return None;
-    };
+    }
+    let reference_index = ref_row * reference.width + x;
+    let test_index = test_row * test.width + x;
 
     let delta = color_delta(
         reference.pixels,
@@ -350,17 +441,39 @@ fn matching_reference_pixel(
         return Some(reference_index);
     }
 
-    let same_dimensions = reference.width == test.width && reference.height == test.height;
-    (same_dimensions
+    let same_width = reference.width == test.width;
+    (same_width
         && (is_antialiased(
             reference.pixels,
             x,
-            y,
+            ref_row,
             reference.width,
             reference.height,
             test.pixels,
-        ) || is_antialiased(test.pixels, x, y, test.width, test.height, reference.pixels)))
+            test_row,
+            test.height,
+        ) || is_antialiased(
+            test.pixels,
+            x,
+            test_row,
+            test.width,
+            test.height,
+            reference.pixels,
+            ref_row,
+            reference.height,
+        )))
     .then_some(reference_index)
+}
+
+#[inline]
+fn append_dimmed_pixel(pixels: &mut Vec<u8>, pixel: RGBA8) {
+    pixels.extend_from_slice(&[pixel.r / 3, pixel.g / 3, pixel.b / 3, pixel.a]);
+}
+
+fn append_dimmed_slice(pixels: &mut Vec<u8>, source: &[RGBA8]) {
+    for &pixel in source {
+        append_dimmed_pixel(pixels, pixel);
+    }
 }
 
 /// Compare pixels and build the diff buffer in a single pass, allocating the
@@ -373,36 +486,41 @@ fn compare_and_render_diff(
 ) -> (u64, Option<Vec<u8>>) {
     let width = reference.width.max(test.width);
     let height = reference.height.max(test.height);
+    let same_width = reference.width == width && test.width == width;
     let mut count = 0_u64;
     let mut diff_pixels: Option<Vec<u8>> = None;
 
     for y in 0..height {
+        let ref_row = reference.source_row(y);
+        let test_row = test.source_row(y);
+        if same_width
+            && let (Some(r_row), Some(t_row)) = (ref_row, test_row)
+            && reference.row_slice(r_row) == test.row_slice(t_row)
+        {
+            if let Some(pixels) = &mut diff_pixels {
+                append_dimmed_slice(pixels, reference.row_slice(r_row));
+            }
+            continue;
+        }
+
         for x in 0..width {
-            match matching_reference_pixel(reference, test, x, y, max_delta) {
+            let matched = match (ref_row, test_row) {
+                (Some(r_row), Some(t_row)) => {
+                    matching_reference_pixel(reference, test, x, r_row, t_row, max_delta)
+                }
+                _ => None,
+            };
+            match matched {
                 Some(reference_index) => {
                     if let Some(pixels) = &mut diff_pixels {
-                        let pixel = &reference.pixels[reference_index];
-                        pixels.extend_from_slice(&[pixel.r / 3, pixel.g / 3, pixel.b / 3, pixel.a]);
+                        append_dimmed_pixel(pixels, reference.pixels[reference_index]);
                     }
                 }
                 None => {
                     count += 1;
                     let pixels = diff_pixels.get_or_insert_with(|| {
                         let mut pixels = Vec::with_capacity(capacity);
-                        for prev_y in 0..=y {
-                            let end_x = if prev_y == y { x } else { width };
-                            for prev_x in 0..end_x {
-                                if let Some(index) = reference.pixel_index(prev_x, prev_y) {
-                                    let pixel = &reference.pixels[index];
-                                    pixels.extend_from_slice(&[
-                                        pixel.r / 3,
-                                        pixel.g / 3,
-                                        pixel.b / 3,
-                                        pixel.a,
-                                    ]);
-                                }
-                            }
-                        }
+                        append_dimmed_slice(&mut pixels, &reference.pixels[..y * width + x]);
                         pixels
                     });
                     pixels.extend_from_slice(&[255, 0, 255, 200]);
@@ -440,15 +558,42 @@ pub fn compare_images_with_threshold(
     }
     let start = Instant::now();
 
-    let (ref_pixels, ref_w, ref_h) = load_png(reference_path)?;
-    let (test_pixels, test_w, test_h) = load_png(test_path)?;
+    let (ref_bytes, ref_expected_w, ref_expected_h) = read_png_bytes(reference_path)?;
+    let (test_bytes, test_expected_w, test_expected_h) = read_png_bytes(test_path)?;
+    let (ref_pixels, ref_w, ref_h) =
+        decode_png_bytes(&ref_bytes, reference_path, ref_expected_w, ref_expected_h)?;
+
+    // Capture normalization strips non-essential PNG chunks, so unchanged
+    // captures are byte-identical on disk. After verifying `ref_bytes` is a
+    // valid PNG, skip the second decode when the raw bytes match.
+    if ref_bytes == test_bytes {
+        return Ok((
+            CompareResult {
+                is_same_dimensions: true,
+                dimension_difference: (0, 0),
+                ref_width: ref_w,
+                ref_height: ref_h,
+                test_width: ref_w,
+                test_height: ref_h,
+                alignment: DiffAlignment::default(),
+                raw_mis_match_percentage: 0.0,
+                mis_match_percentage: "0.00".to_string(),
+                analysis_time_ms: start.elapsed().as_millis(),
+            },
+            None,
+        ));
+    }
+    drop(ref_bytes);
+    let (test_pixels, test_w, test_h) =
+        decode_png_bytes(&test_bytes, test_path, test_expected_w, test_expected_h)?;
+    drop(test_bytes);
 
     let is_same_dimensions = ref_w == test_w && ref_h == test_h;
     let dimension_difference = (test_w as i64 - ref_w as i64, test_h as i64 - ref_h as i64);
 
     // Decoding normalizes PNG encoding details such as palette layout and
-    // metadata. Most repeat captures reach this path, so avoid allocating and
-    // encoding a full-page diff image when their rendered pixels are identical.
+    // metadata. Avoid allocating and encoding a full-page diff image when
+    // rendered pixels are identical despite different PNG encodings.
     if is_same_dimensions && ref_pixels == test_pixels {
         return Ok((
             CompareResult {
@@ -902,5 +1047,281 @@ mod tests {
         };
 
         assert!(error.to_string().contains("Comparison canvas"));
+    }
+
+    #[test]
+    fn large_middle_insertions_above_512_rows_align_into_a_single_band() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 32;
+        let height = 240;
+        let gap_start = 90;
+        let gap_height = 640;
+        let reference = patterned_image(width, height);
+        let mut test = reference[..gap_start * width].to_vec();
+        test.extend(vec![RGBA8::new(12, 34, 56, 255); gap_height * width]);
+        test.extend_from_slice(&reference[gap_start * width..]);
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height + gap_height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert_eq!(
+            result.alignment,
+            DiffAlignment {
+                reference: Some(VerticalGap {
+                    start: gap_start,
+                    height: gap_height,
+                }),
+                test: None,
+            }
+        );
+        let expected = (gap_height * width) as f64 / test.len() as f64 * 100.0;
+        assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
+        let diff = lodepng::decode32(diff.unwrap()).unwrap();
+        let pink = RGBA8::new(255, 0, 255, 200);
+        assert!(
+            diff.buffer[gap_start * width..(gap_start + gap_height) * width]
+                .iter()
+                .all(|pixel| *pixel == pink)
+        );
+        assert!(
+            diff.buffer[(gap_start + gap_height) * width..]
+                .iter()
+                .all(|pixel| *pixel != pink)
+        );
+    }
+
+    #[test]
+    fn top_of_page_changes_do_not_pull_gap_start_across_intact_sparse_middle_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 64;
+        let height = 160;
+        let gap_start = 100;
+        let gap_height = 20;
+        let white = RGBA8::new(255, 255, 255, 255);
+
+        let mut reference = vec![white; width * height];
+        // Top hero banner (rows 0..40): solid dark blue in reference.
+        for row in 0..40 {
+            for col in 0..width {
+                reference[row * width + col] = RGBA8::new(20, 40, 180, 255);
+            }
+        }
+        // Sparse middle section (rows 40..100): white background with a 2px accent column
+        // that differs from row to row so shifting by `gap_height` breaks those 2 pixels.
+        for row in 40..gap_start {
+            let accent = RGBA8::new(((row * 67) % 200) as u8, 10, 90, 255);
+            reference[row * width + 4] = accent;
+            reference[row * width + 5] = accent;
+        }
+        // Footer section below insertion (rows 100..160): rich patterned content.
+        let patterned = patterned_image(width, height - gap_start);
+        reference[gap_start * width..].copy_from_slice(&patterned);
+
+        let mut test = reference[..gap_start * width].to_vec();
+        // Top hero banner changed in place in test to a bright orange gradient
+        // (partially closer to white than dark blue, so `unshifted > shifted` on rows 0..40).
+        for row in 0..40 {
+            for col in 0..width {
+                test[row * width + col] = RGBA8::new(240, 180, 120, 255);
+            }
+        }
+        // Insert new block at `gap_start = 100`.
+        test.extend(vec![RGBA8::new(0, 0, 0, 255); gap_height * width]);
+        test.extend_from_slice(&reference[gap_start * width..]);
+
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height + gap_height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert_eq!(
+            result.alignment,
+            DiffAlignment {
+                reference: Some(VerticalGap {
+                    start: gap_start,
+                    height: gap_height,
+                }),
+                test: None,
+            }
+        );
+        let diff = lodepng::decode32(diff.unwrap()).unwrap();
+        let pink = RGBA8::new(255, 0, 255, 200);
+        // Intact sparse middle section (rows 40..100) must remain completely free of diffs.
+        assert!(
+            diff.buffer[40 * width..gap_start * width]
+                .iter()
+                .all(|pixel| *pixel != pink)
+        );
+    }
+
+    #[test]
+    fn near_bottom_insertions_with_short_tails_still_align_when_tail_rows_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 32;
+        let height = 48;
+        let gap_start = 36;
+        let gap_height = 6;
+        let reference = patterned_image(width, height);
+        let mut test = reference[..gap_start * width].to_vec();
+        test.extend(vec![RGBA8::new(0, 0, 0, 255); gap_height * width]);
+        test.extend_from_slice(&reference[gap_start * width..]);
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height + gap_height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, _) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert_eq!(
+            result.alignment,
+            DiffAlignment {
+                reference: Some(VerticalGap {
+                    start: gap_start,
+                    height: gap_height,
+                }),
+                test: None,
+            }
+        );
+        let expected = (gap_height * width) as f64 / test.len() as f64 * 100.0;
+        assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn antialiased_pixels_on_vertically_shifted_rows_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 32;
+        let height = 80;
+        let gap_start = 20;
+        let gap_height = 6;
+        let mut reference = patterned_image(width, height);
+        // Place a 5x5 high-contrast edge block at rows 50..55, cols 10..15 (below the gap)
+        // where (12, 52) is an anti-aliased transition pixel between dark and light regions.
+        let dark = RGBA8::new(0, 0, 0, 255);
+        let light = RGBA8::new(255, 255, 255, 255);
+        for row in 50..55 {
+            for col in 10..15 {
+                reference[row * width + col] = if col < 12 || (col == 12 && row < 52) {
+                    dark
+                } else {
+                    light
+                };
+            }
+        }
+        reference[52 * width + 12] = RGBA8::new(90, 90, 90, 255);
+
+        let mut test = reference[..gap_start * width].to_vec();
+        test.extend(vec![RGBA8::new(10, 20, 30, 255); gap_height * width]);
+        test.extend_from_slice(&reference[gap_start * width..]);
+        // Shift the anti-aliased transition pixel slightly on the aligned row `52 + gap_height`.
+        test[(52 + gap_height) * width + 12] = RGBA8::new(160, 160, 160, 255);
+
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height + gap_height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images_with_threshold(&reference_path, &test_path, 0.0)
+            .expect("comparison with vertical gap and AA pixel should succeed");
+
+        assert_eq!(
+            result.alignment.reference,
+            Some(VerticalGap {
+                start: gap_start,
+                height: gap_height,
+            })
+        );
+        let diff = lodepng::decode32(diff.unwrap()).unwrap();
+        assert_ne!(
+            diff.buffer[(52 + gap_height) * width + 12],
+            RGBA8::new(255, 0, 255, 200),
+            "anti-aliased pixel on a vertically shifted row must not be flagged as a mismatch"
+        );
+    }
+
+    #[test]
+    fn middle_insertion_aligns_footer_with_whitespace_padding_and_minor_column_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 40;
+        let height = 120;
+        let gap_start = 40;
+        let gap_height = 10;
+        let white = RGBA8::new(255, 255, 255, 255);
+
+        let mut reference = patterned_image(width, height);
+        // Make the bottom 68 rows (52..120) solid white padding so only 12 rows (40..52)
+        // below `gap_start` have non-blank content.
+        reference[52 * width..].fill(white);
+
+        let mut test = reference[..gap_start * width].to_vec();
+        test.extend(vec![RGBA8::new(0, 0, 0, 255); gap_height * width]);
+        test.extend_from_slice(&reference[gap_start * width..]);
+        // Also modify 2 columns (5% of width) on every content row below the insertion.
+        for row in (gap_start + gap_height)..(52 + gap_height) {
+            test[row * width] = RGBA8::new(250, 0, 0, 255);
+            test[row * width + 1] = RGBA8::new(250, 0, 0, 255);
+        }
+
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height + gap_height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, _) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert_eq!(
+            result.alignment,
+            DiffAlignment {
+                reference: Some(VerticalGap {
+                    start: gap_start,
+                    height: gap_height,
+                }),
+                test: None,
+            }
+        );
     }
 }

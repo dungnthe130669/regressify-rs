@@ -2,6 +2,30 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Compare Module Alignment, Performance, and Approval Hardening (2026-10-15)
+
+- Resolved in source: [vertical gap alignment](src/compare/image_compare.rs)
+  previously capped shifts at 512 rows, allowed unrelated top-of-page changes to
+  pull `best_start` across intact sparse middle sections, rejected short or
+  whitespace-padded footers below an insertion, and disabled anti-aliasing
+  detection whenever `ref_height != test_height`. It now aligns middle insertions
+  above 512 rows, penalizes breaking clean unshifted rows while capping unaligned
+  row gain, evaluates contested tail support across whitespace-padded footers, and
+  maps source rows for anti-aliasing checks.
+- Resolved in source: [PNG loading and diff rendering](src/compare/image_compare.rs)
+  decoded each file after a separate header open, cloned the decoded `RGBA8`
+  buffer, decoded both images even when raw bytes were identical, and evaluated
+  per-pixel YIQ deltas across byte-identical rows. It now reads bounded bytes
+  once, skips the second decode on byte-identical captures, short-circuits
+  byte-identical prefix/row slices, and stages diff PNGs inside worker threads
+  in [report generation](src/compare/report_gen.rs).
+- Resolved in source: [report generation and approval](src/compare/report_gen.rs)
+  used `replace(".png", "_diff.png")` (corrupting step names containing `.png`),
+  did not bound manifest reads or preflight candidate PNGs in CLI/suite approval,
+  did not share cached diagnostic archive states across `StagedSuiteComparison`
+  jobs, and matched reserved directories in [suite selection](src/compare/actions.rs).
+  All are resolved and covered by unit, snapshot, and desktop GUI tests.
+
 ## MCP Authoring Guidance and Frame Selector Capture (2026-10-15)
 
 - Resolved in source: [selector capture](src/test/capture.rs) had `left: rect.left, top: rect.top`

@@ -30,6 +30,7 @@ struct ReportConfig {
 
 pub(crate) const SUITE_METADATA_FILE: &str = "suite.json";
 const MAX_SUITE_METADATA_BYTES: usize = 65_536;
+const MAX_REPORT_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,25 +38,45 @@ pub(crate) struct SuiteMetadata {
     pub display_name: Option<String>,
 }
 
-pub(crate) fn read_suite_metadata(suite_dir: &Path) -> Result<Option<SuiteMetadata>> {
-    let path = suite_dir.join(SUITE_METADATA_FILE);
-    let metadata = match fs::symlink_metadata(&path) {
+fn read_bounded_regular_file(
+    path: &Path,
+    max_bytes: usize,
+    label: &str,
+) -> Result<Option<Vec<u8>>> {
+    let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("Cannot read suite metadata"),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to read {label} '{}'", path.display()));
+        }
     };
     anyhow::ensure!(
         metadata.is_file() && !metadata.file_type().is_symlink(),
-        "Suite metadata must be a regular file"
+        "{label} '{}' must be a regular file",
+        path.display()
     );
     let mut bytes = Vec::new();
-    fs::File::open(&path)?
-        .take(MAX_SUITE_METADATA_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
+    fs::File::open(path)
+        .with_context(|| format!("Failed to read {label} '{}'", path.display()))?
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("Failed to read {label} '{}'", path.display()))?;
     anyhow::ensure!(
-        bytes.len() <= MAX_SUITE_METADATA_BYTES,
-        "Suite metadata exceeds the 64 KiB limit"
+        bytes.len() <= max_bytes,
+        "{label} '{}' exceeds the {} byte limit",
+        path.display(),
+        max_bytes
     );
+    Ok(Some(bytes))
+}
+
+pub(crate) fn read_suite_metadata(suite_dir: &Path) -> Result<Option<SuiteMetadata>> {
+    let path = suite_dir.join(SUITE_METADATA_FILE);
+    let Some(bytes) = read_bounded_regular_file(&path, MAX_SUITE_METADATA_BYTES, "suite metadata")?
+    else {
+        return Ok(None);
+    };
     Ok(Some(
         serde_json::from_slice(&bytes).context("Invalid suite metadata")?,
     ))
@@ -136,7 +157,7 @@ enum ReportWork {
 enum ComparisonOutcome {
     Compared {
         result: CompareResult,
-        diff_png: Option<Vec<u8>>,
+        staged_diff_name: Option<String>,
     },
     Failed(anyhow::Error),
 }
@@ -168,47 +189,42 @@ struct ReportOrder {
 /// present malformed manifest is an artifact error rather than an empty order.
 fn read_report_order(tests_dir: &Path) -> Result<Option<ReportOrder>> {
     let path = tests_dir.join(REPORT_ORDER_FILE);
-    match fs::read_to_string(&path) {
-        Ok(content) => {
-            let value: serde_json::Value = serde_json::from_str(&content)
-                .with_context(|| format!("Invalid report order manifest '{}'", path.display()))?;
-            let (captures, is_complete_inventory) = if value.is_array() {
-                let captures: Vec<String> = serde_json::from_value(value).with_context(|| {
-                    format!("Invalid report order manifest '{}'", path.display())
-                })?;
-                (captures, false)
-            } else {
-                let manifest: ReportOrderManifest =
-                    serde_json::from_value(value).with_context(|| {
-                        format!("Invalid report order manifest '{}'", path.display())
-                    })?;
-                if manifest.version != REPORT_ORDER_VERSION {
-                    anyhow::bail!(
-                        "Unsupported report order manifest version {} in '{}'",
-                        manifest.version,
-                        path.display()
-                    );
-                }
-                (manifest.captures, true)
-            };
-            let mut seen = HashSet::with_capacity(captures.len());
-            for key in &captures {
-                if key.trim().is_empty() || !seen.insert(key) {
-                    anyhow::bail!(
-                        "Invalid report order manifest '{}': duplicate or empty key",
-                        path.display()
-                    );
-                }
-            }
-            Ok(Some(ReportOrder {
-                captures,
-                is_complete_inventory,
-            }))
+    let Some(bytes) =
+        read_bounded_regular_file(&path, MAX_REPORT_MANIFEST_BYTES, "report order manifest")?
+    else {
+        return Ok(None);
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("Invalid report order manifest '{}'", path.display()))?;
+    let (captures, is_complete_inventory) = if value.is_array() {
+        let captures: Vec<String> = serde_json::from_value(value)
+            .with_context(|| format!("Invalid report order manifest '{}'", path.display()))?;
+        (captures, false)
+    } else {
+        let manifest: ReportOrderManifest = serde_json::from_value(value)
+            .with_context(|| format!("Invalid report order manifest '{}'", path.display()))?;
+        if manifest.version != REPORT_ORDER_VERSION {
+            anyhow::bail!(
+                "Unsupported report order manifest version {} in '{}'",
+                manifest.version,
+                path.display()
+            );
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error)
-            .with_context(|| format!("Failed to read report order manifest '{}'", path.display())),
+        (manifest.captures, true)
+    };
+    let mut seen = HashSet::with_capacity(captures.len());
+    for key in &captures {
+        if key.trim().is_empty() || !seen.insert(key) {
+            anyhow::bail!(
+                "Invalid report order manifest '{}': duplicate or empty key",
+                path.display()
+            );
+        }
     }
+    Ok(Some(ReportOrder {
+        captures,
+        is_complete_inventory,
+    }))
 }
 
 fn read_report_thresholds(tests_dir: &Path) -> Result<Option<HashMap<String, f64>>> {
@@ -224,65 +240,58 @@ fn read_threshold_manifest(
     file_name: &str,
 ) -> Result<Option<HashMap<String, f64>>> {
     let path = tests_dir.join(file_name);
-    match fs::read_to_string(&path) {
-        Ok(content) => {
-            let thresholds: HashMap<String, f64> =
-                serde_json::from_str(&content).with_context(|| {
-                    format!("Invalid report threshold manifest '{}'", path.display())
-                })?;
-            for (key, value) in &thresholds {
-                if key.trim().is_empty() || !value.is_finite() || !(0.0..=100.0).contains(value) {
-                    anyhow::bail!(
-                        "Invalid report threshold manifest '{}': '{}' must be a finite value between 0 and 100",
-                        path.display(),
-                        key
-                    );
-                }
-            }
-            Ok(Some(thresholds))
+    let Some(bytes) = read_bounded_regular_file(
+        &path,
+        MAX_REPORT_MANIFEST_BYTES,
+        "report threshold manifest",
+    )?
+    else {
+        return Ok(None);
+    };
+    let thresholds: HashMap<String, f64> = serde_json::from_slice(&bytes)
+        .with_context(|| format!("Invalid report threshold manifest '{}'", path.display()))?;
+    for (key, value) in &thresholds {
+        if key.trim().is_empty() || !value.is_finite() || !(0.0..=100.0).contains(value) {
+            anyhow::bail!(
+                "Invalid report threshold manifest '{}': '{}' must be a finite value between 0 and 100",
+                path.display(),
+                key
+            );
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| {
-            format!(
-                "Failed to read report threshold manifest '{}'",
-                path.display()
-            )
-        }),
     }
+    Ok(Some(thresholds))
 }
 
 /// Read page URLs recorded for a capture run. Older runs predate this manifest
 /// and remain reportable without page-link metadata.
 fn read_report_urls(tests_dir: &Path) -> Result<Option<BTreeMap<String, ReportPageUrls>>> {
     let path = tests_dir.join(REPORT_URLS_FILE);
-    match fs::read_to_string(&path) {
-        Ok(content) => {
-            let manifest: ReportUrlsManifest = serde_json::from_str(&content)
-                .with_context(|| format!("Invalid report URL manifest '{}'", path.display()))?;
-            if manifest.version != REPORT_URLS_VERSION {
-                anyhow::bail!(
-                    "Unsupported report URL manifest version {} in '{}'",
-                    manifest.version,
-                    path.display()
-                );
-            }
-            for (capture, urls) in &manifest.captures {
-                if capture.trim().is_empty()
-                    || urls.reference_url.trim().is_empty()
-                    || urls.url.trim().is_empty()
-                {
-                    anyhow::bail!(
-                        "Invalid report URL manifest '{}': capture keys and page URLs must not be empty",
-                        path.display()
-                    );
-                }
-            }
-            Ok(Some(manifest.captures))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error)
-            .with_context(|| format!("Failed to read report URL manifest '{}'", path.display())),
+    let Some(bytes) =
+        read_bounded_regular_file(&path, MAX_REPORT_MANIFEST_BYTES, "report URL manifest")?
+    else {
+        return Ok(None);
+    };
+    let manifest: ReportUrlsManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("Invalid report URL manifest '{}'", path.display()))?;
+    if manifest.version != REPORT_URLS_VERSION {
+        anyhow::bail!(
+            "Unsupported report URL manifest version {} in '{}'",
+            manifest.version,
+            path.display()
+        );
     }
+    for (capture, urls) in &manifest.captures {
+        if capture.trim().is_empty()
+            || urls.reference_url.trim().is_empty()
+            || urls.url.trim().is_empty()
+        {
+            anyhow::bail!(
+                "Invalid report URL manifest '{}': capture keys and page URLs must not be empty",
+                path.display()
+            );
+        }
+    }
+    Ok(Some(manifest.captures))
 }
 
 fn screenshot_prefix(file_name: &str) -> &str {
@@ -294,6 +303,48 @@ fn screenshot_prefix(file_name: &str) -> &str {
 
 fn screenshot_key(file_name: &str) -> &str {
     file_name.strip_suffix(".png").unwrap_or(file_name)
+}
+
+fn diff_file_name(file_name: &str) -> String {
+    format!("{}_diff.png", screenshot_key(file_name))
+}
+
+fn screenshot_label(file_name: &str) -> String {
+    screenshot_key(file_name)
+        .replace("__", " ")
+        .replace('$', "")
+}
+
+fn resolve_pair_threshold(thresholds: &HashMap<String, f64>, file_name: &str, default: f64) -> f64 {
+    thresholds
+        .get(screenshot_key(file_name))
+        .or_else(|| thresholds.get(screenshot_prefix(file_name)))
+        .copied()
+        .unwrap_or(default)
+}
+
+fn sort_screenshots_by_manifest(screenshots: &mut [String], order: &[String]) {
+    let mut order_index = HashMap::with_capacity(order.len() * 2);
+    for (index, key) in order.iter().enumerate() {
+        order_index.insert(key.as_str(), index);
+        order_index.entry(screenshot_prefix(key)).or_insert(index);
+    }
+    screenshots.sort_by(|a, b| {
+        screenshot_order_key(a, &order_index)
+            .cmp(&screenshot_order_key(b, &order_index))
+            .then_with(|| a.cmp(b))
+    });
+}
+
+fn capture_failure_message(ref_err: Option<&str>, test_err: Option<&str>) -> Option<String> {
+    match (ref_err, test_err) {
+        (Some(r), Some(t)) => Some(format!(
+            "Both reference and test scenarios failed to capture (reference: {r}; test: {t})"
+        )),
+        (Some(r), None) => Some(format!("Reference scenario failed to capture: {r}")),
+        (None, Some(t)) => Some(format!("Test scenario failed to capture: {t}")),
+        (None, None) => None,
+    }
 }
 
 /// Position of a screenshot in the ordering manifest, derived from its filename
@@ -416,6 +467,7 @@ pub fn select_capture_run(
     requested_run_id: Option<&str>,
 ) -> Result<Option<String>> {
     if let Some(run_id) = requested_run_id {
+        crate::cli::args::run_id_parser(run_id).map_err(anyhow::Error::msg)?;
         let requested_dir = tests_dir.join(run_id);
         let metadata = match fs::symlink_metadata(&requested_dir) {
             Ok(metadata) => metadata,
@@ -508,10 +560,24 @@ fn report_selector(screenshot_name: &str) -> String {
     }
 }
 
+fn stage_diff_image(
+    staging_dir: &Path,
+    file_name: &str,
+    diff_png: Option<Vec<u8>>,
+) -> Result<Option<String>> {
+    let Some(diff_data) = diff_png else {
+        return Ok(None);
+    };
+    let diff_image_name = diff_file_name(file_name);
+    write_file_atomically(&staging_dir.join(&diff_image_name), &diff_data)?;
+    Ok(Some(diff_image_name))
+}
+
 fn compare_report_work(
     work: &[ReportWork],
+    staging_dir: &Path,
     max_workers: usize,
-) -> Result<Vec<Option<ComparisonOutcome>>> {
+) -> Result<Vec<Option<Result<ComparisonOutcome>>>> {
     let evaluate = |entry: &ReportWork| match entry {
         ReportWork::Immediate(_) => None,
         ReportWork::Compare(job) => Some(
@@ -520,8 +586,15 @@ fn compare_report_work(
                 &job.test_path,
                 job.pair.pixel_match_threshold,
             ) {
-                Ok((result, diff_png)) => ComparisonOutcome::Compared { result, diff_png },
-                Err(error) => ComparisonOutcome::Failed(error),
+                Ok((result, diff_png)) => {
+                    stage_diff_image(staging_dir, &job.pair.file_name, diff_png).map(
+                        |staged_diff_name| ComparisonOutcome::Compared {
+                            result,
+                            staged_diff_name,
+                        },
+                    )
+                }
+                Err(error) => Ok(ComparisonOutcome::Failed(error)),
             },
         ),
     };
@@ -623,10 +696,12 @@ fn generate_selected_report(
     let report_order = match read_report_order(&tests_dir)? {
         Some(order) => order,
         None => {
-            eprintln!(
-                "  {} Report order manifest missing; using alphabetical fallback.",
-                "WARNING:".yellow()
-            );
+            if reviewed_report.is_none() {
+                eprintln!(
+                    "  {} Report order manifest missing; using alphabetical fallback.",
+                    "WARNING:".yellow()
+                );
+            }
             ReportOrder {
                 captures: Vec::new(),
                 is_complete_inventory: false,
@@ -643,16 +718,7 @@ fn generate_selected_report(
     }
     test_screenshots =
         select_scenario_screenshots(test_screenshots, report_urls.as_ref(), scenario_ids)?;
-    let mut order_index = HashMap::with_capacity(order.len() * 2);
-    for (index, key) in order.iter().enumerate() {
-        order_index.insert(key.as_str(), index);
-        order_index.entry(screenshot_prefix(key)).or_insert(index);
-    }
-    test_screenshots.sort_by(|a, b| {
-        screenshot_order_key(a, &order_index)
-            .cmp(&screenshot_order_key(b, &order_index))
-            .then_with(|| a.cmp(b))
-    });
+    sort_screenshots_by_manifest(&mut test_screenshots, &order);
     if let Some(report) = reviewed_report {
         // Approval must retain the reviewed scope, including unapproved failures.
         test_screenshots = report
@@ -667,16 +733,12 @@ fn generate_selected_report(
     let mut report_work = Vec::with_capacity(test_screenshots.len());
     for screenshot_name in test_screenshots {
         let test_path = tests_dir.join(&screenshot_name);
-        let threshold = thresholds
-            .get(screenshot_key(&screenshot_name))
-            .or_else(|| thresholds.get(screenshot_prefix(&screenshot_name)))
-            .copied()
-            .unwrap_or(mis_match_threshold);
-        let pixel_threshold = pixel_thresholds
-            .get(screenshot_key(&screenshot_name))
-            .or_else(|| pixel_thresholds.get(screenshot_prefix(&screenshot_name)))
-            .copied()
-            .unwrap_or(DEFAULT_PIXEL_MATCH_THRESHOLD);
+        let threshold = resolve_pair_threshold(&thresholds, &screenshot_name, mis_match_threshold);
+        let pixel_threshold = resolve_pair_threshold(
+            &pixel_thresholds,
+            &screenshot_name,
+            DEFAULT_PIXEL_MATCH_THRESHOLD,
+        );
 
         let reference_path = reference_dir.join(&screenshot_name);
 
@@ -684,10 +746,7 @@ fn generate_selected_report(
         let relative_test = format!("../bitmaps_test/{}/{}", test_date, screenshot_name);
 
         // Derive label from filename: "scenario-id__FINAL.png" → "scenario-id FINAL"
-        let label = screenshot_name
-            .trim_end_matches(".png")
-            .replace("__", " ")
-            .replace('$', "");
+        let label = screenshot_label(&screenshot_name);
         let page_urls = report_urls
             .as_ref()
             .and_then(|urls| urls.get(screenshot_key(&screenshot_name)));
@@ -736,15 +795,7 @@ fn generate_selected_report(
         } else {
             None
         };
-        if test_err.is_some() || ref_err.is_some() {
-            let msg = match (ref_err.as_deref(), test_err.as_deref()) {
-                (Some(r), Some(t)) => format!(
-                    "Both reference and test scenarios failed to capture (reference: {r}; test: {t})"
-                ),
-                (Some(r), None) => format!("Reference scenario failed to capture: {r}"),
-                (None, Some(t)) => format!("Test scenario failed to capture: {t}"),
-                (None, None) => unreachable!(),
-            };
+        if let Some(msg) = capture_failure_message(ref_err.as_deref(), test_err.as_deref()) {
             eprintln!("    {} {} → {}", "FAIL:".red(), screenshot_name, msg);
 
             pair.engine_error_msg = Some(msg);
@@ -798,7 +849,7 @@ fn generate_selected_report(
                 suite_dir.display()
             )
         })?;
-    let outcomes = compare_report_work(&report_work, max_workers)?;
+    let outcomes = compare_report_work(&report_work, staging_dir.path(), max_workers)?;
     let mut staged_entries = Vec::with_capacity(report_work.len());
 
     for (entry, outcome) in report_work.into_iter().zip(outcomes) {
@@ -812,15 +863,17 @@ fn generate_selected_report(
                     "Comparison worker did not return an outcome for '{}'",
                     job.pair.file_name
                 )
-            })? {
-                ComparisonOutcome::Compared { result, diff_png } => {
-                    staged_entries.push(finish_compared_pair(
-                        staging_dir.path(),
+            })?? {
+                ComparisonOutcome::Compared {
+                    result,
+                    staged_diff_name,
+                } => {
+                    staged_entries.push(finish_staged_compared_pair(
                         test_date,
                         job.pair,
                         result,
-                        diff_png,
-                    )?);
+                        staged_diff_name,
+                    ));
                 }
                 ComparisonOutcome::Failed(error) => {
                     let mut pair = job.pair;
@@ -877,19 +930,30 @@ struct StagedReportEntry {
 fn finish_compared_pair(
     staging_dir: &Path,
     test_date: &str,
-    mut pair: ReportPair,
+    pair: ReportPair,
     result: CompareResult,
     diff_png: Option<Vec<u8>>,
 ) -> Result<StagedReportEntry> {
-    let diff_image_name = pair.file_name.replace(".png", "_diff.png");
-    let staged_diff_name = if let Some(diff_data) = diff_png {
-        write_file_atomically(&staging_dir.join(&diff_image_name), &diff_data)?;
+    let staged_diff_name = stage_diff_image(staging_dir, &pair.file_name, diff_png)?;
+    Ok(finish_staged_compared_pair(
+        test_date,
+        pair,
+        result,
+        staged_diff_name,
+    ))
+}
+
+fn finish_staged_compared_pair(
+    test_date: &str,
+    mut pair: ReportPair,
+    result: CompareResult,
+    staged_diff_name: Option<String>,
+) -> StagedReportEntry {
+    if let Some(diff_image_name) = &staged_diff_name {
         pair.diff_image = Some(format!("../bitmaps_test/{}/{}", test_date, diff_image_name));
-        Some(diff_image_name)
     } else {
         pair.diff_image = None;
-        None
-    };
+    }
     let passed =
         result.raw_mis_match_percentage <= pair.mis_match_threshold && result.is_same_dimensions;
     let status = if passed { "pass" } else { "fail" };
@@ -916,13 +980,13 @@ fn finish_compared_pair(
             result.ref_width, result.ref_height, result.test_width, result.test_height
         ));
     }
-    Ok(StagedReportEntry {
+    StagedReportEntry {
         test: ReportTest {
             pair,
             status: status.to_string(),
         },
         staged_diff_name,
-    })
+    }
 }
 
 fn record_comparison_diagnostic(suite_id: &str, test_date: &str, test: &mut ReportTest) {
@@ -1005,16 +1069,14 @@ fn commit_staged_report(
     let report_json = serde_json::to_string_pretty(&report)?;
     let config_js = format!("report({});", report_json);
 
-    let staged_report_path = staging_dir.join("staged-report.json");
-    let staged_config_path = staging_dir.join("staged-config.js");
-    write_file_atomically(&staged_report_path, report_json.as_bytes())?;
-    write_file_atomically(&staged_config_path, config_js.as_bytes())?;
-
     for entry in &entries {
-        let diff_image_name = entry.test.pair.file_name.replace(".png", "_diff.png");
+        let diff_image_name = diff_file_name(&entry.test.pair.file_name);
         let diff_image_path = bitmaps_test_dir.join(&diff_image_name);
         if let Some(staged_diff_name) = &entry.staged_diff_name {
-            copy_file_atomically(&staging_dir.join(staged_diff_name), &diff_image_path)?;
+            let staged_path = staging_dir.join(staged_diff_name);
+            if fs::rename(&staged_path, &diff_image_path).is_err() {
+                copy_file_atomically(&staged_path, &diff_image_path)?;
+            }
         } else if diff_image_path.exists() {
             // A previous comparison in this run may have produced a diff. Do
             // not show that stale artifact for a current pass.
@@ -1022,8 +1084,11 @@ fn commit_staged_report(
         }
     }
 
-    copy_file_atomically(&staged_report_path, &bitmaps_test_dir.join("report.json"))?;
-    copy_file_atomically(&staged_config_path, &html_report_dir.join("config.js"))?;
+    write_file_atomically(
+        &bitmaps_test_dir.join("report.json"),
+        report_json.as_bytes(),
+    )?;
+    write_file_atomically(&html_report_dir.join("config.js"), config_js.as_bytes())?;
     Ok(report)
 }
 
@@ -1073,16 +1138,7 @@ pub(crate) fn generate_reference_report(
         let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
         validate_capture_inventory(&tests_dir, &expected_captures, &test_screenshots)?;
     }
-    let mut order_index = HashMap::with_capacity(order.len() * 2);
-    for (index, key) in order.iter().enumerate() {
-        order_index.insert(key.as_str(), index);
-        order_index.entry(screenshot_prefix(key)).or_insert(index);
-    }
-    test_screenshots.sort_by(|a, b| {
-        screenshot_order_key(a, &order_index)
-            .cmp(&screenshot_order_key(b, &order_index))
-            .then_with(|| a.cmp(b))
-    });
+    sort_screenshots_by_manifest(&mut test_screenshots, &order);
 
     let staging_dir = tempfile::Builder::new()
         .prefix(".compare-staging-")
@@ -1100,21 +1156,14 @@ pub(crate) fn generate_reference_report(
     for screenshot_name in test_screenshots {
         let test_path = tests_dir.join(&screenshot_name);
         let reference_path = reference_dir.join(&screenshot_name);
-        let threshold = thresholds
-            .get(screenshot_key(&screenshot_name))
-            .or_else(|| thresholds.get(screenshot_prefix(&screenshot_name)))
-            .copied()
-            .unwrap_or(0.0);
-        let pixel_threshold = pixel_thresholds
-            .get(screenshot_key(&screenshot_name))
-            .or_else(|| pixel_thresholds.get(screenshot_prefix(&screenshot_name)))
-            .copied()
-            .unwrap_or(DEFAULT_PIXEL_MATCH_THRESHOLD);
+        let threshold = resolve_pair_threshold(&thresholds, &screenshot_name, 0.0);
+        let pixel_threshold = resolve_pair_threshold(
+            &pixel_thresholds,
+            &screenshot_name,
+            DEFAULT_PIXEL_MATCH_THRESHOLD,
+        );
         let relative_test = format!("../bitmaps_test/{}/{}", test_date, screenshot_name);
-        let label = screenshot_name
-            .trim_end_matches(".png")
-            .replace("__", " ")
-            .replace('$', "");
+        let label = screenshot_label(&screenshot_name);
         let page_urls = report_urls
             .as_ref()
             .and_then(|urls| urls.get(screenshot_key(&screenshot_name)));
@@ -1200,6 +1249,12 @@ pub(crate) struct StagedSuiteComparison {
     default_mis_match_threshold: f64,
     semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     entries: std::sync::Mutex<HashMap<String, StagedReportEntry>>,
+    archive_states: std::sync::Mutex<
+        BTreeMap<
+            crate::diagnostics::record::OperationId,
+            crate::diagnostics::journal::ArchiveState,
+        >,
+    >,
 }
 
 impl StagedSuiteComparison {
@@ -1249,6 +1304,7 @@ impl StagedSuiteComparison {
             default_mis_match_threshold: mis_match_threshold,
             semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(max_workers.max(1))),
             entries: std::sync::Mutex::new(HashMap::new()),
+            archive_states: std::sync::Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -1262,11 +1318,9 @@ impl StagedSuiteComparison {
 
     pub(crate) fn compare_job_captures(&self, capture_keys: &[String]) -> Result<()> {
         let output_root = self.suite_dir.parent().unwrap_or(&self.suite_dir);
-        let mut archive_states = BTreeMap::new();
         for key in capture_keys {
             let screenshot_name = format!("{key}.png");
-            let entry =
-                self.compare_single_screenshot(output_root, &screenshot_name, &mut archive_states)?;
+            let entry = self.compare_single_screenshot(output_root, &screenshot_name)?;
             if progress::enabled() {
                 emit_compared_progress(&self.suite_id, &entry.test);
             }
@@ -1282,33 +1336,21 @@ impl StagedSuiteComparison {
         &self,
         output_root: &Path,
         screenshot_name: &str,
-        archive_states: &mut BTreeMap<
-            crate::diagnostics::record::OperationId,
-            crate::diagnostics::journal::ArchiveState,
-        >,
     ) -> Result<StagedReportEntry> {
         let test_path = self.tests_dir.join(screenshot_name);
         let reference_path = self.reference_dir.join(screenshot_name);
-        let threshold = self
-            .thresholds
-            .get(screenshot_key(screenshot_name))
-            .or_else(|| self.thresholds.get(screenshot_prefix(screenshot_name)))
-            .copied()
-            .unwrap_or(self.default_mis_match_threshold);
-        let pixel_threshold = self
-            .pixel_thresholds
-            .get(screenshot_key(screenshot_name))
-            .or_else(|| {
-                self.pixel_thresholds
-                    .get(screenshot_prefix(screenshot_name))
-            })
-            .copied()
-            .unwrap_or(DEFAULT_PIXEL_MATCH_THRESHOLD);
+        let threshold = resolve_pair_threshold(
+            &self.thresholds,
+            screenshot_name,
+            self.default_mis_match_threshold,
+        );
+        let pixel_threshold = resolve_pair_threshold(
+            &self.pixel_thresholds,
+            screenshot_name,
+            DEFAULT_PIXEL_MATCH_THRESHOLD,
+        );
         let relative_test = format!("../bitmaps_test/{}/{}", self.test_date, screenshot_name);
-        let label = screenshot_name
-            .trim_end_matches(".png")
-            .replace("__", " ")
-            .replace('$', "");
+        let label = screenshot_label(screenshot_name);
         let page_urls = self
             .report_urls
             .as_ref()
@@ -1321,13 +1363,22 @@ impl StagedSuiteComparison {
             pixel_threshold,
             page_urls,
         );
-        pair.reference_log = crate::test::capture::read_capture_log_cached(
-            output_root,
-            &reference_path,
-            archive_states,
-        );
-        pair.test_log =
-            crate::test::capture::read_capture_log_cached(output_root, &test_path, archive_states);
+        {
+            let mut archive_states = self
+                .archive_states
+                .lock()
+                .map_err(|_| anyhow!("Staged comparison archive cache lock poisoned"))?;
+            pair.reference_log = crate::test::capture::read_capture_log_cached(
+                output_root,
+                &reference_path,
+                &mut archive_states,
+            );
+            pair.test_log = crate::test::capture::read_capture_log_cached(
+                output_root,
+                &test_path,
+                &mut archive_states,
+            );
+        }
 
         let test_err = read_error_marker(&test_path);
         let ref_err = if reference_path.exists() {
@@ -1335,15 +1386,7 @@ impl StagedSuiteComparison {
         } else {
             None
         };
-        if test_err.is_some() || ref_err.is_some() {
-            let msg = match (ref_err.as_deref(), test_err.as_deref()) {
-                (Some(r), Some(t)) => format!(
-                    "Both reference and test scenarios failed to capture (reference: {r}; test: {t})"
-                ),
-                (Some(r), None) => format!("Reference scenario failed to capture: {r}"),
-                (None, Some(t)) => format!("Test scenario failed to capture: {t}"),
-                (None, None) => unreachable!(),
-            };
+        if let Some(msg) = capture_failure_message(ref_err.as_deref(), test_err.as_deref()) {
             eprintln!("    {} {} → {}", "FAIL:".red(), screenshot_name, msg);
             pair.engine_error_msg = Some(msg);
             return Ok(StagedReportEntry {
@@ -1405,16 +1448,7 @@ impl StagedSuiteComparison {
             let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
             validate_capture_inventory(&self.tests_dir, &expected_captures, &test_screenshots)?;
         }
-        let mut order_index = HashMap::with_capacity(self.order.len() * 2);
-        for (index, key) in self.order.iter().enumerate() {
-            order_index.insert(key.as_str(), index);
-            order_index.entry(screenshot_prefix(key)).or_insert(index);
-        }
-        test_screenshots.sort_by(|a, b| {
-            screenshot_order_key(a, &order_index)
-                .cmp(&screenshot_order_key(b, &order_index))
-                .then_with(|| a.cmp(b))
-        });
+        sort_screenshots_by_manifest(&mut test_screenshots, &self.order);
 
         let mut staged_map = self
             .entries
@@ -1422,15 +1456,16 @@ impl StagedSuiteComparison {
             .map_err(|_| anyhow!("Staged comparison lock poisoned"))?;
         let mut ordered_entries = Vec::with_capacity(test_screenshots.len());
         let output_root = self.suite_dir.parent().unwrap_or(&self.suite_dir);
-        let mut archive_states = BTreeMap::new();
         for screenshot_name in test_screenshots {
             let mut entry = match staged_map.remove(&screenshot_name) {
                 Some(entry) => entry,
-                None => self.compare_single_screenshot(
-                    output_root,
-                    &screenshot_name,
-                    &mut archive_states,
-                )?,
+                None => {
+                    let entry = self.compare_single_screenshot(output_root, &screenshot_name)?;
+                    if progress::enabled() {
+                        emit_compared_progress(&self.suite_id, &entry.test);
+                    }
+                    entry
+                }
             };
             record_comparison_diagnostic(&self.suite_id, &self.test_date, &mut entry.test);
             ordered_entries.push(entry);
@@ -1528,6 +1563,24 @@ fn select_scenario_viewport_screenshots(
         .collect())
 }
 
+fn preflight_approved_screenshots(tests_dir: &Path, screenshots: &[String]) -> Result<()> {
+    for filename in screenshots {
+        let path = tests_dir.join(filename);
+        if read_error_marker(&path).is_none() {
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("Cannot inspect capture '{}'", path.display()))?;
+            anyhow::ensure!(
+                metadata.is_file() && !metadata.file_type().is_symlink(),
+                "Cannot approve non-regular capture '{}'",
+                path.display()
+            );
+            super::image_compare::load_png(&path)
+                .with_context(|| format!("Cannot approve invalid capture '{}'", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn approve_screenshots_for_scenarios(
     suite_dir: &Path,
     requested_run_id: Option<&str>,
@@ -1554,12 +1607,13 @@ pub(crate) fn approve_screenshots_for_scenarios(
     eprintln!("  Approving screenshots from run: {}", selected_run.cyan());
 
     let screenshots = validate_capture_run_inventory(&latest_test_dir)?;
-    let urls = if scenario_ids.is_empty() {
-        None
-    } else {
-        read_report_urls(&latest_test_dir)?
-    };
+    let urls = read_report_urls(&latest_test_dir)?;
+    if let Some(page_urls) = &urls {
+        let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
+        validate_capture_inventory(&latest_test_dir, &expected_captures, &screenshots)?;
+    }
     let screenshots = select_scenario_screenshots(screenshots, urls.as_ref(), scenario_ids)?;
+    preflight_approved_screenshots(&latest_test_dir, &screenshots)?;
 
     promote_screenshots(&latest_test_dir, &reference_dir, &screenshots)?;
     Ok(())
@@ -1600,13 +1654,9 @@ fn promote_screenshots(
             crate::test::capture::promote_capture_log(output, &src, &dst);
         }
 
-        // Promote the error-marker sidecar so the reference retains its
-        // failure flag; clear any stale marker when the new capture is good.
-        let marker_src = crate::test::capture::error_marker_path(&src);
+        // Clear any stale error-marker sidecar when the newly promoted capture is good.
         let marker_dst = crate::test::capture::error_marker_path(&dst);
-        if marker_src.exists() {
-            copy_file_atomically(&marker_src, &marker_dst)?;
-        } else if marker_dst.exists() {
+        if marker_dst.exists() {
             fs::remove_file(&marker_dst)?;
         }
 
@@ -1696,18 +1746,14 @@ pub(crate) fn approve_scenario_viewport(
             Err(error) => return Err(error.into()),
         }
     }
-    anyhow::ensure!(
-        fs::symlink_metadata(&report_path)?.file_type().is_file(),
-        "The reviewed report must be a regular file"
-    );
-    let mut bytes = Vec::new();
-    fs::File::open(&report_path)?
-        .take(16 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    anyhow::ensure!(
-        bytes.len() <= 16 * 1024 * 1024,
-        "The reviewed report exceeds 16 MiB"
-    );
+    let bytes =
+        read_bounded_regular_file(&report_path, MAX_REPORT_MANIFEST_BYTES, "reviewed report")?
+            .ok_or_else(|| {
+                anyhow!(
+                    "The reviewed report does not exist: {}",
+                    report_path.display()
+                )
+            })?;
     let report: ReportConfig = serde_json::from_slice(&bytes)
         .context("Cannot approve this report; regenerate its comparison first")?;
     anyhow::ensure!(
@@ -1774,16 +1820,21 @@ pub(crate) fn approve_scenario_viewport(
         read_error_marker(&run.join(format!("{capture_key}.png"))).is_none(),
         "The selected capture failed and cannot be approved"
     );
-    for filename in &selected {
-        let path = run.join(filename);
-        if read_error_marker(&path).is_none() {
-            super::image_compare::load_png(&path)
-                .with_context(|| format!("Cannot approve invalid capture '{}'", path.display()))?;
-        }
-    }
+    preflight_approved_screenshots(&run, &selected)?;
     promote_screenshots(&run, &reference, &selected)?;
-    generate_selected_report(suite_dir, suite_id, run_id, 0.0, 2, &[], Some(&report))
-        .context("Selected baselines were promoted, but report recalculation failed")
+    let workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(2);
+    generate_selected_report(
+        suite_dir,
+        suite_id,
+        run_id,
+        0.0,
+        workers,
+        &[],
+        Some(&report),
+    )
+    .context("Selected baselines were promoted, but report recalculation failed")
 }
 
 fn build_diff(result: &CompareResult) -> ReportDiff {
@@ -3023,5 +3074,59 @@ mod tests {
             report.tests[1].pair.engine_error_msg.as_deref(),
             Some("Test scenario failed to capture: Action 1 (click): element missing")
         );
+    }
+
+    #[test]
+    fn capture_names_containing_png_preserve_single_diff_suffix_and_label() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test/run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let file_name = "home__$logo.png.png";
+        fs::write(reference_dir.join(file_name), png_bytes(10)).unwrap();
+        fs::write(test_dir.join(file_name), png_bytes(200)).unwrap();
+
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap();
+
+        let report: ReportConfig =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report.tests.len(), 1);
+        assert_eq!(report.tests[0].pair.label, "home logo.png");
+        assert_eq!(
+            report.tests[0].pair.diff_image.as_deref(),
+            Some("../bitmaps_test/run/home__$logo.png_diff.png")
+        );
+        assert!(test_dir.join("home__$logo.png_diff.png").is_file());
+        assert!(!test_dir.join("home__$logo_diff.png_diff.png").exists());
+    }
+
+    #[test]
+    fn approve_screenshots_validates_all_selected_pngs_before_promoting_references() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test/run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        fs::write(reference_dir.join("alpha__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(reference_dir.join("beta__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("alpha__FINAL.png"), png_bytes(200)).unwrap();
+        fs::write(test_dir.join("beta__FINAL.png"), &png_bytes(200)[..33]).unwrap();
+
+        let error = approve_screenshots(&suite_dir, Some("run")).unwrap_err();
+        assert!(error.to_string().contains("invalid capture"));
+        assert_eq!(
+            fs::read(reference_dir.join("alpha__FINAL.png")).unwrap(),
+            png_bytes(10)
+        );
+        assert_eq!(
+            fs::read(reference_dir.join("beta__FINAL.png")).unwrap(),
+            png_bytes(10)
+        );
+        assert!(select_capture_run(&suite_dir.join("bitmaps_test"), Some("../run")).is_err());
     }
 }

@@ -59,6 +59,16 @@ struct SelectedRun {
     scenario_ids: Vec<String>,
 }
 
+fn is_suite_output_directory(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !matches!(
+            lower.as_str(),
+            "_snapshot" | "_diagnostics" | "_landing" | "states"
+        )
+}
+
 fn selected_runs(
     regressify_dir: &Path,
     suite_patterns: &[String],
@@ -75,12 +85,12 @@ fn selected_runs(
     let mut matched_suite = false;
     for entry in entries {
         let path = entry.path();
-        if !path.is_dir() {
+        if !entry.file_type()?.is_dir() {
             continue;
         }
         let suite_id = match path.file_name().and_then(|s| s.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
+            Some(name) if is_suite_output_directory(name) => name.to_string(),
+            _ => continue,
         };
         if !suite_matches_filters(&suite_id, &suite_filters) {
             continue;
@@ -95,7 +105,7 @@ fn selected_runs(
             continue;
         }
         let tests_dir = path.join("bitmaps_test");
-        if !tests_dir.exists() {
+        if !fs::symlink_metadata(&tests_dir).is_ok_and(|metadata| metadata.file_type().is_dir()) {
             continue;
         }
         if let Some(run_id) = select_capture_run(&tests_dir, requested_run_id)? {
@@ -247,5 +257,32 @@ mod tests {
         let all = compile_suite_filters(&[]).unwrap();
         assert!(require_explicit_filter_match(&all, false).is_ok());
         assert!(require_explicit_filter_match(&explicit, true).is_ok());
+    }
+
+    #[test]
+    fn selected_runs_ignores_reserved_and_staging_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        for reserved in [
+            "_diagnostics",
+            "_snapshot",
+            "_landing",
+            "states",
+            ".staging",
+        ] {
+            fs::create_dir_all(temp.path().join(reserved).join("bitmaps_test/run-1")).unwrap();
+        }
+        assert!(
+            selected_runs(temp.path(), &["_*".to_string()], &[], None)
+                .err()
+                .expect("reserved directories must not count as matching output suites")
+                .to_string()
+                .contains("No output test suites matched")
+        );
+
+        fs::create_dir_all(temp.path().join("shop/bitmaps_test/run-1")).unwrap();
+        let runs = selected_runs(temp.path(), &["shop".to_string()], &[], None).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].suite_id, "shop");
+        assert_eq!(runs[0].run_id, "run-1");
     }
 }
