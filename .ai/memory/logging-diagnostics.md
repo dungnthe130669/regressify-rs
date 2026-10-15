@@ -25,7 +25,9 @@ Verified: 2026-10-15
 - [Run polling](../../src/desktop/ui/runs.rs) leaves capture execution in the
   worker process and polls progress nonblockingly every 100 ms. Hidden capture
   log editors previously rebuilt up to 2 MiB per changed tick; they now wait for
-  Log activation. Unchanged ticks redraw only for the one-second elapsed clock.
+  Log activation. UI/log updates coalesce over 500 ms while queues still drain
+  every 100 ms; pending updates survive unchanged ticks and terminal updates
+  bypass throttling. Unchanged ticks redraw only for elapsed-second changes.
   `run_log_hidden_` and `run_poll_` cover these UI-work bounds; they do not measure
   native input latency or establish a frame-time budget for large Activity lists.
 - [Capture Log](../../src/desktop/ui/reports/log.rs) uses segmented source tabs

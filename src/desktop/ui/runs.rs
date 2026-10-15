@@ -16,6 +16,8 @@ mod artifacts;
 mod log;
 mod settings;
 
+const RUN_UI_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+
 fn selection_range<'item>(
     items: &'item [String],
     clicked: &str,
@@ -220,6 +222,8 @@ pub(super) struct RunPanel {
     failed_only: bool,
     started: Option<Instant>,
     elapsed_seconds: u64,
+    last_run_refresh: Option<Instant>,
+    run_refresh_pending: bool,
     executed_suites: Vec<(String, String)>,
     artifacts: artifacts::ArtifactScan,
     deployment_path: Option<PathBuf>,
@@ -308,6 +312,8 @@ impl RunPanel {
             failed_only: false,
             started: None,
             elapsed_seconds: 0,
+            last_run_refresh: None,
+            run_refresh_pending: false,
             executed_suites: Vec::new(),
             artifacts: artifacts::ArtifactScan::default(),
             deployment_path: None,
@@ -1319,6 +1325,8 @@ impl RunPanel {
                 self.tab = 0;
                 self.started = Some(Instant::now());
                 self.elapsed_seconds = 0;
+                self.last_run_refresh = self.started;
+                self.run_refresh_pending = false;
                 self.collapsed.clear();
                 self.status = format!("Running {}", self.command.label());
                 self.log_text.clear();
@@ -1338,7 +1346,7 @@ impl RunPanel {
                             .await;
                         let running = view
                             .update_in(cx, |this, window, cx| {
-                                this.poll_run(review_after_run, window, cx)
+                                this.poll_run(Instant::now(), review_after_run, window, cx)
                             })
                             .unwrap_or(false);
                         if !running {
@@ -1355,6 +1363,7 @@ impl RunPanel {
 
     fn poll_run(
         &mut self,
+        now: Instant,
         review_after_run: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1362,9 +1371,28 @@ impl RunPanel {
         let revision = self.manager.revision();
         let finished = self.manager.poll();
         let changed = self.manager.revision() != revision;
-        if changed {
-            cx.emit(RunEvent::ProgressChanged);
-            self.refresh_log(window, cx);
+        self.run_refresh_pending |= changed;
+        let elapsed_seconds = self.started.map_or(0, |started| {
+            now.saturating_duration_since(started).as_secs()
+        });
+        let refresh_due = self
+            .last_run_refresh
+            .is_none_or(|last| now.saturating_duration_since(last) >= RUN_UI_REFRESH_INTERVAL);
+        // Drain queues every tick, but coalesce UI/log work. Terminal updates bypass
+        // the throttle, including the worker exit before activity persistence finishes.
+        if finished
+            || (changed && self.manager.outcome.is_some())
+            || (refresh_due
+                && (self.run_refresh_pending || elapsed_seconds != self.elapsed_seconds))
+        {
+            if self.run_refresh_pending {
+                cx.emit(RunEvent::ProgressChanged);
+                self.refresh_log(window, cx);
+                self.run_refresh_pending = false;
+            }
+            self.elapsed_seconds = elapsed_seconds;
+            self.last_run_refresh = Some(now);
+            cx.notify();
         }
         if finished {
             self.status = self.completion_status();
@@ -1372,15 +1400,6 @@ impl RunPanel {
             if review_after_run && self.executed_report_available() {
                 self.review_results(cx);
             }
-        }
-        let elapsed_seconds = self
-            .started
-            .map_or(0, |started| started.elapsed().as_secs());
-        // Keep completion polling prompt without rebuilding every Activity row
-        // ten times per second just to update the elapsed clock.
-        if changed || finished || elapsed_seconds != self.elapsed_seconds {
-            self.elapsed_seconds = elapsed_seconds;
-            cx.notify();
         }
         self.running()
     }
@@ -2213,6 +2232,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let (handle, view) = super::super::tests::editor(cx, directory.path());
         let (manager, progress) = crate::desktop::runner::tests::polling_fixture();
+        let now = std::time::Instant::now();
         let runs = cx.update(|cx| view.read(cx).runs.clone());
         cx.update(|cx| {
             runs.update(cx, |panel, _| {
@@ -2237,7 +2257,9 @@ mod tests {
         });
         for _ in 0..10 {
             cx.update_window(handle.into(), |_, window, cx| {
-                runs.update(cx, |panel, cx| assert!(panel.poll_run(false, window, cx)));
+                runs.update(cx, |panel, cx| {
+                    assert!(panel.poll_run(now, false, window, cx))
+                });
             })
             .unwrap();
         }
@@ -2247,8 +2269,8 @@ mod tests {
 
         cx.update_window(handle.into(), |_, window, cx| {
             runs.update(cx, |panel, cx| {
-                panel.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(2));
-                assert!(panel.poll_run(false, window, cx));
+                panel.started = Some(now - std::time::Duration::from_secs(2));
+                assert!(panel.poll_run(now, false, window, cx));
                 assert!(panel.elapsed_seconds >= 2);
                 panel.started = None;
                 panel.elapsed_seconds = 0;
@@ -2272,7 +2294,9 @@ mod tests {
             },
         });
         cx.update_window(handle.into(), |_, window, cx| {
-            runs.update(cx, |panel, cx| assert!(panel.poll_run(false, window, cx)));
+            runs.update(cx, |panel, cx| {
+                assert!(panel.poll_run(now + super::RUN_UI_REFRESH_INTERVAL, false, window, cx));
+            });
         })
         .unwrap();
         cx.run_until_parked();
@@ -2281,7 +2305,7 @@ mod tests {
 
         cx.update_window(handle.into(), |_, window, cx| {
             runs.update(cx, |panel, cx| {
-                assert!(panel.poll_run(false, window, cx));
+                assert!(panel.poll_run(now + super::RUN_UI_REFRESH_INTERVAL, false, window, cx));
                 assert_eq!(panel.manager.progress.phase, "Capturing scenarios");
             });
         })
@@ -2289,6 +2313,101 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(notifications.get(), 2);
         assert_eq!(events.get(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn run_poll_coalesces_ui_and_logs_at_500ms_and_flushes_terminal_progress(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::desktop::runner::LogLine;
+        use crate::progress::{Event, Record};
+        use std::time::{Duration, Instant};
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        let (manager, progress) = crate::desktop::runner::tests::polling_fixture();
+        let now = Instant::now();
+        let runs = cx.update(|cx| view.read(cx).runs.clone());
+        cx.update_window(handle.into(), |_, window, cx| {
+            runs.update(cx, |panel, cx| {
+                panel.manager = manager;
+                panel.tab = 3;
+                panel.last_run_refresh = Some(now);
+                panel.log_text.clear();
+                panel
+                    .log
+                    .update(cx, |editor, cx| editor.set_value("", window, cx));
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let notifications = Rc::new(std::cell::Cell::new(0));
+        let observed = notifications.clone();
+        let _subscription =
+            cx.update(|cx| cx.observe(&runs, move |_, _| observed.set(observed.get() + 1)));
+        let events = Rc::new(std::cell::Cell::new(0));
+        let observed_events = events.clone();
+        let _events = cx.update(|cx| {
+            cx.subscribe(&runs, move |_, event: &RunEvent, _| {
+                if matches!(event, RunEvent::ProgressChanged) {
+                    observed_events.set(observed_events.get() + 1);
+                }
+            })
+        });
+
+        for ms in [100, 200, 300, 400, 499, 500, 999, 1000, 1001] {
+            let changed = !matches!(ms, 500 | 1000);
+            if changed {
+                let mut worker = progress.lock().unwrap();
+                worker.apply(Record {
+                    version: 1,
+                    elapsed_ms: ms,
+                    event: Event::Phase {
+                        name: format!("phase {ms}"),
+                    },
+                });
+                if ms == 1001 {
+                    worker.end(false, None);
+                }
+            }
+            cx.update_window(handle.into(), |_, window, cx| {
+                runs.update(cx, |panel, cx| {
+                    if changed {
+                        panel.manager.logs.push_back(LogLine {
+                            stderr: false,
+                            text: format!("log {ms}\n"),
+                        });
+                    }
+                    if ms == 1001 {
+                        panel.manager.outcome = Some(RunOutcome::Completed);
+                    }
+                    assert!(panel.poll_run(now + Duration::from_millis(ms), false, window, cx));
+                    if changed && ms != 1001 {
+                        assert_eq!(panel.manager.progress.phase, format!("phase {ms}"));
+                    }
+                    match ms {
+                        0..500 => assert!(panel.log_text.is_empty()),
+                        500 | 999 => assert!(panel.log_text.ends_with("log 499\n")),
+                        1000 => assert!(panel.log_text.ends_with("log 999\n")),
+                        _ => {
+                            assert!(panel.log_text.ends_with("log 1001\n"));
+                            assert!(panel.manager.progress.finished);
+                        }
+                    }
+                    assert_eq!(panel.log.read(cx).value(), panel.log_text);
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            let expected = match ms {
+                0..500 => 0,
+                500..1000 => 1,
+                1000 => 2,
+                _ => 3,
+            };
+            assert_eq!(events.get(), expected, "Progress notifications at {ms} ms");
+            assert_eq!(notifications.get(), expected, "UI notifications at {ms} ms");
+        }
     }
 
     #[gpui_kit::test]

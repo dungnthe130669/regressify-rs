@@ -1737,8 +1737,11 @@ tracked separately. Proxy input is masked and command lines are not echoed;
 CLI/script logs can still contain project-provided data.
 
 Capture execution runs in a separate worker process. Desktop progress polling
-remains nonblocking at 100 ms; unchanged activity redraws only once per second
-for elapsed time. While a capture is running, hidden log editors are not rebuilt:
+and queue draining remain nonblocking at 100 ms. Progress notifications, redraws,
+and live-log refreshes are coalesced to at most once every 500 ms; unchanged
+activity redraws only when elapsed seconds change. Completion and explicit user
+actions refresh immediately without waiting for that interval.
+While a capture is running, hidden log editors are not rebuilt:
 opening Log loads the current archive on demand without dropping retained output.
 Deployment Activity keeps its visible live log, and completion still refreshes
 archive health.
