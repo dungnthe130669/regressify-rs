@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-const count = z.number().int().nonnegative();
+const textDecoder = new TextDecoder();
+const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const percentage = z.number().finite().min(0).max(100);
 const segment = z
   .string()
@@ -9,11 +10,9 @@ const segment = z
     (value) =>
       value !== "." &&
       value !== ".." &&
-      !/[\\/]/.test(value) &&
-      !Array.from(value).some((character) => {
-        const code = character.charCodeAt(0);
-        return code < 32 || (code >= 127 && code <= 159);
-      }),
+      !/[\\/:<>"|?*\p{Cc}]/u.test(value) &&
+      !/[. ]$/.test(value) &&
+      !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value),
   );
 
 export function encodeArtifactPath(path: string): string {
@@ -41,16 +40,7 @@ export function artifactPath(value: string, kind: "data" | "images"): string | u
     return undefined;
   try {
     const parts = path.split("/").map(decodeURIComponent);
-    if (
-      parts.some(
-        (part) =>
-          !segment.safeParse(part).success ||
-          /[\\/:<>"|?*]/.test(part) ||
-          /[. ]$/.test(part) ||
-          /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part),
-      )
-    )
-      return undefined;
+    if (parts.some((part) => !segment.safeParse(part).success)) return undefined;
     const decoded = parts.join("/");
     return encodeArtifactPath(decoded) === path ? decoded : undefined;
   } catch {
@@ -94,17 +84,29 @@ export const archiveStateSchema = z.enum([
   "loadingError",
 ]);
 
-export const executionLogSchema = z.object({
-  state: archiveStateSchema,
-  operationId: z.uuid().nullable(),
-  executionId: z.uuid().nullable(),
-  chunks: z.array(artifact("data")).max(16384),
-  records: count.max(Number.MAX_SAFE_INTEGER),
-  missingRecords: count.max(Number.MAX_SAFE_INTEGER).nullable(),
-  build: z
-    .object({ version: z.string(), sourceCommit: z.string(), dirty: z.boolean().nullable() })
-    .nullable(),
-});
+export const executionLogSchema = z
+  .object({
+    state: archiveStateSchema,
+    operationId: z.uuid().nullable(),
+    executionId: z.uuid().nullable(),
+    chunks: z.array(artifact("data")).max(16384),
+    records: count,
+    missingRecords: count.nullable(),
+    build: z
+      .object({ version: z.string(), sourceCommit: z.string(), dirty: z.boolean().nullable() })
+      .nullable(),
+  })
+  .refine(
+    (log) =>
+      (["complete", "partial"].includes(log.state) || log.chunks.length === 0) &&
+      (log.chunks.length === 0 ||
+        (log.operationId !== null &&
+          log.records > 0 &&
+          new Set(log.chunks).size === log.chunks.length &&
+          log.chunks.every((chunk) =>
+            artifactPath(chunk, "data")?.startsWith(`_snapshot/data/logs/${log.operationId}/`),
+          ))),
+  );
 
 export type ExecutionLog = z.infer<typeof executionLogSchema>;
 export type ArchiveState = z.infer<typeof archiveStateSchema>;
@@ -225,7 +227,8 @@ export const captureSchema = z
       };
     }
     return capture;
-  });
+  })
+  .refine((capture) => capture.error === null || capture.status === "fail");
 
 export const suiteReportSchema = z
   .object({
@@ -338,9 +341,10 @@ export function filterCaptures(tests: Capture[], query: string, status: StatusFi
   return tests.filter(
     (test) =>
       (status === "all" || (status === "error" ? test.error !== null : test.status === status)) &&
-      `${test.label} ${test.scenario} ${test.selector} ${test.id}`
-        .toLocaleLowerCase()
-        .includes(needle),
+      (!needle ||
+        `${test.label} ${test.scenario} ${test.selector} ${test.id}`
+          .toLocaleLowerCase()
+          .includes(needle)),
   );
 }
 
@@ -352,7 +356,9 @@ export async function fetchReport<T>(
   maxBytes?: number,
 ): Promise<T> {
   const response = await fetch(url, {
-    signal,
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+      : AbortSignal.timeout(15_000),
     credentials: "omit",
     cache: reload ? "reload" : "default",
   });
@@ -389,7 +395,7 @@ export async function fetchReport<T>(
       .replace(/=+$/, "")
       .slice(0, 20);
     if (expected !== actual) throw new Error("Log chunk version does not match its content.");
-    value = JSON.parse(new TextDecoder().decode(bytes));
+    value = JSON.parse(textDecoder.decode(bytes));
   } else {
     value = await response.json();
   }

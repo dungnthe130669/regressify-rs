@@ -2,6 +2,29 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Snapshot Frontend Contract, Performance, and Viewer Hardening (2026-10-15)
+
+- Resolved in source: [report schemas](frontend/src/data/report.ts),
+  [log chunk loading](frontend/src/data/logs.ts), and
+  [suite store validation](frontend/src/data/store.tsx) now enforce Windows
+  reserved-name/character/control rules on suite and capture IDs, reject
+  `status: "pass"` captures with engine errors, validate log chunk ownership,
+  uniqueness, non-empty chunks, and sequence boundaries, enforce exact
+  `_snapshot/data/manifest.json` bootstrap paths and suite pass/fail/error
+  consistency, and bound report/log requests with timeouts and immediate
+  `AbortSignal` cancellation.
+- Resolved in source: [ComparisonViewer](frontend/src/components/ComparisonViewer.tsx)
+  deduplicates and aborts detached `Image` size probes on unmount and verifies
+  `isLoaded` on the source lane before projecting crosshairs;
+  [ImagePage](frontend/src/pages/ImagePage.tsx) scopes viewer and log component
+  keys by `suiteId` as well as `capture.id`;
+  [CaptureLog](frontend/src/components/CaptureLog.tsx),
+  [ReviewNavigation](frontend/src/components/ReviewNavigation.tsx), and
+  [OverviewPage](frontend/src/pages/OverviewPage.tsx) avoid redundant
+  `TextEncoder`, `TextDecoder`, `Date`, and string formatting/lowercasing work;
+  and [styles.css](frontend/src/styles.css) removes obsolete layout selectors
+  and updates `@media print` toolbar rules.
+
 ## Compare Module Alignment, Performance, and Approval Hardening (2026-10-15)
 
 - Resolved in source: [vertical gap alignment](src/compare/image_compare.rs)

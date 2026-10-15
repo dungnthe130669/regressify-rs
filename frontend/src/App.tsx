@@ -342,7 +342,7 @@ function Shell() {
                   <>
                     <ChevronRight size={14} />
                     <Link to={suitePath(match.params.suiteId || "")}>{suiteName}</Link>
-                    {location.pathname.includes("/images/") && (
+                    {imageMatch && (
                       <>
                         <ChevronRight size={14} />
                         <span>Comparison</span>

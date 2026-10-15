@@ -98,10 +98,11 @@ export function OverviewPage() {
   };
   const sort = columns.find((column) => column.key === params.get("sort"))?.key || "name";
   const descending = params.get("direction") === "desc";
+  const needle = query.trim().toLowerCase();
   const suites = manifest.suites
     .filter(
       (suite) =>
-        `${suite.id} ${suiteLabel(suite)}`.toLowerCase().includes(query.trim().toLowerCase()) &&
+        (!needle || `${suite.id} ${suiteLabel(suite)}`.toLowerCase().includes(needle)) &&
         (status === "all" ||
           (status === "error"
             ? suite.errors > 0

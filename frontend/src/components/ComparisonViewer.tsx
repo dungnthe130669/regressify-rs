@@ -80,26 +80,31 @@ export function imageFitScale(image: Size, viewport: Size, fit: Fit): number {
 function useImageSizes(capture: Capture) {
   const [sizes, setSizes] = useState<Record<string, Size>>({});
   useEffect(() => {
-    const images = [capture.reference, capture.test, capture.diff]
-      .filter((path): path is string => path !== null)
-      .map((path) => {
-        const image = new window.Image();
-        image.onload = () =>
-          setSizes((current) => {
-            const existing = current[path];
-            return existing?.width === image.naturalWidth &&
-              existing?.height === image.naturalHeight
-              ? current
-              : {
-                  ...current,
-                  [path]: { width: image.naturalWidth, height: image.naturalHeight },
-                };
-          });
-        image.src = `/${path}`;
-        return image;
-      });
+    const paths = new Set(
+      [capture.reference, capture.test, capture.diff].filter(
+        (path): path is string => path !== null,
+      ),
+    );
+    const images = Array.from(paths, (path) => {
+      const image = new window.Image();
+      image.onload = () =>
+        setSizes((current) => {
+          const existing = current[path];
+          return existing?.width === image.naturalWidth && existing?.height === image.naturalHeight
+            ? current
+            : {
+                ...current,
+                [path]: { width: image.naturalWidth, height: image.naturalHeight },
+              };
+        });
+      image.src = `/${path}`;
+      return image;
+    });
     return () => {
-      for (const image of images) image.onload = null;
+      for (const image of images) {
+        image.onload = null;
+        image.src = "";
+      }
     };
   }, [capture.reference, capture.test, capture.diff]);
   return {
@@ -284,11 +289,14 @@ export function ComparisonViewer({
   const updateCrosshair = (index: number, point: { x: number; y: number }) => {
     const elements = Array.from(canvas.current?.querySelectorAll<HTMLElement>(".image-pane") ?? []);
     const source = elements[index];
+    const sourceLane = lanes[index];
     const image = source?.querySelector("img");
     if (
       mode !== "side" ||
       capture.error !== null ||
       !source ||
+      !sourceLane ||
+      !isLoaded(sourceLane.path) ||
       !image?.naturalWidth ||
       !image.naturalHeight
     ) {

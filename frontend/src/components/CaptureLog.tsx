@@ -11,6 +11,7 @@ import {
 import type { ArchiveState, Capture } from "../data/report";
 import { IconButton } from "./ui";
 
+const textEncoder = new TextEncoder();
 const availability: Record<ArchiveState, string> = {
   complete: "Complete capture log",
   partial: "Partial or interrupted log; records may be missing",
@@ -91,7 +92,7 @@ export function CaptureLog({
           count += 1;
           if (matchesLog(record, level, stage, search)) {
             const text = `${formatLogRecord(record)}\n`;
-            bytes += new TextEncoder().encode(text).length;
+            bytes += textEncoder.encode(text).byteLength;
             if (bytes > 128 * 1024 * 1024)
               throw new Error(
                 "Filtered log exceeds the 128 MiB browser export limit. Narrow the filters.",
@@ -214,14 +215,15 @@ export function CaptureLog({
         <p role="status">Loading capture log...</p>
       ) : (
         <ol className="log-records" aria-label="Execution timeline">
-          {filtered.map((record) => (
-            <li key={`${record.operationId}-${record.sequence}`} data-severity={record.severity}>
-              <time dateTime={new Date(record.timestampUtcMs).toISOString()}>
-                {new Date(record.timestampUtcMs).toISOString().slice(11, 23)}
-              </time>
-              <pre>{formatLogRecord(record)}</pre>
-            </li>
-          ))}
+          {filtered.map((record) => {
+            const timestamp = new Date(record.timestampUtcMs).toISOString();
+            return (
+              <li key={`${record.operationId}-${record.sequence}`} data-severity={record.severity}>
+                <time dateTime={timestamp}>{timestamp.slice(11, 23)}</time>
+                <pre>{formatLogRecord(record)}</pre>
+              </li>
+            );
+          })}
         </ol>
       )}
       <div className="log-pagination">

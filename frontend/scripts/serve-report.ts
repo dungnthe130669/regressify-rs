@@ -20,6 +20,8 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   port: Number(arguments_[1] || 4174),
   async fetch(request) {
+    if (request.method !== "GET" && request.method !== "HEAD")
+      return new Response("Method not allowed", { status: 405 });
     const url = new URL(request.url);
     const pathname = url.pathname;
     const relative =
@@ -36,15 +38,16 @@ const server = Bun.serve({
               );
     if (!relative) return new Response("Not found", { status: 404 });
     let path = root;
+    let metadata = null;
     for (const part of relative.split("/")) {
       if (!part || part === "." || part === "..")
         return new Response("Invalid path", { status: 400 });
       path = join(path, part);
-      const metadata = await lstat(path).catch(() => null);
+      metadata = await lstat(path).catch(() => null);
       if (!metadata || metadata.isSymbolicLink()) return new Response("Not found", { status: 404 });
     }
+    if (!metadata?.isFile()) return new Response("Not found", { status: 404 });
     const file = Bun.file(path);
-    if (!(await lstat(path)).isFile()) return new Response("Not found", { status: 404 });
     const bytes = await readFile(path);
     const status = relative === "_snapshot/status.json";
     if (

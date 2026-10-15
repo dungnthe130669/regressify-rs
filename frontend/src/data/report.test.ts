@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { formatLogRecord, logRecordSchema, matchesLog } from "./logs";
+import { getAssetVersion } from "../../scripts/version-assets";
+import {
+  fetchLogChunk,
+  formatLogRecord,
+  logChunkSchema,
+  logRecordSchema,
+  matchesLog,
+} from "./logs";
 import {
   alignedRowToImageRow,
   artifactPath,
@@ -132,6 +139,13 @@ describe("snapshot contract", () => {
         errorCause: { category: "provider", causes: [], localDetail: "private" },
       }).success,
     ).toBe(false);
+    expect(
+      logChunkSchema.safeParse({
+        version: 1,
+        operationId: record.operationId,
+        records: [],
+      }).success,
+    ).toBe(false);
   });
   test("manifest_round_trips_optional_execution_log_fields", () => {
     expect(capture.logs).toBeUndefined();
@@ -152,18 +166,116 @@ describe("snapshot contract", () => {
       return value.logs?.test?.state;
     });
     expect(new Set(parsed).size).toBe(5);
+    const operationId = "11111111-1111-4111-8111-111111111111";
+    const validChunk = `_snapshot/data/logs/${operationId}/chunk-000000.json?v=${"a".repeat(20)}`;
+    for (const invalidLog of [
+      {
+        state: "complete",
+        operationId: null,
+        executionId: null,
+        chunks: ["https://remote.example.test/private.json"],
+        records: 0,
+        missingRecords: 0,
+        build: null,
+      },
+      {
+        state: "missing",
+        operationId,
+        executionId: null,
+        chunks: [validChunk],
+        records: 1,
+        missingRecords: null,
+        build: null,
+      },
+      {
+        state: "complete",
+        operationId,
+        executionId: null,
+        chunks: [validChunk, validChunk],
+        records: 2,
+        missingRecords: 0,
+        build: null,
+      },
+      {
+        state: "complete",
+        operationId,
+        executionId: null,
+        chunks: [
+          `_snapshot/data/logs/22222222-2222-4222-8222-222222222222/chunk-000000.json?v=${"a".repeat(20)}`,
+        ],
+        records: 1,
+        missingRecords: 0,
+        build: null,
+      },
+      {
+        state: "complete",
+        operationId,
+        executionId: null,
+        chunks: [validChunk],
+        records: 0,
+        missingRecords: 0,
+        build: null,
+      },
+    ]) {
+      expect(
+        captureSchema.safeParse({ ...capture, logs: { reference: null, test: invalidLog } })
+          .success,
+      ).toBe(false);
+    }
+  });
+  test("fetchLogChunk validates sequence boundaries and respects abort signals", async () => {
+    const operationId = "11111111-1111-4111-8111-111111111111";
+    const makeRecord = (sequence: number) => ({
+      schemaVersion: 1 as const,
+      operationId,
+      operationKind: "capture" as const,
+      captureRunId: null,
+      execution: null,
+      sequence,
+      timestampUtcMs: 0,
+      elapsedMs: 1,
+      severity: "info" as const,
+      stage: "navigation" as const,
+      eventName: "decision" as const,
+      message: "ok",
+      fields: {},
+      spanId: "22222222-2222-4222-8222-222222222222",
+      parentSpan: null,
+      durationMs: 1,
+      outcome: "success" as const,
+      errorCause: null,
+    });
+    const payload = JSON.stringify({
+      version: 1,
+      operationId,
+      records: [makeRecord(1)],
+    });
+    const chunkPath = `_snapshot/data/logs/${operationId}/chunk-000000.json?v=${getAssetVersion(payload)}`;
     const log = {
-      state: "complete",
-      operationId: null,
+      state: "complete" as const,
+      operationId,
       executionId: null,
-      chunks: ["https://remote.example.test/private.json"],
-      records: 0,
+      chunks: [chunkPath],
+      records: 2,
       missingRecords: 0,
       build: null,
     };
-    expect(
-      captureSchema.safeParse({ ...capture, logs: { reference: null, test: log } }).success,
-    ).toBe(false);
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(fetchLogChunk(log, 0, aborted.signal)).rejects.toThrow();
+    await expect(fetchLogChunk(log, -1)).rejects.toThrow("missing");
+    const originalFetch = globalThis.fetch;
+    const originalWindow = globalThis.window;
+    Object.assign(globalThis, {
+      window: { location: { origin: "http://127.0.0.1:4173" } },
+      fetch: async () => new Response(payload, { status: 200 }),
+    });
+    try {
+      await expect(fetchLogChunk(log, 0)).rejects.toThrow("sequence");
+    } finally {
+      globalThis.fetch = originalFetch;
+      Object.assign(globalThis, { window: originalWindow });
+    }
   });
   test("diff alignment is optional and accepts only one bounded source gap", () => {
     expect(capture.alignment).toBeUndefined();
@@ -324,6 +436,13 @@ describe("snapshot contract", () => {
   });
   test("rejects unknown statuses, invalid percentages, duplicate image IDs", () => {
     expect(captureSchema.safeParse({ ...capture, status: "unknown" }).success).toBe(false);
+    expect(
+      captureSchema.safeParse({ ...capture, status: "pass", mismatch: null, error: "Timeout" })
+        .success,
+    ).toBe(false);
+    for (const invalidId of ["CON", "NUL.png", "bad:name.png", "bad*name.png", "trailing."]) {
+      expect(captureSchema.safeParse({ ...capture, id: invalidId }).success).toBe(false);
+    }
     expect(captureSchema.safeParse({ ...capture, threshold: 101 }).success).toBe(false);
     expect(captureSchema.safeParse({ ...capture, mismatch: Number.NaN }).success).toBe(false);
     expect(

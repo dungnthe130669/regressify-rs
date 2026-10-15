@@ -30,10 +30,13 @@ function ScenarioNavigation({ suiteId, close }: { suiteId: string; close: () => 
     group.push(capture);
     groups.set(name, group);
   }
-  const visible = [...groups].filter(([name, captures]) =>
-    `${name} ${captures.map((capture) => capture.label).join(" ")}`
-      .toLowerCase()
-      .includes(query.trim().toLowerCase()),
+  const needle = query.trim().toLowerCase();
+  const visible = [...groups].filter(
+    ([name, captures]) =>
+      !needle ||
+      `${name} ${captures.map((capture) => capture.label).join(" ")}`
+        .toLowerCase()
+        .includes(needle),
   );
   const captureLink = (capture: Capture, label: string) => (
     <Link
@@ -114,8 +117,9 @@ export function ReviewNavigation({ close }: { close: () => void }) {
   const currentLabel = currentSuite
     ? suiteLabel(currentSuite)
     : match?.params.suiteId || "Select a suite";
-  const suites = manifest.suites.filter((suite) =>
-    `${suite.id} ${suiteLabel(suite)}`.toLowerCase().includes(query.trim().toLowerCase()),
+  const needle = query.trim().toLowerCase();
+  const suites = manifest.suites.filter(
+    (suite) => !needle || `${suite.id} ${suiteLabel(suite)}`.toLowerCase().includes(needle),
   );
   const changeOpen = (next: boolean) => {
     setOpen(next);

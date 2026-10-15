@@ -108,14 +108,14 @@ export default function ImagePage() {
       </fieldset>
       {showingLog ? (
         <CaptureLog
-          key={`${capture.id}-${params.get("logRole")}`}
+          key={`${summary.id}/${capture.id}/${params.get("logRole")}`}
           capture={capture}
           params={params}
           set={set}
         />
       ) : (
         <ComparisonViewer
-          key={capture.id}
+          key={`${summary.id}/${capture.id}`}
           capture={capture}
           suiteId={summary.id}
           suiteName={suiteLabel(summary)}

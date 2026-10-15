@@ -17,6 +17,7 @@ export const logStages = [
   "retryPolling",
   "completionCleanup",
 ] as const;
+const textEncoder = new TextEncoder();
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const identity = z
   .string()
@@ -24,7 +25,7 @@ const identity = z
   .refine(
     (value) =>
       value === value.trim() &&
-      new TextEncoder().encode(value).length <= 2048 &&
+      textEncoder.encode(value).byteLength <= 2048 &&
       !/[\p{Cc}\u202a-\u202e\u2066-\u2069]/u.test(value),
     "Invalid diagnostic source metadata",
   );
@@ -225,7 +226,7 @@ export const logRecordSchema = z.object({
 export const logChunkSchema = z.object({
   version: z.literal(1),
   operationId: z.uuid(),
-  records: z.array(logRecordSchema).max(250),
+  records: z.array(logRecordSchema).min(1).max(250),
 });
 export type LogRecord = z.infer<typeof logRecordSchema>;
 const chunkCache = new Map<string, Promise<z.infer<typeof logChunkSchema>>>();
@@ -249,7 +250,8 @@ export async function fetchLogChunk(
   signal?: AbortSignal,
   revision = 0,
 ) {
-  const path = log.chunks[index];
+  signal?.throwIfAborted();
+  const path = index >= 0 ? log.chunks[index] : undefined;
   if (!path || !log.operationId) throw new Error("Log chunk is missing.");
   const cacheKey = `${path}#${revision}`;
   let request = chunkCache.get(cacheKey);
@@ -271,10 +273,32 @@ export async function fetchLogChunk(
       if (chunkCache.get(cacheKey) === request) chunkCache.delete(cacheKey);
     });
   }
-  const chunk = await request;
+  const chunk = await (signal
+    ? new Promise<z.infer<typeof logChunkSchema>>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        request.then(
+          (value) => {
+            signal.removeEventListener("abort", abort);
+            resolve(value);
+          },
+          (error: unknown) => {
+            signal.removeEventListener("abort", abort);
+            reject(error);
+          },
+        );
+      })
+    : request);
   signal?.throwIfAborted();
+  const firstSequence = chunk.records[0]?.sequence ?? -1;
+  const lastSequence = chunk.records.at(-1)?.sequence ?? -1;
   if (
     chunk.operationId !== log.operationId ||
+    (index === 0 ? firstSequence !== 0 : firstSequence < index) ||
+    lastSequence >= log.records ||
+    (log.state === "complete" &&
+      index === log.chunks.length - 1 &&
+      lastSequence !== log.records - 1) ||
     chunk.records.some(
       (record, position) =>
         record.operationId !== log.operationId ||
@@ -293,9 +317,11 @@ export function matchesLog(
   search: string,
 ): boolean {
   const minimum = logLevels.indexOf(level as (typeof logLevels)[number]);
-  return (
-    logLevels.indexOf(record.severity) >= minimum &&
-    (!stage || stage === "all" || record.stage === stage) &&
-    formatLogRecord(record).toLowerCase().includes(search.toLowerCase())
-  );
+  if (
+    logLevels.indexOf(record.severity) < minimum ||
+    (stage && stage !== "all" && record.stage !== stage)
+  )
+    return false;
+  const needle = search.toLowerCase();
+  return !needle || formatLogRecord(record).toLowerCase().includes(needle);
 }

@@ -6,6 +6,7 @@ import {
   type Manifest,
   manifestSchema,
   type SuiteReport,
+  type SuiteSummary,
   suiteReportSchema,
 } from "./report";
 
@@ -31,18 +32,26 @@ function notifySuiteListeners(state: SuiteState) {
   for (const listener of state.listeners) listener();
 }
 
-function loadSuiteReport(key: string, id: string, total: number, reload: boolean) {
-  const state = getSuiteState(key);
+function loadSuiteReport(summary: SuiteSummary, reload: boolean) {
+  const state = getSuiteState(summary.report);
   if (state.data || (state.controller && !reload)) return;
   state.controller?.abort();
   const controller = new AbortController();
   state.controller = controller;
   state.error = undefined;
   notifySuiteListeners(state);
-  fetchReport(`/${key}`, suiteReportSchema, controller.signal, reload)
+  fetchReport(`/${summary.report}`, suiteReportSchema, controller.signal, reload)
     .then((data) => {
       if (controller.signal.aborted || state.controller !== controller) return;
-      if (data.id !== id || data.tests.length !== total)
+      const passed = data.tests.filter((test) => test.status === "pass").length;
+      const errors = data.tests.filter((test) => test.error !== null).length;
+      if (
+        data.id !== summary.id ||
+        data.tests.length !== summary.total ||
+        passed !== summary.passed ||
+        data.tests.length - passed !== summary.failed ||
+        errors > summary.errors
+      )
         throw new Error("Suite data does not match this snapshot.");
       state.data = data;
       state.error = undefined;
@@ -63,12 +72,11 @@ export function ReportProvider({ children }: { children: ReactNode }) {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    const configured = document.querySelector<HTMLMetaElement>(
+    const path = document.querySelector<HTMLMetaElement>(
       'meta[name="regressify-manifest"]',
     )?.content;
-    const path = configured;
     setError(undefined);
-    if (!path || !artifactPath(path, "data")) {
+    if (!path || artifactPath(path, "data") !== "_snapshot/data/manifest.json") {
       setError("The snapshot entry page is missing its report manifest.");
       return;
     }
@@ -104,26 +112,25 @@ export function useSuite(id: string | undefined) {
   const summary = useManifest().suites.find((suite) => suite.id === id);
   const [, setRevision] = useState(0);
   const key = summary?.report;
-  const total = summary?.total ?? 0;
   useEffect(() => {
-    if (!key || !id) return;
+    if (!summary || !key) return;
     const state = getSuiteState(key);
     const update = () => setRevision((value) => value + 1);
     state.listeners.add(update);
     if (!state.data && !state.error && !state.controller) {
-      loadSuiteReport(key, id, total, false);
+      loadSuiteReport(summary, false);
     }
     return () => {
       state.listeners.delete(update);
     };
-  }, [key, id, total]);
+  }, [summary, key]);
   const state = key ? reportCache.get(key) : undefined;
   return {
     summary,
     data: state?.data,
     error: state?.error,
     retry: () => {
-      if (key && id) loadSuiteReport(key, id, total, true);
+      if (summary) loadSuiteReport(summary, true);
     },
   };
 }
