@@ -176,25 +176,22 @@ fn has_many_siblings(img: &[RGBA8], x1: usize, y1: usize, w: usize, h: usize) ->
     false
 }
 
-/// Determine whether the pixel at `(x1, y1)` in `img` (aligned against
+/// Determine whether the pixel at `(x1, y1)` in `image` (aligned against
 /// `(x1, other_y1)` in `other`) is likely anti-aliasing rather than a real
 /// difference (pixelmatch algorithm).
 fn is_antialiased(
-    img: &[RGBA8],
+    image: ImageView<'_>,
     x1: usize,
     y1: usize,
-    w: usize,
-    h: usize,
-    other: &[RGBA8],
+    other: ImageView<'_>,
     other_y1: usize,
-    other_h: usize,
 ) -> bool {
     let x0 = x1.saturating_sub(1);
     let y0 = y1.saturating_sub(1);
-    let x2 = (x1 + 1).min(w - 1);
-    let y2 = (y1 + 1).min(h - 1);
-    let pos = y1 * w + x1;
-    let mut zeroes = if x1 == 0 || y1 == 0 || x1 == w - 1 || y1 == h - 1 {
+    let x2 = (x1 + 1).min(image.width - 1);
+    let y2 = (y1 + 1).min(image.height - 1);
+    let pos = y1 * image.width + x1;
+    let mut zeroes = if x1 == 0 || y1 == 0 || x1 == image.width - 1 || y1 == image.height - 1 {
         1
     } else {
         0
@@ -209,7 +206,7 @@ fn is_antialiased(
             if x == x1 && y == y1 {
                 continue;
             }
-            let delta = color_delta(img, img, pos, y * w + x, true);
+            let delta = color_delta(image.pixels, image.pixels, pos, y * image.width + x, true);
             if delta == 0.0 {
                 zeroes += 1;
                 if zeroes > 2 {
@@ -234,15 +231,16 @@ fn is_antialiased(
     let map_other_y = |y: usize| -> Option<usize> {
         let offset = y as isize - y1 as isize;
         let mapped = other_y1 as isize + offset;
-        (0 <= mapped && (mapped as usize) < other_h).then_some(mapped as usize)
+        (0 <= mapped && (mapped as usize) < other.height).then_some(mapped as usize)
     };
 
-    (has_many_siblings(img, min_x, min_y, w, h)
-        && map_other_y(min_y)
-            .is_some_and(|other_min_y| has_many_siblings(other, min_x, other_min_y, w, other_h)))
-        || (has_many_siblings(img, max_x, max_y, w, h)
+    (has_many_siblings(image.pixels, min_x, min_y, image.width, image.height)
+        && map_other_y(min_y).is_some_and(|other_min_y| {
+            has_many_siblings(other.pixels, min_x, other_min_y, other.width, other.height)
+        }))
+        || (has_many_siblings(image.pixels, max_x, max_y, image.width, image.height)
             && map_other_y(max_y).is_some_and(|other_max_y| {
-                has_many_siblings(other, max_x, other_max_y, w, other_h)
+                has_many_siblings(other.pixels, max_x, other_max_y, other.width, other.height)
             }))
 }
 
@@ -644,7 +642,7 @@ impl AlignedAnchor {
 }
 
 fn compute_row_signatures(image: ImageView<'_>) -> Vec<RowSignature> {
-    let samples = image.width.min(MAX_SIGNATURE_SAMPLES).max(1);
+    let samples = image.width.clamp(1, MAX_SIGNATURE_SAMPLES);
     let half = (samples / 2).max(1);
     let mut signatures = Vec::with_capacity(image.height);
     let mut prev_full = None;
@@ -893,13 +891,15 @@ fn find_best_shifted_anchor(
             }
         };
 
-        for r in r_start..r_end {
-            let t = (r as isize + shift) as usize;
-            let shifted = row_difference(reference, test, r, t, max_delta);
+        for (reference_row, reference_signature) in
+            ref_sigs.iter().enumerate().take(r_end).skip(r_start)
+        {
+            let test_row = (reference_row as isize + shift) as usize;
+            let shifted = row_difference(reference, test, reference_row, test_row, max_delta);
             let unshifted = if shift == 0 {
                 reference.width
-            } else if r < test.height {
-                row_difference(reference, test, r, r, max_delta)
+            } else if reference_row < test.height {
+                row_difference(reference, test, reference_row, reference_row, max_delta)
             } else {
                 reference.width
             };
@@ -919,7 +919,7 @@ fn find_best_shifted_anchor(
 
             if is_good {
                 if run_start.is_none() {
-                    run_start = Some(r);
+                    run_start = Some(reference_row);
                     run_aligned = 0;
                     run_closely_aligned = 0;
                     run_supported = 0;
@@ -932,13 +932,14 @@ fn find_best_shifted_anchor(
                 // Partial matches need local signature evidence, not just votes
                 // elsewhere on this diagonal or a shared flat background.
                 if (shifted <= max_aligned_diff
-                    && (ref_sigs[r].full_informative || test_sigs[t].full_informative))
-                    || ref_sigs[r].has_informative_match(test_sigs[t])
+                    && (reference_signature.full_informative
+                        || test_sigs[test_row].full_informative))
+                    || reference_signature.has_informative_match(test_sigs[test_row])
                 {
                     run_supported += 1;
                 }
                 run_gain += row_gain;
-                last_good_r = r + 1;
+                last_good_r = reference_row + 1;
                 bad_streak = 0;
             } else if let Some(start) = run_start {
                 bad_streak += 1;
@@ -972,16 +973,16 @@ fn find_best_shifted_anchor(
 }
 
 fn collect_interior_anchors(
-    reference: ImageView<'_>,
-    test: ImageView<'_>,
-    ref_sigs: &[RowSignature],
-    test_sigs: &[RowSignature],
+    reference: (ImageView<'_>, &[RowSignature]),
+    test: (ImageView<'_>, &[RowSignature]),
     mut r_range: std::ops::Range<usize>,
     mut t_range: std::ops::Range<usize>,
     max_delta: f64,
     depth: usize,
     out: &mut Vec<AlignedAnchor>,
 ) {
+    let (reference, ref_sigs) = reference;
+    let (test, test_sigs) = test;
     let max_aligned_diff = reference.width / 100;
     let prefix_r_start = r_range.start;
     let prefix_t_start = t_range.start;
@@ -1041,10 +1042,8 @@ fn collect_interior_anchors(
     {
         if anchor.ref_start > r_range.start && anchor.test_start > t_range.start {
             collect_interior_anchors(
-                reference,
-                test,
-                ref_sigs,
-                test_sigs,
+                (reference, ref_sigs),
+                (test, test_sigs),
                 r_range.start..anchor.ref_start,
                 t_range.start..anchor.test_start,
                 max_delta,
@@ -1057,10 +1056,8 @@ fn collect_interior_anchors(
         let next_t = anchor.test_start + anchor.len;
         if next_r < r_range.end && next_t < t_range.end {
             collect_interior_anchors(
-                reference,
-                test,
-                ref_sigs,
-                test_sigs,
+                (reference, ref_sigs),
+                (test, test_sigs),
                 next_r..r_range.end,
                 next_t..t_range.end,
                 max_delta,
@@ -1179,10 +1176,8 @@ fn find_multi_band_alignment(
     let t_win_end = test.height - bottom_equal;
     if top_equal < r_win_end && top_equal < t_win_end {
         collect_interior_anchors(
-            reference,
-            test,
-            &ref_sigs,
-            &test_sigs,
+            (reference, &ref_sigs),
+            (test, &test_sigs),
             top_equal..r_win_end,
             top_equal..t_win_end,
             max_delta,
@@ -1397,25 +1392,8 @@ fn matching_reference_pixel(
 
     let same_width = reference.width == test.width;
     (same_width
-        && (is_antialiased(
-            reference.pixels,
-            x,
-            ref_row,
-            reference.width,
-            reference.height,
-            test.pixels,
-            test_row,
-            test.height,
-        ) || is_antialiased(
-            test.pixels,
-            x,
-            test_row,
-            test.width,
-            test.height,
-            reference.pixels,
-            ref_row,
-            reference.height,
-        )))
+        && (is_antialiased(reference, x, ref_row, test, test_row)
+            || is_antialiased(test, x, test_row, reference, ref_row)))
     .then_some(reference_index)
 }
 
