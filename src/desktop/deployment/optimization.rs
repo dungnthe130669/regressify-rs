@@ -476,8 +476,12 @@ fn prepare_report_inner(
     phase("Classifying report images by comparison role for optimization");
     classify_images(&source_root, &mut files, deadline)?;
     let temporary = tempfile::Builder::new()
-        .prefix("regressify-deploy-")
-        .tempdir()
+        .prefix(".optimization-")
+        .tempdir_in(
+            source_root
+                .parent()
+                .context("Deployment staging directory has no parent")?,
+        )
         .context(
             "Cannot create temporary report optimization directory; check available disk space",
         )?;

@@ -44,6 +44,13 @@ pub struct TestSuite {
     #[schemars(range(min = 1), example = 2)]
     pub async_compare_limit: Option<usize>,
 
+    /// Automatically clean old test runs after this complete suite finishes. Inherits the workspace setting (default: false); false disables an enabled workspace policy.
+    pub auto_clean_runs: Option<bool>,
+
+    /// Maximum completed test runs to retain. Minimum: 1; inherits the workspace value (default: 1). Always preserves the latest completed full-suite run.
+    #[schemars(range(min = 1), example = 1)]
+    pub keep_test_runs: Option<usize>,
+
     /// Browser engine. Only "chromium" is supported; normally leave unset to inherit it.
     pub browser: Option<Browser>,
 

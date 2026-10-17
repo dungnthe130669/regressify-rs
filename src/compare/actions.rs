@@ -140,6 +140,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
         [(Field::SelectedSuites, FieldValue::Number(runs.len() as u64))],
     );
     for run in &runs {
+        let lease = crate::run_history::SuiteLease::acquire(&run.path)?;
         runtime::stage_sync(
             Stage::CaptureArtifacts,
             [
@@ -164,6 +165,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
                 )
             },
         )?;
+        lease.mark_compared(&run.run_id)?;
     }
 
     Ok(())
@@ -187,6 +189,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
     if let Some(capture) = &args.report_capture {
         anyhow::ensure!(runs.len() == 1, "The reviewed capture run is unavailable");
         let run = &runs[0];
+        let _lease = crate::run_history::SuiteLease::acquire(&run.path)?;
         return approve_scenario_viewport(&run.path, &run.run_id, &run.scenario_ids[0], capture);
     }
     runtime::event(
@@ -196,6 +199,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         [(Field::SelectedSuites, FieldValue::Number(runs.len() as u64))],
     );
     for run in &runs {
+        let _lease = crate::run_history::SuiteLease::acquire(&run.path)?;
         runtime::stage_sync(
             Stage::CaptureArtifacts,
             [

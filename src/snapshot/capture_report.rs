@@ -306,18 +306,55 @@ pub(super) fn load_suite(
     logs: &mut super::logs::LogCache,
 ) -> Result<Option<SuiteReport>> {
     ensure!(valid_suite_id(id), "Invalid snapshot suite ID");
-    let Some(config) = checked_file(root, &Path::new(id).join("html_report/config.js"), true)?
-    else {
+    let suite_dir = root.join(id);
+    if !suite_dir.try_exists()? {
         return Ok(None);
+    }
+    let _artifacts = crate::run_history::ArtifactLease::read(&suite_dir)?;
+    let tracked = crate::run_history::is_tracked(&suite_dir)?;
+    let selected_run = if tracked {
+        let Some(run) =
+            crate::run_history::latest_completed_capture_run(&suite_dir.join("bitmaps_test"))?
+        else {
+            return Ok(None);
+        };
+        crate::compare::report_gen::ensure_capture_report(&suite_dir, id, &run)?;
+        Some(run)
+    } else {
+        if !suite_dir.join("html_report/config.js").try_exists()?
+            && suite_dir.join("bitmaps_test").try_exists()?
+            && let Some(run) =
+                crate::run_history::latest_completed_capture_run(&suite_dir.join("bitmaps_test"))?
+        {
+            crate::compare::report_gen::ensure_capture_report(&suite_dir, id, &run)?;
+        }
+        None
     };
-    let config_text = String::from_utf8(read_bounded(&config, MAX_REPORT_BYTES)?)?;
-    let json = config_text
-        .trim()
-        .strip_prefix("report(")
-        .and_then(|value| value.strip_suffix(");"))
-        .context("Invalid snapshot config.js wrapper; expected report(<JSON>);")?;
-    let config_report: RawReport =
-        serde_json::from_str(json).context("Invalid snapshot config.js report data")?;
+    let config_report: RawReport = if let Some(run) = &selected_run {
+        let path = checked_file(
+            root,
+            &Path::new(id)
+                .join("bitmaps_test")
+                .join(run)
+                .join("report.json"),
+            false,
+        )?
+        .context("Capture run report is missing")?;
+        serde_json::from_slice(&read_bounded(&path, MAX_REPORT_BYTES)?)
+            .context("Snapshot capture run has invalid report.json")?
+    } else {
+        let Some(config) = checked_file(root, &Path::new(id).join("html_report/config.js"), true)?
+        else {
+            return Ok(None);
+        };
+        let config_text = String::from_utf8(read_bounded(&config, MAX_REPORT_BYTES)?)?;
+        let json = config_text
+            .trim()
+            .strip_prefix("report(")
+            .and_then(|value| value.strip_suffix(");"))
+            .context("Invalid snapshot config.js wrapper; expected report(<JSON>);")?;
+        serde_json::from_str(json).context("Invalid snapshot config.js report data")?
+    };
     ensure!(
         config_report.id == id,
         "Snapshot config suite ID does not match its output directory"
@@ -334,8 +371,15 @@ pub(super) fn load_suite(
         runs.len() <= 1,
         "Snapshot config references multiple capture runs"
     );
-    let run_id = runs.first().copied().unwrap_or_default().to_owned();
-    let report = if run_id.is_empty() {
+    ensure!(
+        selected_run
+            .as_ref()
+            .is_none_or(|selected| runs.iter().all(|run| *run == selected)),
+        "Snapshot report references a different capture run"
+    );
+    let run_id =
+        selected_run.unwrap_or_else(|| runs.first().copied().unwrap_or_default().to_owned());
+    let report = if run_id.is_empty() || tracked {
         config_report
     } else {
         let path = checked_file(
@@ -682,6 +726,31 @@ mod tests {
             &mut BTreeMap::new(),
             &mut super::super::logs::LogCache::new(),
         )
+    }
+
+    #[test]
+    fn completed_run_snapshot_compares_on_demand_and_ignores_partial_or_active_runs() {
+        use crate::run_history::{RunLease, RunState};
+        let temp = tempfile::tempdir().unwrap();
+        let suite = temp.path().join("suite");
+        let mut completed = RunLease::begin(&suite, "completed", true).unwrap();
+        fs::write(suite.join("bitmaps_test/completed/home.png"), png(80)).unwrap();
+        completed.finish(RunState::Completed, false).unwrap();
+        drop(completed);
+        assert!(!suite.join("bitmaps_test/completed/report.json").exists());
+        assert_eq!(load(temp.path()).unwrap().unwrap().run_id, "completed");
+        assert!(suite.join("bitmaps_test/completed/report.json").is_file());
+
+        let mut partial = RunLease::begin(&suite, "partial", false).unwrap();
+        fs::write(suite.join("bitmaps_test/partial/home.png"), png(100)).unwrap();
+        crate::compare::report_gen::generate_comparison_report(&suite, "suite", "partial", 0.1, 1)
+            .unwrap();
+        partial.finish(RunState::Completed, true).unwrap();
+        drop(partial);
+        let active = RunLease::begin(&suite, "active", true).unwrap();
+        assert_eq!(load(temp.path()).unwrap().unwrap().run_id, "completed");
+        drop(active);
+        assert_eq!(load(temp.path()).unwrap().unwrap().run_id, "completed");
     }
 
     #[test]

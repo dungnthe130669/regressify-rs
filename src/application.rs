@@ -36,6 +36,7 @@ pub async fn execute_identified(cli: Cli, operation_id: Option<OperationId>) -> 
         Command::Approve(_) => (SafeValue::Approve, "Approving baselines"),
         Command::Snapshot(_) => (SafeValue::Snapshot, "Generating report"),
         Command::Optimize(_) => (SafeValue::Optimize, "Optimizing images"),
+        Command::Clean(_) => (SafeValue::Clean, "Cleaning old test runs"),
         Command::Install => (SafeValue::Install, "Installing Chromium"),
         Command::Init => (SafeValue::Init, "Initializing workspace"),
         Command::Mcp(_) => (SafeValue::Mcp, "Generating MCP Worker"),
@@ -109,6 +110,10 @@ pub async fn execute_identified(cli: Cli, operation_id: Option<OperationId>) -> 
                         .map_err(|error| anyhow!("Snapshot generation task failed: {error}"))?
                     }
                     Command::Optimize(args) => optimizer::optimize(args),
+                    Command::Clean(args) => crate::run_history::cleanup::command(
+                        common::REGRESSIFY_DIR.get_required()?,
+                        args,
+                    ),
                     Command::Compare(args) => compare::compare(args),
                     Command::Approve(args) => compare::approve(args),
                     Command::Test(args) => test::exec_test_suites(args).await,

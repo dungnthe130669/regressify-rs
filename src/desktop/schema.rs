@@ -94,7 +94,7 @@ impl Field {
         let (step, minimum, maximum) = match self.key.as_str() {
             "misMatchThreshold" => (0.1, 0.0, 100.0),
             "pixelMatchThreshold" => (0.1, 0.0, 100.0),
-            "asyncCaptureLimit" | "asyncCompareLimit" | "width" | "height" => {
+            "asyncCaptureLimit" | "asyncCompareLimit" | "keepTestRuns" | "width" | "height" => {
                 (1.0, 1.0, u32::MAX as f64)
             }
             "lazyLoadTimeout" => (100.0, 1.0, u32::MAX as f64),
@@ -480,6 +480,8 @@ pub(crate) fn label(key: &str) -> String {
         "url" => return "URL".into(),
         "jsOnReadyPath" => return "Ready script".into(),
         "cssOverridePath" => return "CSS override file".into(),
+        "autoCleanRuns" => return "Automatic run cleanup".into(),
+        "keepTestRuns" => return "Test runs to keep".into(),
         _ => {}
     }
     let mut label = String::new();
@@ -515,9 +517,20 @@ pub fn effective(
     let scenario = scenario
         .and_then(|index| suite.scenarios.get(index))
         .unwrap_or(&empty);
-    Ok(serde_json::to_value(resolve_config(
-        &workspace, &suite, scenario,
-    ))?)
+    let mut effective = serde_json::to_value(resolve_config(&workspace, &suite, scenario))?;
+    effective["autoCleanRuns"] = json!(
+        suite
+            .auto_clean_runs
+            .or(workspace.auto_clean_runs)
+            .unwrap_or(false)
+    );
+    effective["keepTestRuns"] = json!(
+        suite
+            .keep_test_runs
+            .or(workspace.keep_test_runs)
+            .unwrap_or(1)
+    );
+    Ok(effective)
 }
 
 pub(crate) fn action_viewport_choices(
@@ -959,6 +972,36 @@ mod tests {
                 Some(&suite["scenarios"][0])
             ),
             "State + restore"
+        );
+    }
+
+    #[test]
+    fn run_retention_fields_show_inherited_defaults_and_positive_steps() {
+        let workspace = json!({"autoCleanRuns": true, "keepTestRuns": 3});
+        let suite = json!({"autoCleanRuns": false, "scenarios": []});
+        let resolved = effective(Some(&workspace), Some(&suite), None).unwrap();
+        assert_eq!(resolved["autoCleanRuns"], false);
+        assert_eq!(resolved["keepTestRuns"], 3);
+        assert_eq!(effective(None, None, None).unwrap()["keepTestRuns"], 1);
+        for scope in [Scope::Workspace, Scope::Suite] {
+            let fields = fields(&scope).unwrap();
+            assert!(
+                fields
+                    .iter()
+                    .any(|field| field.key == "autoCleanRuns" && field.kind == FieldKind::Boolean)
+            );
+            let count = fields
+                .iter()
+                .find(|field| field.key == "keepTestRuns")
+                .unwrap();
+            assert_eq!(count.stepped_value(&json!(1), false).unwrap(), 1);
+            assert_eq!(count.stepped_value(&json!(1), true).unwrap(), 2);
+        }
+        assert!(
+            !fields(&Scope::Scenario)
+                .unwrap()
+                .iter()
+                .any(|field| field.key == "autoCleanRuns")
         );
     }
 }

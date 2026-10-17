@@ -25,7 +25,6 @@ pub use test_suites::exec_test_suites;
 pub(crate) use test_suites::discover_test_suites;
 
 pub(crate) use test_suites::is_reserved_suite_identifier;
-#[cfg(feature = "desktop")]
 pub(crate) use test_suites::validate_suite_identifier;
 
 #[cfg(feature = "desktop")]

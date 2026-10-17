@@ -28,7 +28,7 @@ Do not assume every field exists at every scope:
   The global `--required-login` flag can force the login flag.
 - Workspace and suite only: `asyncCaptureLimit`, `asyncCompareLimit`,
   `browser`, `debug`, `ignoreSslErrors`, `viewportsPath`, `state`, and
-  `urlReplacements`.
+  `urlReplacements`, plus `autoCleanRuns` and `keepTestRuns`.
 - Workspace only: `freezeAnimations`, `elementTimeout`, `actionabilityTimeout`,
   `settleTimeout`, `scenarioTimeout`, `snapshotTitle`, `snapshotHeading`, and
   `snapshotSubheading`.
@@ -62,6 +62,8 @@ Inheritance exceptions:
 - `asyncCaptureLimit`: 5; positive whole number, also bounded by the global
   `--async-capture-limit` (default 5), which ramps up one slot per second.
 - `asyncCompareLimit`: 2; positive whole number.
+- `autoCleanRuns`: false; opt-in cleanup after completed full-suite tests.
+- `keepTestRuns`: 1; positive whole number, with a strict minimum of 1.
 - `misMatchThreshold`: 0.1; allowed percentage of differing pixels, from 0 to
   100. A capture passes only when its mismatch is at most this value and its
   dimensions equal the reference.
@@ -99,6 +101,29 @@ and may never arrive on continuously polling pages. The overall scenario
 timeout still applies. Omitted/zero scenario `readyTimeout` inherits
 `elementTimeout`. Use the hooks topic for script timing and troubleshooting for
 interpreting timeout failures.
+
+## Run History and Cleanup
+
+Each output suite records runs in a private `runs.json`. Default Results,
+Compare, Snapshot, and Deploy use its latest completed full-suite run. Website
+errors and visual mismatches qualify as completed; cancelled runs and
+infrastructure failures do not. Completed scenario-only runs remain explicitly
+selectable without replacing the full-suite default. Suites complete independently.
+Skipped comparisons are generated on demand when results or reports are requested.
+
+`autoCleanRuns` and `keepTestRuns` resolve independently from suite to workspace.
+A suite can set `autoCleanRuns: false` to override an enabled workspace policy.
+Cleanup keeps the latest full-suite result first, then fills any remaining slots
+with newer completed runs. Keeping only 1 may discard newer scenario-only runs;
+automatic cleanup does not run after those partial selections. Reference baselines,
+browser state, retained capture logs, and unselected suites remain protected.
+
+`regressify clean --test-suite home --keep-runs 1` only previews removals. Add
+`--yes` only with authorization to delete the displayed run artifacts. Repeated
+suite filters and `--test-suite all` are supported, but an explicit filter is
+required. Cleanup is limited to the selected output folder and refuses active
+artifact owners. Registries and managed deployment staging are local-only and
+must not be uploaded as report content.
 
 ## Slow Lazy-Loaded Content
 

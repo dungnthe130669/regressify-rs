@@ -520,6 +520,7 @@ pub struct SavedRun {
     pub run_id: String,
     pub modified: SystemTime,
     pub has_report: bool,
+    pub default_candidate: bool,
     pub counts: Option<crate::progress::Counts>,
 }
 
@@ -530,6 +531,10 @@ pub struct SuiteArtifacts {
 }
 
 impl SuiteArtifacts {
+    pub fn latest(&self) -> Option<&SavedRun> {
+        self.runs.iter().find(|run| run.default_candidate)
+    }
+
     pub fn load(output_root: &Path, suite_id: &str) -> Result<Self> {
         let mut components = Path::new(suite_id).components();
         ensure!(
@@ -554,6 +559,10 @@ impl SuiteArtifacts {
         if !artifact_directory(&tests, &root)? {
             return Ok(artifacts);
         }
+        let _lease = crate::run_history::ArtifactLease::read(&suite)?;
+        let tracked = crate::run_history::is_tracked(&suite)?
+            .then(|| crate::run_history::capture_runs(&tests))
+            .transpose()?;
         for entry in fs::read_dir(&tests)? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() || !artifact_directory(&entry.path(), &root)? {
@@ -563,6 +572,14 @@ impl SuiteArtifacts {
                 .file_name()
                 .into_string()
                 .map_err(|_| anyhow!("Capture run name must be UTF-8"))?;
+            let record = tracked
+                .as_ref()
+                .and_then(|runs| runs.iter().find(|run| run.id == run_id));
+            if tracked.is_some()
+                && !record.is_some_and(|run| run.state == crate::run_history::RunState::Completed)
+            {
+                continue;
+            }
             let (captures, mut modified) = capture_inventory(&entry.path(), false)?;
             let report_path = entry.path().join("report.json");
             let counts = read_report(&root, &report_path, modified)
@@ -573,11 +590,19 @@ impl SuiteArtifacts {
             if captures == 0 && has_report {
                 modified = fs::metadata(&report_path)?.modified()?;
             }
+            if let Some(record) = record {
+                modified = SystemTime::UNIX_EPOCH
+                    .checked_add(std::time::Duration::from_millis(
+                        record.completed_at.unwrap_or(record.started_at),
+                    ))
+                    .context("Invalid run completion timestamp")?;
+            }
             if captures > 0 || has_report {
                 artifacts.runs.push(SavedRun {
                     run_id,
                     modified,
                     has_report,
+                    default_candidate: record.is_none_or(|run| run.is_default_candidate()),
                     counts,
                 });
             }
@@ -711,12 +736,76 @@ impl Catalog {
     }
 
     pub fn load_selected(output_root: &Path, selection: ReportSelection<'_>) -> Result<Self> {
+        Self::load_selected_inner(output_root, selection, true)
+    }
+
+    pub(crate) fn load_existing_selected(
+        output_root: &Path,
+        selection: ReportSelection<'_>,
+    ) -> Result<Self> {
+        Self::load_selected_inner(output_root, selection, false)
+    }
+
+    fn load_selected_inner(
+        output_root: &Path,
+        selection: ReportSelection<'_>,
+        compare_missing: bool,
+    ) -> Result<Self> {
         if !output_root.try_exists()? {
             return Ok(Self::default());
         }
         let root = output_root.canonicalize()?;
         ensure!(root.is_dir(), "Output path is not a directory");
         let mut catalog = Self::default();
+        let mut latest_tracked = std::collections::HashMap::new();
+        let mut artifact_leases = Vec::new();
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            let suite = entry.path();
+            if !entry.file_type()?.is_dir() || !suite.join("bitmaps_test").is_dir() {
+                continue;
+            }
+            let prepared = (|| -> Result<()> {
+                artifact_leases.push(crate::run_history::ArtifactLease::read(&suite)?);
+                if !crate::run_history::is_tracked(&suite)? {
+                    return Ok(());
+                }
+                let records = crate::run_history::capture_runs(&suite.join("bitmaps_test"))?;
+                let selected = match selection {
+                    ReportSelection::Latest => {
+                        records.iter().find(|run| run.is_default_candidate())
+                    }
+                    ReportSelection::Run(id) => records.iter().find(|run| run.id == id),
+                    ReportSelection::Exact(targets) => records.iter().find(|run| {
+                        targets.iter().any(|(id, run_id)| {
+                            suite.file_name().and_then(|name| name.to_str()) == Some(id.as_str())
+                                && &run.id == run_id
+                        })
+                    }),
+                    ReportSelection::All => None,
+                }
+                .filter(|run| run.state == crate::run_history::RunState::Completed);
+                latest_tracked.insert(suite.clone(), selected.map(|run| run.id.clone()));
+                if compare_missing && let Some(run) = selected {
+                    crate::compare::report_gen::ensure_capture_report(
+                        &suite,
+                        suite
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .context("Invalid suite output ID")?,
+                        &run.id,
+                    )?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = prepared {
+                latest_tracked.insert(suite.clone(), None);
+                catalog.warnings.push(format!(
+                    "{}: {error:#}",
+                    super::workspace::display_path(&suite)
+                ));
+            }
+        }
         let mut paths = Vec::new();
         for entry in WalkDir::new(&root).max_depth(5).follow_links(false) {
             match entry {
@@ -725,6 +814,21 @@ impl Catalog {
                         && entry.file_name() == "report.json"
                         && selection.includes(entry.path()) =>
                 {
+                    if matches!(selection, ReportSelection::Latest)
+                        && let Some(selected) = entry
+                            .path()
+                            .ancestors()
+                            .nth(3)
+                            .and_then(|suite| latest_tracked.get(suite))
+                        && selected.as_deref()
+                            != entry
+                                .path()
+                                .parent()
+                                .and_then(Path::file_name)
+                                .and_then(|name| name.to_str())
+                    {
+                        continue;
+                    }
                     paths.push((
                         entry
                             .metadata()?
@@ -1230,6 +1334,57 @@ mod tests {
         assert_eq!(report.report.tests[2].outcome(), Outcome::Error);
         assert_eq!(report.report.tests[3].outcome(), Outcome::Unknown);
         assert!(report.html_report(directory.path()).is_ok());
+    }
+
+    #[test]
+    fn completed_run_results_ignore_partial_and_interrupted_defaults() {
+        use crate::run_history::{RunLease, RunState};
+        let directory = tempfile::tempdir().unwrap();
+        let suite = directory.path().join("shop");
+        for (id, full) in [("full", true), ("partial", false)] {
+            let mut run = RunLease::begin(&suite, id, full).unwrap();
+            fixture(directory.path(), id);
+            run.finish(RunState::Completed, true).unwrap();
+        }
+        let active = RunLease::begin(&suite, "active", true).unwrap();
+        fixture(directory.path(), "active");
+        let catalog = Catalog::load_selected(directory.path(), ReportSelection::Latest).unwrap();
+        assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
+        assert_eq!(catalog.reports.len(), 1);
+        assert_eq!(catalog.reports[0].run_id, "full");
+        let artifacts = SuiteArtifacts::load(directory.path(), "shop").unwrap();
+        assert_eq!(artifacts.latest().unwrap().run_id, "full");
+        assert!(
+            artifacts
+                .runs
+                .iter()
+                .any(|run| run.run_id == "partial" && !run.default_candidate)
+        );
+        drop(active);
+        let explicit =
+            Catalog::load_selected(directory.path(), ReportSelection::Run("partial")).unwrap();
+        assert_eq!(explicit.reports[0].run_id, "partial");
+    }
+
+    #[test]
+    fn completed_run_results_generate_skipped_comparisons() {
+        use crate::run_history::{RunLease, RunState};
+        let directory = tempfile::tempdir().unwrap();
+        let suite = directory.path().join("shop");
+        let mut run = RunLease::begin(&suite, "full", true).unwrap();
+        image::GrayImage::from_pixel(2, 2, image::Luma([80]))
+            .save(suite.join("bitmaps_test/full/home.png"))
+            .unwrap();
+        run.finish(RunState::Completed, false).unwrap();
+        drop(run);
+        let background =
+            Catalog::load_existing_selected(directory.path(), ReportSelection::Latest).unwrap();
+        assert!(background.reports.is_empty());
+        assert!(!suite.join("bitmaps_test/full/report.json").exists());
+        let catalog = Catalog::load_selected(directory.path(), ReportSelection::Latest).unwrap();
+        assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
+        assert_eq!(catalog.reports[0].run_id, "full");
+        assert!(suite.join("bitmaps_test/full/report.json").is_file());
     }
 
     #[test]

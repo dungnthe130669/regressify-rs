@@ -662,15 +662,16 @@ pub(crate) fn generate_site(
             root.display()
         )
     })?;
-    let staging = tempfile::Builder::new()
-        .prefix(".snapshot-")
-        .tempdir_in(&root)
-        .with_context(|| {
-            format!(
-                "Failed to create snapshot staging directory in '{}'",
-                root.display()
-            )
-        })?;
+    let staging = crate::run_history::staging::StagingDirectory::create(
+        &root,
+        crate::run_history::staging::StagingKind::Snapshot,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to create snapshot staging directory in '{}'",
+            root.display()
+        )
+    })?;
     let staged_root = staging.path().canonicalize().with_context(|| {
         format!(
             "Failed to resolve snapshot staging directory '{}'",

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
+use futures::{StreamExt, stream::FuturesUnordered};
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
@@ -20,6 +21,7 @@ use crate::{
     config::{self, replacements},
     helpers::{OnceLockExtensions, copy_file_atomically, is_windows_reserved_path_component},
     progress::{self, Event as ProgressEvent},
+    run_history::{RunLease, RunState},
     snapshot,
     test::{
         browsers::prepare_browser,
@@ -759,6 +761,9 @@ fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Resu
     if workspace_config.async_compare_limit == Some(0) {
         anyhow::bail!("workspace asyncCompareLimit must be greater than zero");
     }
+    if workspace_config.keep_test_runs == Some(0) {
+        anyhow::bail!("workspace keepTestRuns must be at least 1");
+    }
     if let Some(browser) = &workspace_config.browser
         && !matches!(browser, TestBrowser::Chromium)
     {
@@ -874,6 +879,12 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
     if suite.async_compare_limit == Some(0) {
         anyhow::bail!(
             "Test suite '{}' asyncCompareLimit must be greater than zero",
+            input.name
+        );
+    }
+    if suite.keep_test_runs == Some(0) {
+        anyhow::bail!(
+            "Test suite '{}' keepTestRuns must be at least 1",
             input.name
         );
     }
@@ -1465,6 +1476,86 @@ fn write_capture_run_manifests(
     Ok(())
 }
 
+fn begin_suite_runs(
+    output_dir: &Path,
+    suites: &[(TestSuiteInput, Arc<TestSuite>)],
+    filters: &[ScenarioFilter],
+) -> Result<HashMap<String, RunLease>> {
+    suites
+        .iter()
+        .map(|(input, suite)| {
+            let full_suite = !suite.scenarios.is_empty()
+                && selected_scenarios(&input.name, suite, filters).count() == suite.scenarios.len();
+            let run = RunLease::begin(
+                &suite_output_dir(output_dir, suite)?,
+                suite
+                    .test_date
+                    .as_deref()
+                    .context("Capture run ID is missing")?,
+                full_suite,
+            )?;
+            Ok((input.name.clone(), run))
+        })
+        .collect()
+}
+
+fn finalize_test_suite(
+    mut run: RunLease,
+    comparison: Option<Arc<StagedSuiteComparison>>,
+    infrastructure_failed: bool,
+    keep_runs: Option<usize>,
+) -> Result<()> {
+    if infrastructure_failed {
+        return run.finish(RunState::Failed, false);
+    }
+    let result = if let Some(comparison) = &comparison {
+        comparison.finalize()
+    } else {
+        validate_capture_run_inventory(&run.suite_dir().join("bitmaps_test").join(run.run_id()))
+            .map(|_| ())
+    };
+    if let Err(error) = result {
+        run.finish(RunState::Failed, false)?;
+        return Err(error);
+    }
+    run.finish(RunState::Completed, comparison.is_some())?;
+    if comparison.is_none() {
+        progress::emit(ProgressEvent::SuiteFinished {
+            id: run
+                .suite_dir()
+                .file_name()
+                .context("Suite output ID is missing")?
+                .to_string_lossy()
+                .into_owned(),
+        });
+    }
+    let suite_dir = run.suite_dir().to_path_buf();
+    let retention = keep_runs.filter(|_| run.is_full_suite());
+    drop(run);
+    drop(comparison);
+    if let Some(keep) = retention {
+        let output = suite_dir.parent().context("Suite output root is missing")?;
+        let suite_id = suite_dir
+            .file_name()
+            .context("Suite output ID is missing")?
+            .to_string_lossy()
+            .into_owned();
+        if let Err(error) = crate::run_history::cleanup::preview(output, &[suite_id], keep)
+            .and_then(|plan| {
+                for warning in &plan.warnings {
+                    eprintln!("Automatic cleanup: {warning}");
+                }
+                crate::run_history::cleanup::execute(&plan)
+            })
+        {
+            eprintln!(
+                "Test results are complete, but automatic cleanup could not finish: {error:#}"
+            );
+        }
+    }
+    Ok(())
+}
+
 pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
         fetch_browser,
@@ -1496,6 +1587,11 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
 
     let workspace_config = Arc::new(workspace_config);
+    let mut suite_runs = begin_suite_runs(
+        common::REGRESSIFY_DIR.get_required()?,
+        &parsed_suites,
+        &scenarios,
+    )?;
 
     write_capture_run_manifests(
         workspace_config.as_ref(),
@@ -1509,6 +1605,15 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // browser, own dedicated index) and spawn them — matching the TS/BackstopJS
     // model where pairs are scaffolded upfront and run independently.
     let mut jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref(), &scenarios)?;
+    let retention: HashMap<_, _> = parsed_suites
+        .iter()
+        .map(|(input, suite)| {
+            (
+                input.name.clone(),
+                config::resolve_run_retention(&workspace_config, suite),
+            )
+        })
+        .collect();
     let mut staged_comparisons = HashMap::new();
     if !skip_compare {
         let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
@@ -1542,6 +1647,11 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let semaphore = create_ramped_semaphore(limit);
     let exe_path = Arc::new(exe_path);
     let active_replacements = Arc::new(active_replacements);
+    let job_suites: Vec<_> = jobs.iter().map(|job| job.suite_name.clone()).collect();
+    let mut remaining = HashMap::<String, (usize, bool)>::new();
+    for name in &job_suites {
+        remaining.entry(name.clone()).or_default().0 += 1;
+    }
     let handles = spawn_capture_jobs(
         jobs,
         &semaphore,
@@ -1551,20 +1661,63 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         true,
     );
 
-    // Wait for all scenarios to complete. Only infrastructure failures (browser
-    // launch) fail the command; page-level failures are reported but tolerated.
+    // Observe completion order so one unfinished suite cannot delay another suite's durable result.
     let mut page_failures = 0usize;
     let mut infra_failures = 0usize;
-    for handle in handles {
-        match handle.await {
+    let mut comparison_failures = 0usize;
+    let mut completions: FuturesUnordered<_> = handles
+        .into_iter()
+        .zip(job_suites)
+        .map(|(handle, name)| async move { (name, handle.await) })
+        .collect();
+    while let Some((name, outcome)) = completions.next().await {
+        let pending = remaining
+            .get_mut(&name)
+            .context("Capture suite was not queued")?;
+        match outcome {
             Ok(TaskStatus::Passed) => {}
             Ok(TaskStatus::PageFailed) => page_failures += 1,
-            Ok(TaskStatus::InfraFailed) => infra_failures += 1,
+            Ok(TaskStatus::InfraFailed) => {
+                infra_failures += 1;
+                pending.1 = true;
+            }
             Err(e) => {
-                // A panicked task is a bug in our code, not the page under test.
                 eprintln!("Task panicked: {:?}", e);
                 infra_failures += 1;
+                pending.1 = true;
             }
+        }
+        pending.0 -= 1;
+        if pending.0 == 0 {
+            let failed = pending.1;
+            let run = suite_runs
+                .remove(&name)
+                .context("Capture run ownership is missing")?;
+            let comparison = staged_comparisons.remove(&name);
+            let keep_runs = retention.get(&name).copied().flatten();
+            let finalized = tokio::task::spawn_blocking(move || {
+                finalize_test_suite(run, comparison, failed, keep_runs)
+            })
+            .await;
+            match finalized {
+                Ok(Ok(())) => eprintln!("Test suite '{name}' finished."),
+                result => {
+                    eprintln!("Could not finalize test suite '{name}': {result:?}");
+                    comparison_failures += 1;
+                }
+            }
+        }
+    }
+    for (name, run) in suite_runs {
+        let comparison = staged_comparisons.remove(&name);
+        if let Err(error) = finalize_test_suite(
+            run,
+            comparison,
+            false,
+            retention.get(&name).copied().flatten(),
+        ) {
+            eprintln!("Could not finalize empty test suite '{name}': {error:#}");
+            comparison_failures += 1;
         }
     }
 
@@ -1575,26 +1728,6 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             "Test run failed: {} scenario(s) had browser or artifact failures",
             infra_failures
         );
-    }
-
-    // Commit staged visual comparison reports per suite once 100% of jobs complete.
-    let mut comparison_failures = 0usize;
-    for (input, suite) in &parsed_suites {
-        if let Some(staged) = staged_comparisons.get(&input.name) {
-            eprintln!(
-                "Finalizing visual comparison report for '{}'...",
-                input.name
-            );
-            if let Err(e) = staged.finalize() {
-                eprintln!("Visual comparison failed for '{}': {:?}", input.name, e);
-                comparison_failures += 1;
-            }
-        } else {
-            progress::emit(ProgressEvent::SuiteFinished {
-                id: suite.id.clone().unwrap_or_else(|| input.name.clone()),
-            });
-        }
-        eprintln!("Test suite '{}' completed.", input.name);
     }
 
     if page_failures > 0 {
@@ -1615,7 +1748,9 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         );
     }
 
-    generate_snapshot_reports()?;
+    if !skip_compare {
+        generate_snapshot_reports()?;
+    }
 
     Ok(())
 }
@@ -1658,6 +1793,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
 
     let workspace_config = Arc::new(workspace_config);
+    let mut suite_runs = begin_suite_runs(regressify_dir, &parsed_suites, &scenarios)?;
 
     write_capture_run_manifests(
         workspace_config.as_ref(),
@@ -1803,8 +1939,12 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                 error
             )
         })?;
+        if let Some(mut run) = suite_runs.remove(&input.name) {
+            run.finish(RunState::Completed, true)?;
+        }
     }
 
+    drop(suite_runs);
     generate_snapshot_reports()?;
 
     Ok(())
@@ -1820,6 +1960,132 @@ fn generate_snapshot_reports() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suite_run_completion_survives_an_interrupted_peer() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let completed = RunLease::begin(&first, "run", true).unwrap();
+        let interrupted = RunLease::begin(&second, "run", true).unwrap();
+        finalize_test_suite(completed, None, false, None).unwrap();
+        assert_eq!(
+            crate::run_history::latest_completed_capture_run(&first.join("bitmaps_test"))
+                .unwrap()
+                .as_deref(),
+            Some("run")
+        );
+        assert_eq!(
+            crate::run_history::latest_completed_capture_run(&second.join("bitmaps_test")).unwrap(),
+            None
+        );
+        drop(interrupted);
+        assert_eq!(
+            crate::run_history::capture_runs(&second.join("bitmaps_test")).unwrap()[0].state,
+            RunState::Interrupted
+        );
+    }
+
+    #[test]
+    fn suite_run_completion_rejects_infrastructure_and_missing_captures() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite = temp.path().join("suite");
+        let run = RunLease::begin(&suite, "infrastructure", true).unwrap();
+        finalize_test_suite(run, None, true, None).unwrap();
+        let run = RunLease::begin(&suite, "missing", true).unwrap();
+        fs::write(
+            suite
+                .join("bitmaps_test/missing")
+                .join(capture::REPORT_ORDER_FILE),
+            serde_json::to_vec(&capture::ReportOrderManifest {
+                version: capture::REPORT_ORDER_VERSION,
+                captures: vec!["home__FINAL".into()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(finalize_test_suite(run, None, false, None).is_err());
+        assert_eq!(
+            crate::run_history::latest_completed_capture_run(&suite.join("bitmaps_test")).unwrap(),
+            None
+        );
+        assert!(
+            crate::run_history::capture_runs(&suite.join("bitmaps_test"))
+                .unwrap()
+                .iter()
+                .all(|run| run.state == RunState::Failed)
+        );
+    }
+
+    #[test]
+    fn run_retention_inherits_workspace_and_honors_suite_overrides() {
+        let mut workspace = config::WorkspaceConfig::default();
+        let mut suite = TestSuite::default();
+        assert_eq!(config::resolve_run_retention(&workspace, &suite), None);
+        workspace.auto_clean_runs = Some(true);
+        assert_eq!(config::resolve_run_retention(&workspace, &suite), Some(1));
+        workspace.keep_test_runs = Some(3);
+        assert_eq!(config::resolve_run_retention(&workspace, &suite), Some(3));
+        suite.keep_test_runs = Some(2);
+        assert_eq!(config::resolve_run_retention(&workspace, &suite), Some(2));
+        suite.auto_clean_runs = Some(false);
+        assert_eq!(config::resolve_run_retention(&workspace, &suite), None);
+        workspace.keep_test_runs = Some(0);
+        assert!(
+            validate_workspace_config(&workspace)
+                .unwrap_err()
+                .to_string()
+                .contains("keepTestRuns")
+        );
+        suite.id = Some("shop".into());
+        suite.keep_test_runs = Some(0);
+        let input = TestSuiteInput {
+            name: "shop".into(),
+            path: "shop.tests.yaml".into(),
+            format: TestSuiteFormat::Yaml,
+        };
+        assert!(
+            validate_test_suite_config(&input, &suite)
+                .unwrap_err()
+                .to_string()
+                .contains("keepTestRuns")
+        );
+    }
+
+    #[test]
+    fn run_retention_runs_only_after_full_suite_completion() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite = temp.path().join("shop");
+        let old = RunLease::begin(&suite, "old", true).unwrap();
+        finalize_test_suite(old, None, false, None).unwrap();
+        let partial = RunLease::begin(&suite, "partial", false).unwrap();
+        finalize_test_suite(partial, None, false, Some(1)).unwrap();
+        assert!(suite.join("bitmaps_test/old").is_dir());
+        assert!(suite.join("bitmaps_test/partial").is_dir());
+        let complete = RunLease::begin(&suite, "complete", true).unwrap();
+        finalize_test_suite(complete, None, false, Some(1)).unwrap();
+        assert!(!suite.join("bitmaps_test/old").exists());
+        assert!(!suite.join("bitmaps_test/partial").exists());
+        assert!(suite.join("bitmaps_test/complete").is_dir());
+    }
+
+    #[test]
+    fn run_retention_failure_does_not_change_completed_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite = temp.path().join("shop");
+        let old = RunLease::begin(&suite, "old", true).unwrap();
+        finalize_test_suite(old, None, false, None).unwrap();
+        fs::write(suite.join(".compare-staging-invalid"), "not a directory").unwrap();
+        let complete = RunLease::begin(&suite, "complete", true).unwrap();
+        finalize_test_suite(complete, None, false, Some(1)).unwrap();
+        assert_eq!(
+            crate::run_history::latest_completed_capture_run(&suite.join("bitmaps_test"))
+                .unwrap()
+                .as_deref(),
+            Some("complete")
+        );
+        assert!(suite.join("bitmaps_test/old").is_dir());
+    }
 
     #[test]
     fn capture_failure_detail_keeps_local_context_without_url_paths_or_credentials() {

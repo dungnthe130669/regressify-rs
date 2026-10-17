@@ -81,8 +81,7 @@ impl RunPanel {
                     .get(id)?
                     .as_ref()
                     .ok()?
-                    .runs
-                    .first()?
+                    .latest()?
                     .counts
             })
             .unwrap_or_default()
@@ -213,7 +212,13 @@ impl RunPanel {
         artifacts
             .runs
             .iter()
-            .find(|run| requested.is_empty() || run.run_id == requested)
+            .find(|run| {
+                if requested.is_empty() {
+                    run.default_candidate
+                } else {
+                    run.run_id == requested
+                }
+            })
             .ok_or_else(|| anyhow!("No matching saved test run for '{name}'"))
     }
 

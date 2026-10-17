@@ -38,7 +38,7 @@ pub(crate) struct SuiteMetadata {
     pub display_name: Option<String>,
 }
 
-fn read_bounded_regular_file(
+pub(crate) fn read_bounded_regular_file(
     path: &Path,
     max_bytes: usize,
     label: &str,
@@ -156,7 +156,7 @@ enum ReportWork {
 
 enum ComparisonOutcome {
     Compared {
-        result: CompareResult,
+        result: Box<CompareResult>,
         staged_diff_name: Option<String>,
     },
     Failed(anyhow::Error),
@@ -498,22 +498,7 @@ pub fn select_capture_run(
         return Ok(Some(run_id.to_string()));
     }
 
-    let mut run_ids = Vec::new();
-    for entry in fs::read_dir(tests_dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let run_id = entry.file_name().into_string().map_err(|name| {
-                anyhow!(
-                    "Capture run directory in '{}' is not valid UTF-8: {:?}",
-                    tests_dir.display(),
-                    name
-                )
-            })?;
-            run_ids.push(run_id);
-        }
-    }
-    run_ids.sort();
-    Ok(run_ids.pop())
+    crate::run_history::latest_completed_capture_run(tests_dir)
 }
 
 fn report_pair(
@@ -589,7 +574,7 @@ fn compare_report_work(
                 Ok((result, diff_png)) => {
                     stage_diff_image(staging_dir, &job.pair.file_name, diff_png).map(
                         |staged_diff_name| ComparisonOutcome::Compared {
-                            result,
+                            result: Box::new(result),
                             staged_diff_name,
                         },
                     )
@@ -623,6 +608,42 @@ fn compare_report_work(
 ///   html_report/config.js           ← report config for React UI
 ///   tests/<date>/                   ← raw captured screenshots (existing)
 /// ```
+pub fn ensure_capture_report(suite_dir: &Path, suite_id: &str, run_id: &str) -> Result<()> {
+    select_capture_run(&suite_dir.join("bitmaps_test"), Some(run_id))?;
+    for path in [
+        suite_dir.to_path_buf(),
+        suite_dir.join("bitmaps_test"),
+        suite_dir.join("bitmaps_test").join(run_id),
+    ] {
+        crate::run_history::require_real_directory(&path)?;
+    }
+    let report = suite_dir
+        .join("bitmaps_test")
+        .join(run_id)
+        .join("report.json");
+    if read_bounded_regular_file(&report, MAX_REPORT_MANIFEST_BYTES, "capture report")?.is_some() {
+        return Ok(());
+    }
+    let lease = crate::run_history::SuiteLease::acquire(suite_dir)?;
+    if read_bounded_regular_file(&report, MAX_REPORT_MANIFEST_BYTES, "capture report")?.is_none() {
+        for directory in ["html_report", "bitmaps_reference"] {
+            let path = suite_dir.join(directory);
+            if path.try_exists()? {
+                crate::run_history::require_real_directory(&path)?;
+            }
+        }
+        generate_comparison_report(
+            suite_dir,
+            suite_id,
+            run_id,
+            0.1,
+            crate::config::DEFAULT_ASYNC_COMPARE_LIMIT,
+        )?;
+        lease.mark_compared(run_id)?;
+    }
+    Ok(())
+}
+
 pub fn generate_comparison_report(
     suite_dir: &Path,
     suite_id: &str,
@@ -871,7 +892,7 @@ fn generate_selected_report(
                     staged_entries.push(finish_staged_compared_pair(
                         test_date,
                         job.pair,
-                        result,
+                        *result,
                         staged_diff_name,
                     ));
                 }
@@ -2908,6 +2929,51 @@ mod tests {
         let error = select_capture_run(&runs, Some("linked-run")).unwrap_err();
 
         assert!(error.to_string().contains("not a real directory"));
+    }
+
+    #[test]
+    fn capture_run_selection_uses_completed_full_suite_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let runs = temp.path().join("bitmaps_test");
+        let records = [
+            ("a-completed", "completed", true),
+            ("b-cancelled", "interrupted", true),
+            ("c-partial", "completed", false),
+            ("z-running", "running", true),
+        ];
+        for (id, _, _) in records {
+            fs::create_dir_all(runs.join(id)).unwrap();
+        }
+        fs::write(
+            temp.path().join("runs.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "runs": records.iter().enumerate().map(|(index, (id, state, full_suite))| {
+                    serde_json::json!({
+                        "id": id,
+                        "state": state,
+                        "fullSuite": full_suite,
+                        "startedAt": index as u64,
+                        "completedAt": if *state == "completed" { Some(index as u64) } else { None },
+                    })
+                }).collect::<Vec<_>>(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            select_capture_run(&runs, None).unwrap().as_deref(),
+            Some("a-completed")
+        );
+        assert_eq!(
+            select_capture_run(&runs, Some("c-partial"))
+                .unwrap()
+                .as_deref(),
+            Some("c-partial")
+        );
+        fs::remove_dir_all(runs.join("a-completed")).unwrap();
+        assert_eq!(select_capture_run(&runs, None).unwrap(), None);
     }
 
     #[cfg(unix)]

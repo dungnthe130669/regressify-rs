@@ -85,6 +85,9 @@ server's version; do not assume newer fields work in an older installed CLI.
 - A last `save` among a scenario's own actions replaces its automatic final
   screenshot; explicit `selectors` are still captured.
 - Mask only nondeterministic regions, never the behavior under test.
+- Default results use the latest completed full-suite run, not a cancelled or
+  scenario-only run. Read the workspace guide for `autoCleanRuns`, `keepTestRuns`,
+  and preview-first `regressify clean`; deletion still needs explicit authorization.
 
 ## Safe Authoring Workflow
 

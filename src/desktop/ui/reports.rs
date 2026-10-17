@@ -70,6 +70,10 @@ fn image_page_url(pair: &Pair, index: usize) -> Option<reqwest::Url> {
 }
 
 pub(super) enum ResultEvent {
+    Cleanup {
+        root: PathBuf,
+        suite: Option<String>,
+    },
     OpenSuite(Entry),
     ApproveRun(ReportApproval),
 }
@@ -836,6 +840,25 @@ impl ResultsPanel {
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_reports(root, true, window, cx);
+    }
+
+    pub(super) fn refresh_existing(
+        &mut self,
+        root: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh_reports(root, false, window, cx);
+    }
+
+    fn refresh_reports(
+        &mut self,
+        root: PathBuf,
+        compare_missing: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.capture_log.generation = self.capture_log.generation.wrapping_add(1);
         self.capture_log.page = None;
@@ -877,7 +900,11 @@ impl ResultsPanel {
             } else {
                 ReportSelection::Latest
             };
-            let mut catalog = Catalog::load_selected(&root, selection)?;
+            let mut catalog = if compare_missing {
+                Catalog::load_selected(&root, selection)?
+            } else {
+                Catalog::load_existing_selected(&root, selection)?
+            };
             catalog.resolve_names(&suites);
             Ok::<_, anyhow::Error>(catalog)
         });
@@ -2918,6 +2945,16 @@ impl Render for ResultsPanel {
                                     .accessibility_label("Report status")
                                     .tooltip(self.status.clone()),
                             ),
+                    )
+                    .child(
+                        Button::new("results-cleanup").ghost().icon(gpui_kit::assets::IconName::Trash)
+                            .tooltip("Clean up old test runs").accessibility_label("Clean up old test runs")
+                            .disabled(self.disabled || self.loading || self.root.is_none())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(root) = this.root.clone() {
+                                    cx.emit(ResultEvent::Cleanup { root, suite: this.selected_report().map(|report| report.report.id.clone()) });
+                                }
+                            })),
                     )
                     .child(
                         Button::new("refresh-results")

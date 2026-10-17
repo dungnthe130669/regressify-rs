@@ -1045,6 +1045,7 @@ impl Workbench {
                     .justify_between()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Test suites"))
                     .child(div().flex_1())
+                    .child(self.cleanup_button("overview-cleanup", cx))
                     .child(
                         Button::new("overview-run-reference")
                             .icon(gpui_kit::assets::IconName::Camera)

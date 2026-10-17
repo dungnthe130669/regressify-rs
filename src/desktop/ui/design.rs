@@ -431,6 +431,8 @@ pub(super) fn group(key: &str) -> (usize, &'static str) {
         "browser"
         | "asyncCaptureLimit"
         | "asyncCompareLimit"
+        | "autoCleanRuns"
+        | "keepTestRuns"
         | "debug"
         | "elementTimeout"
         | "actionabilityTimeout"

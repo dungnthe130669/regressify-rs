@@ -40,6 +40,11 @@ pub struct WorkspaceConfig {
     /// Maximum simultaneous image comparisons. Positive whole number; default: 2.
     #[schemars(range(min = 1), example = 2)]
     pub async_compare_limit: Option<usize>,
+    /// Automatically clean old test runs after completed full-suite tests. Default: false; suites may override it.
+    pub auto_clean_runs: Option<bool>,
+    /// Maximum completed test runs to keep when automatic cleanup is enabled. Minimum and default: 1. The latest completed full-suite run is always retained.
+    #[schemars(range(min = 1), example = 1)]
+    pub keep_test_runs: Option<usize>,
     /// Browser engine. Only "chromium" is supported.
     pub browser: Option<Browser>,
     /// Bypass the site's Content Security Policy (default: false).
@@ -122,6 +127,19 @@ pub struct WorkspaceConfig {
     /// Positive whole milliseconds for one complete scenario/viewport capture, including actions and hooks. Default: 600000 (ten minutes); zero is invalid.
     #[schemars(range(min = 1), example = 600000)]
     pub scenario_timeout: Option<u64>,
+}
+
+pub fn resolve_run_retention(workspace: &WorkspaceConfig, suite: &TestSuite) -> Option<usize> {
+    suite
+        .auto_clean_runs
+        .or(workspace.auto_clean_runs)
+        .unwrap_or(false)
+        .then(|| {
+            suite
+                .keep_test_runs
+                .or(workspace.keep_test_runs)
+                .unwrap_or(1)
+        })
 }
 
 /// Fully resolved configuration — all cascade levels merged with defaults applied.

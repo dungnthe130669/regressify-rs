@@ -25,17 +25,17 @@ Global flags are placed before the command:
 regressify --root ./my-tests --site-env staging test --test-suite alloy
 ```
 
-| Flag                          | Purpose                                                                                                                                                                                                                                                           |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--root`, `-r`                | Project root. Defaults to the current directory.                                                                                                                                                                                                                  |
-| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory. The environment name must use only ASCII letters, digits, `_`, or `-`.                                                                          |
-| `--run-id`                    | Portable explicit capture directory ID shared by all selected suites. `test` and `ref` write to it; `compare` and `approve` select it. Defaults to a sortable UTC timestamp for capture and the lexically latest run for standalone compare/approve when omitted. |
-| `--async-capture-limit`       | Positive global maximum scenario/viewport captures running at once. Defaults to `5`; suite/workspace `asyncCaptureLimit` can impose a lower per-suite cap.                                                                                                        |
-| `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                                                                                                                                                                       |
-| `--debug`                     | Runs Chromium with a visible window. Suite-level `debug: true` also enables this. Automatically disabled in CI (no display).                                                                                                                                      |
-| `--requiredLogin`             | Forces `requiredLogin` true in the resolved scenario context exposed to custom `jsOnReadyPath` scripts.                                                                                                                                                           |
-| `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                                                                                                                                                                   |
-| `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                                                                                                                                                                   |
+| Flag                          | Purpose                                                                                                                                                                                                                  |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--root`, `-r`                | Project root. Defaults to the current directory.                                                                                                                                                                         |
+| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory. The environment name must use only ASCII letters, digits, `_`, or `-`.                                 |
+| `--run-id`                    | Portable explicit capture directory ID shared by all selected suites. `test` and `ref` write to it; `compare` and `approve` select it. Without an explicit ID, tracked suites use their latest completed full-suite run. |
+| `--async-capture-limit`       | Positive global maximum scenario/viewport captures running at once. Defaults to `5`; suite/workspace `asyncCaptureLimit` can impose a lower per-suite cap.                                                               |
+| `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                                                                                                                              |
+| `--debug`                     | Runs Chromium with a visible window. Suite-level `debug: true` also enables this. Automatically disabled in CI (no display).                                                                                             |
+| `--requiredLogin`             | Forces `requiredLogin` true in the resolved scenario context exposed to custom `jsOnReadyPath` scripts.                                                                                                                  |
+| `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                                                                                                                          |
+| `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                                                                                                                          |
 
 ### Diagnostic Verbosity
 
@@ -177,13 +177,14 @@ integrity hashes remain unchanged. See [desktop Capture Log](desktop.md#reviewin
 | `mcp`      | Generate a standalone Cloudflare MCP Worker containing versioned public authoring guidance, schemas, and examples. Does not deploy or export workspace data.                                                   |
 | `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                                                                               |
 | `ref`      | Capture baseline screenshots, promote successful captures to references, and record them as self-approved in the report. Failed page captures are skipped and existing references are preserved.               |
-| `test`     | Capture current screenshots, compare each job's captures against references immediately into staging unless `--skip-compare` is set, and commit final suite/snapshot reports when all jobs complete.           |
+| `test`     | Capture screenshots and stage comparisons unless `--skip-compare` is set. Finalize each suite independently after its jobs finish; generate the snapshot after compared tests complete.                        |
 | `compare`  | Compare the latest test run for each matching suite against reference screenshots.                                                                                                                             |
 | `approve`  | Promote latest successful test screenshots to references. Failed capture placeholders are skipped.                                                                                                             |
 | `snapshot` | Generate the static snapshot SPA from existing comparison data.                                                                                                                                                |
 | `optimize` | Optimize PNG files in the project output tree.                                                                                                                                                                 |
+| `clean`    | Preview old test runs and their artifacts for selected suites; add `--yes` to delete them.                                                                                                                     |
 
-All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite. Invalid glob patterns, unreadable suite directories, and an explicit filter that matches no suite fail the command instead of silently reducing coverage.
+All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite, except `clean`, which requires an explicit filter. Invalid glob patterns, unreadable suite directories, and an explicit filter that matches no suite fail the command instead of silently reducing coverage.
 
 `snapshot` also accepts repeated suite filters, matched against output IDs:
 
@@ -193,6 +194,67 @@ regressify snapshot --test-suite 'shop*' --test-suite account
 
 The summary contains only the selected suites. Excluded suite reports and
 capture directories are not rewritten or cleaned up.
+
+## Run History and Cleanup
+
+Each suite keeps a local `runs.json` registry in its output directory. A run becomes
+completed when all requested captures and, when enabled, comparisons finish.
+Visual mismatches and website/action failures still count as completed;
+cancellation and infrastructure failures do not. Suites finish independently:
+stopping a command during one suite does not discard another suite's completed run.
+
+Default Compare, Approve, desktop Results, Snapshot, and Deploy use the latest
+completed full-suite run. Scenario-only runs remain explicitly selectable but
+do not replace that default. With `--skip-compare`, comparison and snapshot work
+stay deferred until results or a report are requested. Missing comparisons are
+then generated from completed captures without launching a browser. Existing
+untracked runs are trusted as legacy completed runs when the registry is created.
+Older snapshots without a registry retain their existing report selection.
+
+Preview cleanup for one or more output suite IDs:
+
+```bash
+regressify clean --test-suite shop --test-suite account
+regressify clean --test-suite 'shop*' --keep-runs 3
+regressify clean --test-suite all --keep-runs 1 --yes
+```
+
+`--keep-runs` defaults to 1 and must be at least 1. Cleanup first keeps the latest
+completed full-suite run, then fills remaining slots with the newest completed
+runs, including partial selections. Interrupted and failed runs consume no slots.
+The limit is strict: keeping 1 can remove a newer scenario-only run. If a suite
+has no full-suite run, its newest completed partial runs can fill the slots.
+Preview lists retained runs, deletion counts, and estimated bytes; without
+`--yes`, no run artifacts are removed. Global environment/custom-output flags
+scope cleanup to that one output folder.
+
+Cleanup removes selected run captures, reports, matching legacy raw captures,
+abandoned comparison staging, and unreferenced capture-owned diagnostic journals.
+It preserves reference baselines, browser state, source files, unselected suites,
+and unrelated operational logs. Logs still linked by retained captures or
+baselines remain protected and are tracked for a later cleanup. Unreadable log
+ownership produces a warning and preserves those logs. Active artifact owners
+block cleanup; changed previews must be reviewed again. Filesystem failures are
+reported, and deletion already performed is not rolled back.
+
+Automatic retention is opt-in. Configure workspace defaults in `regressify.yaml`
+and override either property in a suite:
+
+```yaml
+autoCleanRuns: true
+keepTestRuns: 3
+```
+
+The defaults are `false` and `1`. A suite's `autoCleanRuns: false` disables an
+enabled workspace policy. Automatic cleanup runs only after a completed
+full-suite test. Cleanup failures warn without changing completed test results.
+
+Deployment and snapshot staging use private `.staging/<operation-id>` containers
+under the selected output folder. Deployment attempts best-effort cleanup at
+completion and retries abandoned containers before the next deployment. Active
+containers are locked; ownership survives a failed payload deletion. Staging,
+registries, locks, and retry metadata never enter published report packages.
+The PNG optimizer skips both `_snapshot` and `.staging`.
 
 ## Workspace Initialization
 

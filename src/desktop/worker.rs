@@ -59,6 +59,7 @@ fn run_request() -> Result<()> {
             .build()?
             .block_on(async {
                 let work = async {
+                    let mut managed_staging = None;
                     let deployment = if request.run.command == super::runner::RunCommand::Deploy {
                         let job = request
                             .run
@@ -85,9 +86,21 @@ fn run_request() -> Result<()> {
                             ],
                             || job.validate(),
                         )?;
+                        let output = request.run.options.output_directory(&request.run.root);
+                        for warning in crate::run_history::staging::cleanup_abandoned(&output) {
+                            eprintln!("{warning}");
+                        }
+                        if request.scratch_directory.is_none() {
+                            managed_staging =
+                                Some(crate::run_history::staging::StagingDirectory::create(
+                                    &output,
+                                    crate::run_history::staging::StagingKind::Deployment,
+                                )?);
+                        }
                         let directory = request
                             .scratch_directory
-                            .as_ref()
+                            .as_deref()
+                            .or_else(|| managed_staging.as_ref().map(|staging| staging.path()))
                             .context("Deployment staging directory is missing")?;
                         ensure!(
                             directory.is_absolute()
@@ -140,7 +153,8 @@ fn run_request() -> Result<()> {
                     if let Some((job, client)) = deployment {
                         let directory = request
                             .scratch_directory
-                            .as_ref()
+                            .as_deref()
+                            .or_else(|| managed_staging.as_ref().map(|staging| staging.path()))
                             .context("Deployment staging directory is missing")?;
                         let output = request.run.options.output_directory(&request.run.root);
                         let staging = directory.join("report");

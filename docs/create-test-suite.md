@@ -76,6 +76,16 @@ suite. Scenarios can override it; the workspace provides an inherited default.
 CLI flags and `REGRESSIFY_LOG_LEVEL` take precedence. Display filtering never
 changes the archived capture timeline. See [diagnostic verbosity](commands.md#diagnostic-verbosity).
 
+### Run Retention
+
+`autoCleanRuns` enables automatic cleanup after completed full-suite tests;
+`keepTestRuns` is the maximum completed runs to retain and must be at least 1.
+Both inherit workspace values; their defaults are `false` and `1`. A suite can
+set `autoCleanRuns: false` to opt out of an enabled workspace policy. These
+settings do not cascade to scenarios. The latest completed full-suite run and
+all reference baselines remain protected. See [run cleanup](commands.md#run-history-and-cleanup)
+for partial-run handling, diagnostic ownership, and manual previews.
+
 ### Display Name
 
 Set the optional `displayName` string to label a suite in the desktop app and

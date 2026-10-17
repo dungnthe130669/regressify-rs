@@ -1,6 +1,6 @@
 # Deployment Packaging
 
-Verified: 2026-10-01
+Verified: 2026-10-17
 
 - The [worker](../../src/desktop/worker.rs) regenerates selected snapshots, then
   stages only the active SPA manifest and its versioned dependencies. The shared
@@ -18,8 +18,9 @@ Verified: 2026-10-01
   strings to inheritance. Version 2 preserves explicit defaults and custom text.
   The [worker staging test](../../tests/desktop_worker.rs) verifies configured
   title in staged HTML and heading/Markdown in the versioned manifest without publishing.
-- [Snapshot conversion](../../src/snapshot/capture_report.rs) reads the run selected
-  by `config.js` and verifies its `report.json`. It preserves captures and produces
+- [Snapshot conversion](../../src/snapshot/capture_report.rs) uses completed
+  full-suite registry records, comparing missing reports on demand; legacy suites
+  retain `config.js` selection. It preserves captures and produces
   stable-path PNG copies with `?v=`. [Staging](../../src/desktop/deployment.rs) follows
   the active manifest, verifies cache versions, and excludes raw reports, captures,
   state, and stale assets. Query strings never become filesystem paths.
@@ -36,6 +37,10 @@ Verified: 2026-10-01
 - Verification: `cargo test --features desktop --lib desktop::deployment::tests::staging_includes_only_selected_report_dependencies`
   asserts the exact ZIP entry set and unchanged source files. Checking only that
   required files exist does not detect extra uploaded files.
+- [Managed staging](../../src/run_history/staging.rs) tracks payload ownership
+  outside staged files, cleans up best effort, and retries abandoned operations
+  before deployment. Optimization copies and ZIPs stay under that payload; no
+  ownership or run-registry metadata enters the exact deployment inventory.
 
 See the [packaging skill](../../.github/skills/deployment-packaging/SKILL.md) for
 the maintained procedure and checks.

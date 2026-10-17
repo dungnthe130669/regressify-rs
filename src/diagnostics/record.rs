@@ -368,6 +368,7 @@ pub enum SafeValue {
     Approve,
     Snapshot,
     Optimize,
+    Clean,
     Empty,
     BelowMinimum,
     Unchanged,

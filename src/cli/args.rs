@@ -155,6 +155,21 @@ pub struct ApproveArgs {
     pub report_capture: Option<String>,
 }
 
+#[derive(clap::Args)]
+pub struct CleanArgs {
+    /// Output suite IDs or glob patterns; repeat for multiple suites, or use 'all'
+    #[clap(long, short = 's', required = true)]
+    pub test_suite: Vec<String>,
+
+    /// Maximum completed runs per suite, always preserving the latest full-suite run
+    #[clap(long, default_value_t = 1, value_parser = positive_usize_parser)]
+    pub keep_runs: usize,
+
+    /// Delete the previewed artifacts; without this flag, only show a preview
+    #[clap(long)]
+    pub yes: bool,
+}
+
 fn speed_parser(s: &str) -> Result<u8, String> {
     s.parse::<u8>()
         .map_err(|_| {
@@ -246,6 +261,36 @@ mod tests {
         percentage_parser, positive_u32_parser, positive_usize_parser, run_id_parser,
         site_env_parser, speed_parser,
     };
+
+    #[test]
+    fn clean_command_requires_selection_and_defaults_to_preview_and_one_run() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["regressify", "clean"]).is_err());
+        let parsed =
+            Cli::try_parse_from(["regressify", "clean", "-s", "shop", "-s", "account"]).unwrap();
+        let Command::Clean(args) = parsed.command else {
+            panic!("Expected clean command");
+        };
+        assert_eq!(args.test_suite, ["shop", "account"]);
+        assert_eq!(args.keep_runs, 1);
+        assert!(!args.yes);
+        assert!(
+            Cli::try_parse_from(["regressify", "clean", "-s", "all", "--keep-runs", "0"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "regressify",
+                "clean",
+                "-s",
+                "all",
+                "--keep-runs",
+                "2",
+                "--yes"
+            ])
+            .is_ok()
+        );
+    }
 
     #[test]
     fn mcp_generation_requires_an_explicit_output_directory() {

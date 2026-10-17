@@ -1435,7 +1435,11 @@ mod tests {
 
     #[tokio::test]
     async fn preparation_phases_and_resizing_record_readable_stage_diagnostics() -> Result<()> {
-        use crate::diagnostics::{journal::JournalReader, record::*, runtime};
+        use crate::diagnostics::{
+            journal::{ArchiveState, JournalReader},
+            record::*,
+            runtime,
+        };
         let source = optimization::tests::report_fixture()?;
         let report =
             super::read_report_configuration(&source.path().join("one/html_report/config.js"))?;
@@ -1465,8 +1469,8 @@ mod tests {
             })
             .await?;
             super::stage_reports(source.path(), &suites, &staged_report)?;
-            let original =
-                optimization::prepare(&staged_report, u64::MAX, deadline)?.original_bytes();
+            let original = optimization::prepare(&staged_report, 500 * 1024 * 1024, deadline)?
+                .original_bytes();
             let prepared = optimization::prepare(&staged_report, original * 85 / 100, deadline)?;
             assert_eq!(prepared.original_bytes(), original);
             super::with_heartbeat("Test deployment", async {
@@ -1477,6 +1481,7 @@ mod tests {
         })
         .await?;
         let reference = operation.finish(Outcome::Success).await;
+        assert_eq!(reference.state, ArchiveState::Complete);
         let mut artifacts = Vec::new();
         let mut stages = Vec::new();
         JournalReader::open(source.path(), &reference.operation_id)?.visit(|record| {
@@ -2500,6 +2505,12 @@ mod tests {
             "one/bitmaps_test/run/unused.png",
             "one/bitmaps_test/run/unused.diff.png",
             "one/bitmaps_test/run/private.json",
+            "one/runs.json",
+            "one/.runs.lock",
+            "one/.artifacts.lock",
+            ".staging/owned/owner.json",
+            ".staging/owned/files/private.zip",
+            ".staging.lock",
             "one/bitmaps_test/older/unused.png",
             "one/bitmaps_test/older/unused.diff.png",
             "one/bitmaps_test/oldest/unused.png",

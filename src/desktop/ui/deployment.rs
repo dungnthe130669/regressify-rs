@@ -1106,13 +1106,20 @@ impl Workbench {
             let client = crate::desktop::deployment::DeploymentClient::new(&target, &token)?;
             drop(token);
             settings.save(&path)?;
-            let staging = tempfile::tempdir()?;
-            file.app.stage(staging.path())?;
+            for warning in crate::run_history::staging::cleanup_abandoned(&root) {
+                eprintln!("{warning}");
+            }
+            let staging = crate::run_history::staging::StagingDirectory::create(
+                &root, crate::run_history::staging::StagingKind::Deployment,
+            )?;
+            let report = staging.path().join("report");
+            std::fs::create_dir(&report)?;
+            file.app.stage(&report)?;
             let url = tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async {
                 tokio::select! {
                     biased;
                     _ = cancelled => Err(anyhow!("Deployment cancelled locally. A provider may already have published the upload; check the hosted site before retrying")),
-                    result = client.deploy(staging.path(), &target) => result,
+                    result = client.deploy(&report, &target) => result,
                 }
             })?;
             let saved = DeployTargets::record_publication(&path, &target, url.as_deref());

@@ -13,7 +13,7 @@ description: 'Use when changing regressify optimize, PNG compression, speed/mini
 
 1. Preserve the CLI's lossless compression contract; compare decoded pixels, not compressed bytes. Do not import lossy deployment settings into this command.
 1. Validate speed bounds and minimum size; avoid rewriting skipped files. Preserve deterministic discovery and ignore non-PNG files.
-1. Skip the output root's `_snapshot` directory: changing its PNG bytes would invalidate published `?v=` URLs. Optimize source captures, then regenerate.
+1. Skip the output root's `_snapshot` and managed `.staging` directories: changing their PNG bytes would invalidate published/staged `?v=` URLs. Optimize source captures, then regenerate.
 1. Enforce image resource limits before expensive decoding/optimization and preserve required PNG representation/color metadata.
 1. Refresh valid `{image}.log.json` sidecar digests (`refresh_capture_log_digest`) when lossless recompression rewrites a PNG, without repairing sidecars that were already corrupt or mismatched before optimization.
 1. Surface read/decode/write failures. Use safe replacement so interrupted work does not corrupt the only copy of a baseline or test image.

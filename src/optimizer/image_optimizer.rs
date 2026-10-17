@@ -133,9 +133,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 
 fn collect_png_files(output_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut png_files = Vec::new();
-    // Published image bytes must continue matching their immutable URL hashes.
+    // Published and staged image bytes must continue matching their immutable URL hashes.
     for entry in WalkDir::new(output_dir).into_iter().filter_entry(|entry| {
-        (entry.depth() != 1 || entry.file_name() != "_snapshot")
+        (entry.depth() != 1
+            || (entry.file_name() != "_snapshot" && entry.file_name() != ".staging"))
             && !entry
                 .file_name()
                 .to_string_lossy()
@@ -291,6 +292,12 @@ mod tests {
         fs::write(
             temp.path().join("_snapshot/images/immutable.png"),
             b"published",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join(".staging/active/files")).unwrap();
+        fs::write(
+            temp.path().join(".staging/active/files/upload.png"),
+            b"staged",
         )
         .unwrap();
 

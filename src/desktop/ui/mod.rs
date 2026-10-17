@@ -34,6 +34,7 @@ use super::{
 };
 
 mod choices;
+mod cleanup;
 mod commands;
 mod deployment;
 mod design;
@@ -181,6 +182,7 @@ pub struct Workbench {
     tokens: Entity<tokens::TokenPanel>,
     landing: Entity<landing::LandingPanel>,
     git: Entity<git::GitPanel>,
+    cleanup: Entity<cleanup::CleanupPanel>,
 }
 
 impl Workbench {
@@ -384,8 +386,13 @@ impl Workbench {
         let results = cx.new(|cx| reports::ResultsPanel::new(window, cx));
         let captures = cx.new(|cx| reports::CaptureList::new(results.clone(), cx));
         let results_observer = cx.observe(&results, |_, _, cx| cx.notify());
+        let cleanup = cx.new(|cx| cleanup::CleanupPanel::new(window, cx));
+        let cleanup_observer = cx.observe(&cleanup, |_, _, cx| cx.notify());
         let results_subscription =
             cx.subscribe_in(&results, window, |this, _, event, window, cx| match event {
+                reports::ResultEvent::Cleanup { root, suite } => {
+                    this.open_cleanup(Some(root.clone()), suite.clone(), window, cx);
+                }
                 reports::ResultEvent::OpenSuite(entry) => {
                     this.open_location(entry.clone(), Selection::Root, window, cx)
                 }
@@ -466,6 +473,7 @@ impl Workbench {
                 scenario_search_subscription,
                 results_subscription,
                 results_observer,
+                cleanup_observer,
                 appearance_subscription,
                 activation_subscription,
                 git_subscription,
@@ -516,6 +524,7 @@ impl Workbench {
             tokens: cx.new(|cx| tokens::TokenPanel::new(window, cx)),
             landing: cx.new(|cx| landing::LandingPanel::new(window, cx)),
             git,
+            cleanup,
         }
     }
 
@@ -837,7 +846,11 @@ impl Workbench {
                 {
                     panel.select_suite(&entry, window, cx);
                 }
-                panel.refresh(root, window, cx);
+                if self.main_tab == 2 {
+                    panel.refresh(root, window, cx);
+                } else {
+                    panel.refresh_existing(root, window, cx);
+                }
             }),
             Err(error) => {
                 self.status = format!("{error:#}");
@@ -2294,6 +2307,8 @@ impl Workbench {
                     "postInteractionWait",
                     "asyncCaptureLimit",
                     "asyncCompareLimit",
+                    "autoCleanRuns",
+                    "keepTestRuns",
                 ]
                 .contains(&field.key.as_str())
             {
@@ -2839,6 +2854,9 @@ impl Workbench {
                                 })),
                         )
                         .child(div().flex_1())
+                        .when(self.session.selection == Selection::Root, |bar| {
+                            bar.child(self.cleanup_button("settings-cleanup", cx))
+                        })
                         .child(
                             Button::new("expand-fields")
                                 .ghost()

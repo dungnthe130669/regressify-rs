@@ -588,14 +588,22 @@ Save/Cancel guard, and a changed suite catalog requires selection review again.
 Deploy validates the token, runs the bundled `snapshot` command for the selected
 suites, and stages the snapshot entry page, versioned JSON, referenced images,
 frontend assets, and hosting policies before publishing. Staging follows the
-generated manifest rather than walking capture folders. Snapshot generation reads
-the run referenced by each suite's `config.js`, including older selected runs,
-without modifying comparison data or deleting capture history.
+generated manifest rather than walking capture folders. Tracked suites use their
+latest completed full-suite run, independently of the last command or the shared
+`config.js`. A skipped comparison is generated from those completed captures when
+needed. Legacy suites without a registry retain their existing report selection.
 Snapshot generation also creates fast, deterministic small PNG previews for suite
 browsing. Staging includes those versioned preview dependencies alongside original
 images; comparison and downloads retain full resolution. Preview generation does
 not resize source captures or run expensive image optimization. Repeating it with
 identical inputs produces identical preview bytes and cache versions.
+
+Deployment staging, optimization copies, and upload packages stay inside an
+operation-owned `.staging` container under the selected output folder. Removal
+after deployment is best effort and does not turn successful publication into
+failure. Failed removal retains ownership metadata; the next deployment retries
+abandoned containers while preserving active ones. Landing deployments use the
+same lifecycle in their managed storage. None of this bookkeeping is deployed.
 
 Snapshot and Deploy use `snapshotTitle`, `snapshotHeading`, and
 `snapshotSubheading` from the workspace configuration unless an explicit override
@@ -731,7 +739,7 @@ staging, and Cloudflare file-preparation errors identify the staging location.
 `Cannot generate report snapshots for deployment` occurs before staging or any
 Cloudflare upload. Run Snapshot with the same workspace, suites, environment, and
 output-directory settings to isolate that local step without deploying.
-Snapshot errors identify output discovery, `.snapshot-*` staging creation,
+Snapshot errors identify output discovery, managed `.staging` creation,
 artifact reads/writes, or cleanup and the affected path. Snapshot staging is
 inside the selected report output directory (normally `.regressify`), which needs
 write and cleanup access as well as read access. A Windows file-sharing conflict
@@ -1668,8 +1676,9 @@ suite, on its Runs/Overview row, and for a compatible suite selection.
 An existing report opens directly without starting a worker or changing captures.
 If saved screenshots have no usable report, the app compares those screenshots
 against the references and opens the result automatically, without launching a
-browser or creating a capture run. The latest saved run is chosen by screenshot
-modification time, not UUID ordering; an explicit Run name selects that exact
+browser or creating a capture run. Tracked suites select their latest completed
+full-suite run by recorded completion order; legacy inventory uses screenshot
+modification time, not UUID ordering. An explicit Run name selects that exact
 run. Suite output IDs and run IDs are pinned together, so another suite with the
 same run ID cannot appear accidentally. Existing reports from multiple suites
 can be viewed together even when their run IDs differ. If report generation is
@@ -1838,6 +1847,43 @@ output directories. If there is no readable snapshot, the app recovers the newes
 matching comparison run from the default `.regressify` output. These older results
 are labeled Saved comparison results; original execution logs and timings cannot
 be reconstructed from reports and are not fabricated.
+
+## Cleaning Test Runs
+
+Use **Clean up old test runs** in the Overview toolbar, Results toolbar, or the
+root Fields settings toolbar. The dialog shows the selected output folder,
+supports one or more suite checkboxes, and defaults **Completed runs to keep** to
+
+1. Run **Preview**, review the retained IDs and estimated space, then confirm
+**Delete old runs**. Changing the selection or count invalidates the preview.
+Closing the dialog never deletes data. Cleanup runs off the UI thread and
+refreshes Results and saved-run availability afterward.
+
+The keep count is a strict per-suite maximum, with a minimum of 1. The latest
+completed full-suite run is protected first; other slots hold the newest completed
+runs. Cancelled/incomplete runs are removable and do not consume slots. A newer
+scenario-only run can be removed when keeping only the latest full-suite result.
+Reference images, browser state, source files, and unselected suites are preserved.
+Capture logs shared with baselines or retained runs are protected until no longer
+referenced. Active artifact use blocks cleanup, and changed artifacts require a
+new preview. A reported deletion failure may leave part of the requested cleanup
+unfinished; repeat the preview to retry safely.
+
+In workspace or suite **Fields > Execution**, **Automatic run cleanup** controls
+`autoCleanRuns`, and **Test runs to keep** controls `keepTestRuns`. Workspace
+defaults are disabled and 1. Suite values override the workspace; explicitly
+disable the suite toggle to opt it out. These are ordinary configuration drafts
+with normal Save/Reset behavior. Automatic cleanup runs only after full-suite
+tests finish, and cleanup errors do not change their completed results.
+
+Each suite's private output `runs.json` records completion independently. Visual
+mismatches and website/action errors count as completed; stopped runs and
+infrastructure failures do not become defaults. Completing a subset of scenarios
+does not replace the full-suite default, but that run remains explicitly viewable.
+Existing runs are adopted as legacy completed runs and become eligible for
+retention normally. Results, generated reports, and deployment all use the same
+completed-run selection. Opening results performs skipped comparisons on demand;
+background inventory refreshes do not.
 
 ## Reviewing Results
 
@@ -2115,6 +2161,13 @@ without sending input, and verify draft cleanup state. They do not build the
 app, open windows, or touch preferences; native acceptance still needs Windows.
 After editing the inline Windows interop code, run native checks in a fresh
 PowerShell session because `Add-Type` definitions are cached for the process.
+
+The runner backs up clipboard data into independent storage before smoke input
+and restores it in its outer cleanup boundary, even after partial startup or a
+failed flow. Unsupported user formats stop tests before clipboard mutation;
+missing private formats are ignored only after the fixture owns the clipboard.
+Foreground activation targets the exact fixture window and never substitutes
+input to another application for a failed focus check.
 
 Add `-Capture` to run direct reference capture, stop a test, rerun the test, and
 open the completed results for three local fixture scenarios across two suites.

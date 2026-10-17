@@ -101,6 +101,7 @@ const fieldValue = z.discriminatedUnion("type", [
       "approve",
       "snapshot",
       "optimize",
+      "clean",
       "empty",
       "belowMinimum",
       "unchanged",

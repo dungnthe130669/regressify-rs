@@ -15,6 +15,7 @@ pub mod init;
 pub mod mcp;
 pub mod optimizer;
 pub mod progress;
+pub mod run_history;
 pub mod snapshot;
 pub mod test;
 pub mod types;

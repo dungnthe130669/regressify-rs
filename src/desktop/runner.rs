@@ -542,8 +542,10 @@ impl RunSnapshot {
         use crate::progress::{Event, Job, Record};
 
         let mut options = RunOptions::default();
-        let mut catalog =
-            Catalog::load_selected(&options.output_directory(root), ReportSelection::Latest)?;
+        let mut catalog = Catalog::load_existing_selected(
+            &options.output_directory(root),
+            ReportSelection::Latest,
+        )?;
         catalog.resolve_names(suites);
         let Some(latest) = catalog
             .reports
@@ -1055,19 +1057,10 @@ impl RunManager {
             .then(crate::diagnostics::record::OperationId::new);
         let command = request.process()?;
         let events = tempfile::NamedTempFile::new()?;
-        let scratch = (request.command == RunCommand::Deploy)
-            .then(|| {
-                tempfile::Builder::new()
-                    .prefix("regressify-deploy-")
-                    .tempdir()
-            })
-            .transpose()?;
         let payload = serde_json::to_vec(&super::worker::WorkerRequest {
             run: request.clone(),
             events_path: Some(events.path().into()),
-            scratch_directory: scratch
-                .as_ref()
-                .map(|directory| directory.path().to_path_buf()),
+            scratch_directory: None,
         })?;
         ensure!(
             payload.len() <= super::worker::MAX_REQUEST_BYTES,
@@ -1077,7 +1070,7 @@ impl RunManager {
             command,
             Some(payload),
             Some(events),
-            scratch,
+            None,
         )?);
         self.suite_history = self.completed_suite_history();
         self.progress = LiveProgress::default();

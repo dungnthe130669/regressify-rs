@@ -1,7 +1,7 @@
 use clap::Subcommand;
 
 use crate::cli::args::{
-    ApproveArgs, CompareArgs, McpArgs, OptimizeArgs, RefArgs, SnapshotArgs, TestArgs,
+    ApproveArgs, CleanArgs, CompareArgs, McpArgs, OptimizeArgs, RefArgs, SnapshotArgs, TestArgs,
 };
 
 #[derive(Subcommand)]
@@ -23,6 +23,9 @@ pub enum Command {
 
     /// Optimize images command
     Optimize(OptimizeArgs),
+
+    /// Preview or remove old test runs, reports, and unreferenced capture logs
+    Clean(CleanArgs),
 
     /// Run visual regression tests and compare against reference images
     Test(TestArgs),
