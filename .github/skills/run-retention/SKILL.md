@@ -27,6 +27,9 @@ description: 'Use when changing completed-run tracking, runs.json, clean command
    activity recovery. Legacy snapshots retain their existing report selection.
    Results Open HTML must regenerate in the viewed output folder off the UI thread;
    an existing `index.html` may predate completed captures with skipped comparison.
+   Raw reports persist `captureInventoryComplete`; scenario-scoped comparison is
+   not full coverage. Default consumers repair partial reports on demand, while
+   explicit report selection can retain them. Legacy reports omit the flag.
 1. Hold suite write ownership during capture/comparison and shared artifact
    ownership while reading. Cleanup needs exclusive artifact ownership. OS locks
    release after termination; leftover running records are not default candidates.

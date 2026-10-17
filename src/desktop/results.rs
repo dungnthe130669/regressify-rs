@@ -585,6 +585,10 @@ impl SuiteArtifacts {
             let counts = read_report(&root, &report_path, modified)
                 .ok()
                 .filter(|report| report.report.id == suite_id && !report.report.tests.is_empty())
+                .filter(|_| {
+                    crate::compare::report_gen::report_has_scope(&report_path, true)
+                        .unwrap_or(false)
+                })
                 .map(|report| report.report.scenario_counts());
             let has_report = counts.is_some();
             if captures == 0 && has_report {
@@ -787,7 +791,12 @@ impl Catalog {
                 .filter(|run| run.state == crate::run_history::RunState::Completed);
                 latest_tracked.insert(suite.clone(), selected.map(|run| run.id.clone()));
                 if compare_missing && let Some(run) = selected {
-                    crate::compare::report_gen::ensure_capture_report(
+                    let ensure_report = if matches!(selection, ReportSelection::Latest) {
+                        crate::compare::report_gen::ensure_complete_capture_report
+                    } else {
+                        crate::compare::report_gen::ensure_capture_report
+                    };
+                    ensure_report(
                         &suite,
                         suite
                             .file_name()
@@ -1385,6 +1394,49 @@ mod tests {
         assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
         assert_eq!(catalog.reports[0].run_id, "full");
         assert!(suite.join("bitmaps_test/full/report.json").is_file());
+    }
+
+    #[test]
+    fn completed_run_results_rebuild_scoped_reports_for_default_review() {
+        use crate::run_history::{RunLease, RunState};
+        let directory = tempfile::tempdir().unwrap();
+        let suite = directory.path().join("shop");
+        let mut run = RunLease::begin(&suite, "full", true).unwrap();
+        for image in ["home.png", "cart.png"] {
+            image::GrayImage::from_pixel(2, 2, image::Luma([80]))
+                .save(suite.join("bitmaps_test/full").join(image))
+                .unwrap();
+        }
+        run.finish(RunState::Completed, false).unwrap();
+        drop(run);
+        crate::compare::report_gen::generate_comparison_report(&suite, "shop", "full", 0.1, 1)
+            .unwrap();
+        let path = suite.join("bitmaps_test/full/report.json");
+        let mut report: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        report["tests"].as_array_mut().unwrap().truncate(1);
+        report["captureInventoryComplete"] = json!(false);
+        fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(
+            !SuiteArtifacts::load(directory.path(), "shop")
+                .unwrap()
+                .latest()
+                .unwrap()
+                .has_report
+        );
+        let explicit =
+            Catalog::load_selected(directory.path(), ReportSelection::Run("full")).unwrap();
+        assert_eq!(explicit.reports[0].report.tests.len(), 1);
+        let default = Catalog::load_selected(directory.path(), ReportSelection::Latest).unwrap();
+        assert!(default.warnings.is_empty(), "{:?}", default.warnings);
+        assert_eq!(default.reports[0].report.tests.len(), 2);
+        assert!(
+            SuiteArtifacts::load(directory.path(), "shop")
+                .unwrap()
+                .latest()
+                .unwrap()
+                .has_report
+        );
     }
 
     #[test]

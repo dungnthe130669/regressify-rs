@@ -16,6 +16,9 @@ Verified: 2026-10-17
 - Results Open HTML emits a viewed-output request to the workbench's background
   snapshot path. `latest_html_report_` covers stale HTML after skipped comparison,
   custom outputs, workspace titles, and disabled button routing.
+- Raw reports mark `captureInventoryComplete`; scoped comparisons no longer
+  masquerade as full-run results. Default catalogs/snapshots repair them, explicit
+  catalogs retain their scope, and suite shortcuts mark them not yet ready.
 - [Cleanup](../../src/run_history/cleanup.rs) reserves the latest full-suite run
   within the strict keep limit, rechecks previews under exclusive artifact locks,
   and persists pending log ownership before removing capture sidecars. Baseline

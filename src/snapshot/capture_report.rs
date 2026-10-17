@@ -318,7 +318,7 @@ pub(super) fn load_suite(
         else {
             return Ok(None);
         };
-        crate::compare::report_gen::ensure_capture_report(&suite_dir, id, &run)?;
+        crate::compare::report_gen::ensure_complete_capture_report(&suite_dir, id, &run)?;
         Some(run)
     } else {
         if !suite_dir.join("html_report/config.js").try_exists()?

@@ -18,6 +18,10 @@ are historical evidence, not open implementation tasks.
   output's latest completed full-suite snapshot in the background before opening.
   `latest_html_report_` verifies skipped-comparison freshness, custom output/title
   handling, interrupted-run exclusion, and the actual button's disabled guard.
+- Second review resolved scoped-comparison reuse: raw reports atomically record
+  capture-inventory coverage. Default Results, suite shortcuts, and snapshots
+  no longer reuse a one-scenario comparison as the full run's report. Explicit
+  partial review remains available; comparison and snapshot regressions pass.
 - Resolved: the deployment diagnostic fixture
   `preparation_phases_and_resizing_record_readable_stage_diagnostics` in
   [deployment tests](src/desktop/deployment.rs) now uses a realistic 500 MiB

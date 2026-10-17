@@ -25,7 +25,13 @@ struct ReportConfig {
     id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     display_name: Option<String>,
+    #[serde(default = "default_complete_inventory")]
+    capture_inventory_complete: bool,
     tests: Vec<ReportTest>,
+}
+
+fn default_complete_inventory() -> bool {
+    true
 }
 
 pub(crate) const SUITE_METADATA_FILE: &str = "suite.json";
@@ -609,6 +615,40 @@ fn compare_report_work(
 ///   tests/<date>/                   ← raw captured screenshots (existing)
 /// ```
 pub fn ensure_capture_report(suite_dir: &Path, suite_id: &str, run_id: &str) -> Result<()> {
+    ensure_report_scope(suite_dir, suite_id, run_id, false)
+}
+
+pub fn ensure_complete_capture_report(
+    suite_dir: &Path,
+    suite_id: &str,
+    run_id: &str,
+) -> Result<()> {
+    ensure_report_scope(suite_dir, suite_id, run_id, true)
+}
+
+pub(crate) fn report_has_scope(path: &Path, complete: bool) -> Result<bool> {
+    let Some(bytes) = read_bounded_regular_file(path, MAX_REPORT_MANIFEST_BYTES, "capture report")?
+    else {
+        return Ok(false);
+    };
+    if !complete {
+        return Ok(true);
+    }
+    let report: serde_json::Value =
+        serde_json::from_slice(&bytes).context("Invalid capture report")?;
+    match report.get("captureInventoryComplete") {
+        None => Ok(true),
+        Some(serde_json::Value::Bool(complete)) => Ok(*complete),
+        Some(_) => anyhow::bail!("Invalid capture report inventory scope"),
+    }
+}
+
+fn ensure_report_scope(
+    suite_dir: &Path,
+    suite_id: &str,
+    run_id: &str,
+    complete: bool,
+) -> Result<()> {
     select_capture_run(&suite_dir.join("bitmaps_test"), Some(run_id))?;
     for path in [
         suite_dir.to_path_buf(),
@@ -621,11 +661,11 @@ pub fn ensure_capture_report(suite_dir: &Path, suite_id: &str, run_id: &str) -> 
         .join("bitmaps_test")
         .join(run_id)
         .join("report.json");
-    if read_bounded_regular_file(&report, MAX_REPORT_MANIFEST_BYTES, "capture report")?.is_some() {
+    if report_has_scope(&report, complete)? {
         return Ok(());
     }
     let lease = crate::run_history::SuiteLease::acquire(suite_dir)?;
-    if read_bounded_regular_file(&report, MAX_REPORT_MANIFEST_BYTES, "capture report")?.is_none() {
+    if !report_has_scope(&report, complete)? {
         for directory in ["html_report", "bitmaps_reference"] {
             let path = suite_dir.join(directory);
             if path.try_exists()? {
@@ -933,6 +973,8 @@ fn generate_selected_report(
         suite_id,
         display_name,
         staged_entries,
+        scenario_ids.is_empty()
+            && reviewed_report.is_none_or(|report| report.capture_inventory_complete),
     )?;
     progress::emit(ProgressEvent::SuiteFinished {
         id: suite_id.into(),
@@ -1079,11 +1121,13 @@ fn commit_staged_report(
     suite_id: &str,
     display_name: Option<String>,
     entries: Vec<StagedReportEntry>,
+    capture_inventory_complete: bool,
 ) -> Result<ReportConfig> {
     let report = ReportConfig {
         test_suite: suite_id.to_string(),
         id: suite_id.to_string(),
         display_name,
+        capture_inventory_complete,
         tests: entries.iter().map(|entry| entry.test.clone()).collect(),
     };
 
@@ -1243,6 +1287,7 @@ pub(crate) fn generate_reference_report(
         suite_id,
         display_name,
         staged_entries,
+        true,
     )?;
     progress::emit(ProgressEvent::SuiteFinished {
         id: suite_id.into(),
@@ -1500,6 +1545,7 @@ impl StagedSuiteComparison {
             &self.suite_id,
             self.display_name.clone(),
             ordered_entries,
+            true,
         )?;
         progress::emit(ProgressEvent::SuiteFinished {
             id: self.suite_id.clone(),
@@ -2190,6 +2236,7 @@ mod tests {
             serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
         assert_eq!(report["tests"].as_array().unwrap().len(), 1);
         assert_eq!(report["tests"][0]["pair"]["scenarioId"], "home");
+        assert_eq!(report["captureInventoryComplete"], false);
         approve_screenshots_for_scenarios(&suite_dir, Some("run"), &selected).unwrap();
         assert_eq!(
             fs::read(reference_dir.join("home__FINAL.png")).unwrap(),
@@ -2200,6 +2247,15 @@ mod tests {
             png_bytes(10)
         );
         assert!(validate_scenario_captures(&test_dir, &["missing".into()]).is_err());
+        ensure_capture_report(&suite_dir, "basic", "run").unwrap();
+        let partial: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(partial["tests"].as_array().unwrap().len(), 1);
+        ensure_complete_capture_report(&suite_dir, "basic", "run").unwrap();
+        let complete: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(complete["tests"].as_array().unwrap().len(), 2);
+        assert_eq!(complete["captureInventoryComplete"], true);
     }
 
     #[test]
