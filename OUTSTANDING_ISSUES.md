@@ -11,6 +11,9 @@ are historical evidence, not open implementation tasks.
   selective strict retention, preview confirmation, automatic policies, protected
   baselines/logs, and stale-preview checks. [Managed staging](src/run_history/staging.rs)
   preserves retry ownership after failed removal and is swept before deployment.
+- Second review resolved a staging ownership race: claim and teardown now share
+  the catalog lock through the final lock-file removal. Two regressions failed
+  before the fix; all six staging ownership/recovery tests now pass.
 - Resolved: the deployment diagnostic fixture
   `preparation_phases_and_resizing_record_readable_stage_diagnostics` in
   [deployment tests](src/desktop/deployment.rs) now uses a realistic 500 MiB

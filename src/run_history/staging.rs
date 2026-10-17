@@ -73,7 +73,10 @@ impl StagingDirectory {
                     .is_some_and(|name| name == STAGING_ROOT),
             "Deployment scratch directory is not managed staging"
         );
-        require_real_directory(container.parent().context("Staging root is missing")?)?;
+        let staging_root = container.parent().context("Staging root is missing")?;
+        require_real_directory(staging_root)?;
+        let output = staging_root.parent().context("Staging output is missing")?;
+        let _catalog = lock_artifact_file(output, ".staging.lock", false)?;
         require_real_directory(container)?;
         require_real_directory(files)?;
         let lease = lock_artifact_file(container, ".lock", true)?;
@@ -222,7 +225,21 @@ pub fn cleanup_abandoned(output: &Path) -> Vec<String> {
 impl Drop for StagingDirectory {
     fn drop(&mut self) {
         drop(self.lease.take());
-        if let Err(error) = cleanup_container(&self.container) {
+        let cleanup = (|| -> Result<()> {
+            if !self.container.try_exists()? {
+                return Ok(());
+            }
+            let output = self
+                .container
+                .parent()
+                .and_then(Path::parent)
+                .context("Staging output is missing")?;
+            // Serialize the final close/unlink interval with new claims and catalog sweeps.
+            let _catalog = lock_artifact_file(output, ".staging.lock", false)?;
+            cleanup_container(&self.container)?;
+            Ok(())
+        })();
+        if let Err(error) = cleanup {
             eprintln!(
                 "Staging cleanup deferred; the next deployment will retry '{}': {error:#}",
                 self.container.display()
@@ -245,6 +262,29 @@ mod tests {
         drop(owner);
         assert!(container.join("files/report.zip").is_file());
         drop(worker);
+        assert!(!container.exists());
+    }
+
+    #[test]
+    fn staging_catalog_lock_blocks_new_claims() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = StagingDirectory::create(temp.path(), StagingKind::Deployment).unwrap();
+        let catalog = lock_artifact_file(temp.path(), ".staging.lock", false).unwrap();
+        assert!(StagingDirectory::claim(stage.path()).is_err());
+        drop(catalog);
+        assert!(StagingDirectory::claim(stage.path()).is_ok());
+    }
+
+    #[test]
+    fn staging_catalog_lock_defers_teardown_without_losing_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = StagingDirectory::create(temp.path(), StagingKind::Deployment).unwrap();
+        let container = stage.container.clone();
+        let catalog = lock_artifact_file(temp.path(), ".staging.lock", false).unwrap();
+        drop(stage);
+        assert!(container.join(OWNER_FILE).is_file());
+        drop(catalog);
+        assert!(cleanup_abandoned(temp.path()).is_empty());
         assert!(!container.exists());
     }
 

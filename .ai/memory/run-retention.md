@@ -21,6 +21,8 @@ Verified: 2026-10-17
   so failed payload removal can be retried. Shared owner locks protect active
   operations; deployment startup sweeps abandoned containers. Optimization copies
   and ZIPs live below the owned payload, and the CLI optimizer skips `.staging`.
+  `staging_catalog_lock_` reproduces claim/teardown bypasses; both now use the
+  catalog lock through final lock-file deletion, deferring cleanup on contention.
 - Focused evidence: `run_history`, `suite_run_completion_`, `completed_run_`,
   `run_retention_`, `cleanup_dialog_`, and exact deployment-inventory tests pass.
   GPUI and native Cleanup smoke cover pointer/keyboard controls at compact/large

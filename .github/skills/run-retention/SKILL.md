@@ -48,6 +48,8 @@ description: 'Use when changing completed-run tracking, runs.json, clean command
    removes payload first; failed removal must retain owner metadata. Sweep abandoned
    containers before the next deployment, skip active locks, and report unknown
    content instead of deleting it. Never publish registries, locks, or staging.
+   Hold the catalog lock during create, claim, sweep, and teardown, including
+   the final owner-lock close/unlink interval; contention defers owned cleanup.
 1. Keep cleanup file work off the UI thread, invalidate previews when inputs change,
    block dismissal while busy, preserve drafts, and refresh Results/inventory after
    deletion. The same dialog is reachable from Overview, Results, and root Fields.
