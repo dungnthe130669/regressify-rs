@@ -12,6 +12,7 @@ param(
     [switch]$Capture,
     [switch]$ScenarioFlows,
     [switch]$ArtifactFlows,
+    [switch]$CleanupFlows,
     [switch]$InstanceFlows,
     [switch]$UpdateFlows,
     [switch]$DeploymentFlows,
@@ -64,6 +65,7 @@ if (-not $SkipBuild) {
 
 $cleanupSnapshot = $null
 try {
+    Initialize-FixtureClipboard
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     if ($PublishingFlows) {
         foreach ($backup in $script:publishingBackups) {
@@ -118,12 +120,18 @@ try {
         Test-ArtifactFlows
         return
     }
+    if ($CleanupFlows) {
+        Test-CleanupFlows
+        return
+    }
     if ($ScenarioFlows) {
         Test-ScenarioFlows
         return
     }
     Test-DefaultFlows
 } finally {
-    . (Join-Path $PSScriptRoot 'desktop-smoke/cleanup.ps1')
+    try {
+        . (Join-Path $PSScriptRoot 'desktop-smoke/cleanup.ps1')
+    } finally { Restore-FixtureClipboard }
 }
 Write-Output "Native smoke test passed. Fixture: $workspace"

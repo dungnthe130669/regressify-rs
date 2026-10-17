@@ -3,6 +3,9 @@ function Focus-Fixture {
     $deadline = [System.Diagnostics.Stopwatch]::StartNew()
     do {
         if ($process.HasExited) { throw 'The native fixture exited before input could be delivered.' }
+        if ([RegressifySmokeFocus]::GetForegroundWindow() -eq $script:window) { return }
+        [RegressifySmokeNative]::SetForegroundWindow($script:window) | Out-Null
+        if ([RegressifySmokeFocus]::GetForegroundWindow() -eq $script:window) { return }
         $activation.AppActivate([int]$process.Id) | Out-Null
         if ([RegressifySmokeFocus]::GetForegroundWindow() -eq $script:window) { return }
         [RegressifySmokeNative]::DwmFlush() | Out-Null
@@ -112,6 +115,60 @@ function Send-FixturePointerClick([switch]$Right) {
         [RegressifySmokeNative]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
     }
     [RegressifySmokeNative]::DwmFlush() | Out-Null
+}
+
+function Initialize-FixtureClipboard {
+    $script:fixtureClipboardBackup = Invoke-FixtureClipboard { Copy-FixtureClipboardData ([System.Windows.Forms.Clipboard]::GetDataObject()) }
+    $script:fixtureClipboardOwned = $true
+    Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('Regressify smoke fixture') }
+}
+
+function Restore-FixtureClipboard {
+    if (-not $script:fixtureClipboardOwned) { return }
+    Invoke-FixtureClipboard {
+        if ($null -ne $script:fixtureClipboardBackup) { [System.Windows.Forms.Clipboard]::SetDataObject($script:fixtureClipboardBackup, $true) }
+        else { [System.Windows.Forms.Clipboard]::Clear() }
+    }
+    $script:fixtureClipboardOwned = $false
+    $script:fixtureClipboardBackup = $null
+}
+
+function Copy-FixtureClipboardData($Source, [switch]$FixtureOwned) {
+    if ($null -eq $Source) { return $null }
+    $formats = @($Source.GetFormats($false))
+    if ($formats.Count -eq 0) { return $null }
+    $snapshot = [System.Windows.Forms.DataObject]::new()
+    foreach ($format in $formats) {
+        $value = $Source.GetData($format, $false)
+        if ($null -eq $value) {
+            if ($FixtureOwned) { continue }
+            throw 'A clipboard format could not be backed up; clipboard tests were not started.'
+        }
+        if ($value -is [System.IO.Stream]) {
+            if (-not $value.CanRead -or -not $value.CanSeek -or $value.Length -gt 64MB) {
+                throw 'A clipboard stream cannot be safely backed up; clipboard tests were not started.'
+            }
+            $stream = $value
+            $position = $stream.Position
+            $copy = [System.IO.MemoryStream]::new()
+            try {
+                $stream.Position = 0
+                $stream.CopyTo($copy)
+                $copy.Position = 0
+                $value = $copy
+            } catch {
+                $copy.Dispose()
+                throw
+            } finally { $stream.Position = $position }
+        } elseif ($value -is [System.ICloneable]) {
+            $value = $value.Clone()
+        } elseif (-not $value.GetType().IsValueType) {
+            throw 'A clipboard format cannot be independently backed up; clipboard tests were not started.'
+        }
+        $snapshot.SetData($format, $false, $value)
+    }
+    if ($snapshot.GetFormats($false).Length -eq 0) { return $null }
+    return $snapshot
 }
 
 function Invoke-FixtureClipboard([scriptblock]$Operation, [ValidateRange(0, 10000)][int]$TimeoutMilliseconds = 2000) {

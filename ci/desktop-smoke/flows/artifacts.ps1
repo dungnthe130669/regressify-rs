@@ -1,3 +1,59 @@
+function Test-CleanupFlows {
+    $runRoot = Join-Path $output 'bitmaps_test'
+    foreach ($id in @('old-run', 'partial-run', 'interrupted-run')) {
+        Write-TestImage (Join-Path $runRoot "$id/checkout.png") ([System.Drawing.Color]::Teal)
+    }
+    Write-JsonFixture (Join-Path $output 'runs.json') @{
+        version = 1
+        runs = @(
+            @{ id = 'old-run'; state = 'completed'; fullSuite = $true; startedAt = 1; completedAt = 1; compared = $false },
+            @{ id = 'smoke-run'; state = 'completed'; fullSuite = $true; startedAt = 2; completedAt = 2; compared = $true },
+            @{ id = 'partial-run'; state = 'completed'; fullSuite = $false; startedAt = 3; completedAt = 3; compared = $false },
+            @{ id = 'interrupted-run'; state = 'running'; fullSuite = $true; startedAt = 4; completedAt = $null; compared = $false }
+        )
+    }
+    $unselected = Join-Path $workspace '.regressify/cleanup-unselected/bitmaps_test/keep/capture.png'
+    Write-TestImage $unselected ([System.Drawing.Color]::Teal)
+    $reference = Join-Path $output 'bitmaps_reference/checkout.png'
+    $referenceHash = (Get-FileHash $reference).Hash
+    Invoke-Control 'Results'
+    Invoke-Control 'smoke.tests.json'
+    Wait-Control '1 report, 0 warnings' | Out-Null
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            Invoke-Control 'Clean up old test runs' -Pointer
+            Wait-Control 'All test suites' | Out-Null
+            Invoke-Control 'Preview' -Pointer
+            Wait-Control 'smoke: keep smoke-run; delete 3 run(s)' | Out-Null
+            Capture-Window ('cleanup-preview-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Send-FixtureKeys Escape
+            Wait-WindowState { $null -eq (Find-Control 'Delete old runs') } 'Cleanup dialog did not cancel.'
+            foreach ($id in @('old-run', 'partial-run', 'interrupted-run')) {
+                if (-not (Test-Path (Join-Path $runRoot $id))) { throw 'Cleanup preview or cancellation removed test runs.' }
+            }
+        }
+    }
+    Invoke-Control 'Clean up old test runs' -Pointer
+    Wait-Control 'All test suites' | Out-Null
+    Invoke-Control 'Preview' -Pointer
+    Wait-Control 'smoke: keep smoke-run; delete 3 run(s)' | Out-Null
+    Invoke-Control 'Delete old runs' -Pointer
+    Wait-Control 'Removed 3 old test run(s)' | Out-Null
+    Capture-Window 'cleanup-completed'
+    foreach ($id in @('old-run', 'partial-run', 'interrupted-run')) {
+        if (Test-Path (Join-Path $runRoot $id)) { throw 'Confirmed cleanup retained a removable run.' }
+    }
+    if (-not (Test-Path (Join-Path $runRoot 'smoke-run/report.json'))) { throw 'Cleanup removed the latest completed full-suite report.' }
+    if ((Get-FileHash $reference).Hash -ne $referenceHash) { throw 'Cleanup changed the reference baseline.' }
+    if (-not (Test-Path $unselected)) { throw 'Cleanup removed an unselected suite.' }
+    $registry = Get-Content (Join-Path $output 'runs.json') -Raw | ConvertFrom-Json
+    if ($registry.runs.Count -ne 1 -or $registry.runs[0].id -ne 'smoke-run') { throw 'Cleanup did not update its run registry.' }
+    Send-FixtureKeys Escape
+    Write-Output 'Cleanup previews, cancellation, retained defaults, reference preservation, and confirmed selective deletion passed.'
+}
+
 function Test-ArtifactFlows {
     Invoke-Control 'smoke.tests.json'
     Invoke-Control 'Checkout'

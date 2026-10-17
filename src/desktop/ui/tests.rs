@@ -2230,6 +2230,53 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
 }
 
 #[gpui_kit::test]
+async fn source_completion_offers_nested_origin_after_paste(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1000.), px(720.)));
+    let original = "scenarios: []\nbasicAuth:\n  ori";
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("editor-tabs").click(0_usize, cx);
+        let focus = view.read(cx).source.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(original.into()));
+        window.press("ctrl-a", cx);
+        window.press("ctrl-v", cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.press("ctrl-space", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        let menu = view.read(cx).source.read(cx).completion_menu_state();
+        menu.open && menu.items.len() == 1 && menu.items[0].label == "origin"
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("source-completion-status").label(),
+            Some("1 suggestion")
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).source.read(cx).value().contains("  origin:")
+    })
+    .await;
+    cx.update(|cx| {
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .value()
+                .starts_with("scenarios: []\nbasicAuth:\n  origin:")
+        )
+    });
+}
+
+#[gpui_kit::test]
 async fn source_completion_can_be_accepted_with_tab_and_saved_without_duplicate_text(
     cx: &mut TestAppContext,
 ) {

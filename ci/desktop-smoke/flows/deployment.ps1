@@ -50,7 +50,7 @@ function Clear-DeploymentFixtureSelection {
 }
 
 function Test-DeploymentCopy([string]$Control, [string]$Expected, [switch]$SelectAll) {
-    $clipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
+    $clipboard = Invoke-FixtureClipboard { Copy-FixtureClipboardData ([System.Windows.Forms.Clipboard]::GetDataObject()) -FixtureOwned:$script:fixtureClipboardOwned }
     try {
         Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('No deployment text copied') }
         $clipboardSequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()

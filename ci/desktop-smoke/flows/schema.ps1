@@ -315,15 +315,7 @@ function Test-SchemaFlows {
         Invoke-Control 'Go to issue on line 8' -Pointer
         Wait-Control 'Ln 8, Col 1' | Out-Null
     }
-    $clipboard = Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
-    $backup = [System.Windows.Forms.DataObject]::new()
-    if ($null -ne $clipboard) {
-        foreach ($format in $clipboard.GetFormats($false)) {
-            $data = $clipboard.GetData($format, $false)
-            if ($data -is [System.ICloneable]) { $data = $data.Clone() }
-            $backup.SetData($format, $false, $data)
-        }
-    }
+    $clipboard = Invoke-SchemaClipboard { Copy-FixtureClipboardData ([System.Windows.Forms.Clipboard]::GetDataObject()) -FixtureOwned:$script:fixtureClipboardOwned }
     try {
     $path = Join-Path $workspace 'visual_tests/schema.tests.yaml'
     $original = (Get-FileHash -LiteralPath $path).Hash
@@ -448,7 +440,7 @@ function Test-SchemaFlows {
     Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, uninterrupted typing through suggestions, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, automatic external reload, conflict cancellation/confirmation, and compact light/dark layouts passed.'
     } finally {
         if ($null -ne $clipboard) {
-            Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true) }
+            Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) }
         } else {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::Clear() }
         }

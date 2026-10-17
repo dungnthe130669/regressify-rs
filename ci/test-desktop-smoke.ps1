@@ -19,7 +19,7 @@ function Assert-SmokeEqual($Actual, $Expected, [string]$Message) {
 }
 
 $entry = Read-SmokeScript (Join-Path $PSScriptRoot 'desktop-smoke.ps1')
-$parameters = @('SkipBuild', 'KeepOpen', 'Capture', 'ScenarioFlows', 'ArtifactFlows', 'InstanceFlows', 'UpdateFlows', 'DeploymentFlows', 'PublishingFlows', 'TitlebarFlows', 'GitFlows', 'ComparisonFlows', 'ErrorImageFlows', 'IconFlows', 'SchemaFlows')
+$parameters = @('SkipBuild', 'KeepOpen', 'Capture', 'ScenarioFlows', 'ArtifactFlows', 'CleanupFlows', 'InstanceFlows', 'UpdateFlows', 'DeploymentFlows', 'PublishingFlows', 'TitlebarFlows', 'GitFlows', 'ComparisonFlows', 'ErrorImageFlows', 'IconFlows', 'SchemaFlows')
 Assert-SmokeEqual @($entry.ParamBlock.Parameters.Name.VariablePath.UserPath) $parameters 'Public switches changed'
 foreach ($parameter in $entry.ParamBlock.Parameters) {
     Assert-SmokeEqual $parameter.StaticType.Name 'SwitchParameter' "Parameter $($parameter.Name) is not a switch"
@@ -298,6 +298,9 @@ public static class $pointerTypeName {
     public static bool FailPressedFrame;
     public static uint ClipboardSequence;
     public static uint GetClipboardSequenceNumber() { return ClipboardSequence; }
+    public static IntPtr ForegroundWindow;
+    public static IntPtr GetForegroundWindow() { return ForegroundWindow; }
+    public static bool SetForegroundWindow(IntPtr window) { ForegroundWindow = window; Events.Add("foreground"); return true; }
     private static bool pressed;
     public static void Reset(bool fail) { Events.Clear(); pressed = false; FailPressedFrame = fail; }
     public static bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags) {
@@ -347,6 +350,27 @@ function Test-SmokePointerClick([bool]$FailPressedFrame) {
 }
 Test-SmokePointerClick $false
 Test-SmokePointerClick $true
+
+$focusProbe = $definitions['Focus-Fixture'].Extent.Text.Replace('[RegressifySmokeNative]', "[$pointerTypeName]").Replace('[RegressifySmokeFocus]', "[$pointerTypeName]")
+& {
+    . ([scriptblock]::Create($focusProbe))
+    $activation = [pscustomobject]@{}
+    $activation | Add-Member ScriptMethod AppActivate { param($Id) return $false }
+    function New-Object { param($ComObject) return $activation }
+    $process = [pscustomobject]@{ HasExited = $false; Id = 123 }
+    $previousWindow = $script:window
+    try {
+        $script:window = [IntPtr]42
+        $pointerType::ForegroundWindow = [IntPtr]::Zero
+        $pointerType::Reset($false)
+        Focus-Fixture
+        Assert-SmokeEqual $pointerType::ForegroundWindow $script:window 'Focus must activate the exact fixture window when process activation is unavailable'
+        $process.HasExited = $true
+        $failure = $null
+        try { Focus-Fixture } catch { $failure = $_.Exception.Message }
+        Assert-SmokeEqual $failure 'The native fixture exited before input could be delivered.' 'Exited fixtures must reject input'
+    } finally { $script:window = $previousWindow }
+}
 
 foreach ($failPressedFrame in @($false, $true)) {
     & {
@@ -427,6 +451,110 @@ foreach ($wideOnlyWorkaround in @($false, $true)) {
         } finally { $script:window = $originalWindow }
     }
     $stockSizingChecks++
+}
+
+$clipboardTypeName = 'SmokeClipboardCheck' + [guid]::NewGuid().ToString('N')
+$clipboardDataTypeName = $clipboardTypeName + 'Data'
+$clipboardTypes = Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+public sealed class $clipboardDataTypeName {
+    private readonly Dictionary<string, object> values = new Dictionary<string, object>();
+    public bool Disconnected;
+    public void SetData(string format, bool convert, object value) { values[format] = value; }
+    public string[] GetFormats(bool convert) { return new List<string>(values.Keys).ToArray(); }
+    public object GetData(string format, bool convert) {
+        if (Disconnected) throw new InvalidOperationException("Synthetic clipboard provider is disconnected");
+        return values[format];
+    }
+}
+public static class $clipboardTypeName {
+    public static $clipboardDataTypeName Current;
+    public static bool FailSetText;
+    public static $clipboardDataTypeName GetDataObject() { return Current; }
+    public static void SetText(string text) {
+        Current = null;
+        if (FailSetText) throw new InvalidOperationException("Synthetic clipboard initialization failure");
+        Current = new $clipboardDataTypeName();
+        Current.SetData("Text", false, text);
+    }
+    public static void SetDataObject($clipboardDataTypeName data, bool persist) { Current = data; }
+    public static void Clear() { Current = null; }
+}
+"@ -PassThru
+$clipboardType = $clipboardTypes | Where-Object Name -eq $clipboardTypeName
+$clipboardDataType = $clipboardTypes | Where-Object Name -eq $clipboardDataTypeName
+$backupStatement = @($definitions['Test-DefaultFlows'].Body.EndBlock.Statements | Where-Object {
+    $_ -is [System.Management.Automation.Language.AssignmentStatementAst]
+})[0].Extent.Text.Replace('[System.Windows.Forms.Clipboard]', "[$clipboardTypeName]")
+& {
+    function Invoke-FixtureClipboard([scriptblock]$Operation) { & $Operation }
+    if ($definitions.ContainsKey('Copy-FixtureClipboardData')) {
+        $copyProbe = $definitions['Copy-FixtureClipboardData'].Extent.Text.
+            Replace('[System.Windows.Forms.DataObject]', "[$clipboardDataTypeName]")
+        . ([scriptblock]::Create($copyProbe))
+    }
+    $source = [Activator]::CreateInstance($clipboardDataType)
+    $bytes = [byte[]]@(1, 2, 3, 4)
+    $stream = [System.IO.MemoryStream]::new([byte[]]@(5, 6, 7, 8))
+    $stream.Position = 2
+    $source.SetData('Text', $false, 'synthetic original')
+    $source.SetData('Bytes', $false, $bytes)
+    $source.SetData('Stream', $false, $stream)
+    $clipboardType::Current = $source
+    . ([scriptblock]::Create($backupStatement))
+    Assert-SmokeEqual $stream.Position 2 'Clipboard backup must preserve the source stream position'
+    Assert-SmokeEqual ($detailsClipboard.GetData('Bytes', $false).GetType()) ([byte[]]) 'Clipboard backup must preserve binary data types'
+    $source.Disconnected = $true
+    $bytes[0] = 99
+    $stream.Position = 0
+    $stream.WriteByte(99)
+    Assert-SmokeEqual ($detailsClipboard.GetData('Text', $false)) 'synthetic original' 'Clipboard backup must outlive its original provider'
+    Assert-SmokeEqual ($detailsClipboard.GetData('Bytes', $false)) ([byte[]]@(1, 2, 3, 4)) 'Clipboard backup must own mutable byte data'
+    Assert-SmokeEqual ($detailsClipboard.GetData('Stream', $false).ToArray()) ([byte[]]@(5, 6, 7, 8)) 'Clipboard backup must copy complete stream data'
+    $stream.Dispose()
+    $detailsClipboard.GetData('Stream', $false).Dispose()
+    Assert-SmokeEqual (Copy-FixtureClipboardData $null) $null 'Empty clipboard backups must remain empty'
+    $unsupported = [Activator]::CreateInstance($clipboardDataType)
+    $unsupported.SetData('Unknown', $false, [object]::new())
+    $failure = $null
+    try { Copy-FixtureClipboardData $unsupported } catch { $failure = $_.Exception.Message }
+    Assert-SmokeEqual $failure 'A clipboard format cannot be independently backed up; clipboard tests were not started.' 'Unsupported clipboard data must fail before mutation'
+    foreach ($fixtureOwned in @($true, $false)) {
+        $nullable = [Activator]::CreateInstance($clipboardDataType)
+        $nullable.SetData('Empty', $false, $null)
+        $failure = $null
+        $copy = $null
+        try { $copy = Copy-FixtureClipboardData $nullable -FixtureOwned:$fixtureOwned } catch { $failure = $_.Exception.Message }
+        if ($fixtureOwned) {
+            Assert-SmokeEqual $failure $null 'Missing synthetic formats may be discarded within an owned clipboard scope'
+            Assert-SmokeEqual $copy $null 'An empty synthetic clipboard must restore as empty'
+        } else {
+            Assert-SmokeEqual $failure 'A clipboard format could not be backed up; clipboard tests were not started.' 'Unreadable nonempty formats must fail before mutation'
+        }
+    }
+}
+
+& {
+    foreach ($name in @('Copy-FixtureClipboardData', 'Initialize-FixtureClipboard', 'Restore-FixtureClipboard')) {
+        $body = $definitions[$name].Extent.Text.Replace('[System.Windows.Forms.DataObject]', "[$clipboardDataTypeName]").Replace('[System.Windows.Forms.Clipboard]', "[$clipboardTypeName]")
+        . ([scriptblock]::Create($body))
+    }
+    function Invoke-FixtureClipboard([scriptblock]$Operation) { & $Operation }
+    foreach ($fails in @($false, $true)) {
+        $original = [Activator]::CreateInstance($clipboardDataType)
+        $original.SetData('Text', $false, 'synthetic user clipboard')
+        $clipboardType::Current = $original
+        $clipboardType::FailSetText = $fails
+        $script:fixtureClipboardOwned = $false
+        try {
+            try { Initialize-FixtureClipboard } finally { Restore-FixtureClipboard }
+        } catch {
+            if (-not $fails) { throw }
+        }
+        Assert-SmokeEqual ($clipboardType::Current.GetData('Text', $false)) 'synthetic user clipboard' 'Outer clipboard scope must restore even after partial initialization failure'
+        Assert-SmokeEqual $script:fixtureClipboardOwned $false 'Clipboard scope must release ownership after restoration'
+    }
 }
 
 $clipboardProbe = $definitions['Invoke-FixtureClipboard'].Extent.Text.Replace('[RegressifySmokeNative]', "[$pointerTypeName]")
@@ -527,9 +655,10 @@ $flows = [ordered]@{
     UpdateFlows = @('Test-UpdateFlows')
     InstanceFlows = @('Test-InstanceFlows')
     ArtifactFlows = @('Test-ArtifactFlows')
+    CleanupFlows = @('Test-CleanupFlows')
     ScenarioFlows = @('Test-ScenarioFlows')
 }
-$mockCommands = @('Write-JsonFixture', 'Start-Fixture', 'Test-ApplicationMenus', 'Test-DefaultFlows') + @($flows.Values | ForEach-Object { $_ })
+$mockCommands = @('Initialize-FixtureClipboard', 'Restore-FixtureClipboard', 'Write-JsonFixture', 'Start-Fixture', 'Test-ApplicationMenus', 'Test-DefaultFlows') + @($flows.Values | ForEach-Object { $_ })
 foreach ($name in $mockCommands) {
     if (-not $definitions.ContainsKey($name)) { throw "Dispatch helper is missing: $name" }
 }
@@ -560,7 +689,7 @@ function Test-SmokeDispatch([hashtable]$Flags, [string[]]$ExpectedFlow, [string]
     try { & $runner | Out-Null } catch { $failure = $_.Exception.Message }
     $expectedFailure = if ($FailurePoint) { "Synthetic failure: $FailurePoint" } else { $null }
     Assert-SmokeEqual $failure $expectedFailure 'Flow errors must propagate after cleanup'
-    $expected = @('Write-JsonFixture', 'Start-Fixture')
+    $expected = @('Initialize-FixtureClipboard', 'Write-JsonFixture', 'Start-Fixture')
     if ($ExpectedFlow[0] -notin @('Test-WindowIcons', 'Test-ErrorImageFlows')) { $expected += 'Test-ApplicationMenus' }
     $expected += $ExpectedFlow
     if ($FailurePoint) {
@@ -569,6 +698,7 @@ function Test-SmokeDispatch([hashtable]$Flags, [string[]]$ExpectedFlow, [string]
         $expected = $expected[0..$failureIndex]
     }
     $expected += $(if ($SettingsAbsent) { 'Remove settings' } else { 'Restore settings' })
+    $expected += 'Restore-FixtureClipboard'
     Assert-SmokeEqual @($events) $expected 'Incorrect flow order or missing cleanup'
     $script:dispatchChecks++
 }
@@ -579,7 +709,7 @@ Test-SmokeDispatch @{ Capture = $true } @('Test-DefaultFlows')
 Test-SmokeDispatch @{ SkipBuild = $true } @('Test-DefaultFlows')
 Test-SmokeDispatch @{ KeepOpen = $true } @('Test-DefaultFlows')
 Test-SmokeDispatch @{} @('Test-DefaultFlows') -SettingsAbsent
-foreach ($failure in @('Write-JsonFixture', 'Start-Fixture', 'Test-ApplicationMenus', 'Test-DefaultFlows')) {
+foreach ($failure in @('Initialize-FixtureClipboard', 'Write-JsonFixture', 'Start-Fixture', 'Test-ApplicationMenus', 'Test-DefaultFlows')) {
     Test-SmokeDispatch @{} @('Test-DefaultFlows') -FailurePoint $failure
 }
 foreach ($flow in $flows.GetEnumerator()) {

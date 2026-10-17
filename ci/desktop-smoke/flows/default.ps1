@@ -1,5 +1,5 @@
 function Test-DefaultFlows {
-    $detailsClipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
+    $detailsClipboard = Invoke-FixtureClipboard { Copy-FixtureClipboardData ([System.Windows.Forms.Clipboard]::GetDataObject()) -FixtureOwned:$script:fixtureClipboardOwned }
     try {
         foreach ($dimensions in @(@(1000, 640), @(1080, 720), @(1600, 1000))) {
             [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null

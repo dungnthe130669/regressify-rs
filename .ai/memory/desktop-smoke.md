@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-15
+Verified: 2026-10-17
 
 - Run/download bars use Kit 0.7.3 Progress with percentages and accessible names
   (`Scenario job progress` verified as a 0..100 ProgressBar in default smoke).
@@ -57,11 +57,12 @@ Verified: 2026-10-15
   Avoid reads while the sequence is unchanged to reduce contention with the writer.
   Overview Details now uses that helper too; its headless regression failed
   before the fix, then passed along with the complete native Default flow.
-  Only clipboard-busy `CLIPBRD_E_CANT_OPEN` is retried, for a bounded duration;
-  non-busy errors propagate. Results/deployment preserve the clipboard in
-  `finally`; headless checks cover order, exact text, retries, and failure cases.
-  Failure diagnostics contain only type/HRESULT/elapsed time. Historical failed
-  clipboard backups are not recovered by a later passing run.
+  Retry only `CLIPBRD_E_CANT_OPEN`. An owned user snapshot is restored in outer
+  `finally`; copy mutable data/streams, reject unreadable user formats, and drop
+  missing private formats only in fixture-owned scopes. Lifetime regressions pass.
+- Exact-HWND activation preserves focused child input. Native Cleanup, Default,
+  Comparison, Git, Deployment and Artifact pass. Schema's Ctrl+Space gap is
+  native-only; toolbar Suggest and the paste-path GPUI regression pass.
 - [Schema smoke](../../ci/desktop-smoke/flows/schema.ps1) verifies Enter/Tab/Escape
   after Alt+Tab to an owned temporary window and native return activation without
   clicking the editor. Compare `AutomationElement.FocusedElement` across the switch;

@@ -113,6 +113,8 @@ $settingsBackup = Join-Path $workspace 'original-desktop-settings.json'
 if ($settingsExisted) { Copy-Item -LiteralPath $settingsPath -Destination $settingsBackup }
 $process = $null
 $script:window = [IntPtr]::Zero
+$script:fixtureClipboardBackup = $null
+$script:fixtureClipboardOwned = $false
 $script:fixtureProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 $script:publishingBackups = @()
 $script:publishingCredentials = [System.Collections.Generic.List[string]]::new()

@@ -1,5 +1,5 @@
 function Test-CaptureInformation([string]$Name, [switch]$SameUrl, [int]$DiffX = 0, [int]$DiffY = 0) {
-    $clipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
+    $clipboard = Invoke-FixtureClipboard { Copy-FixtureClipboardData ([System.Windows.Forms.Clipboard]::GetDataObject()) -FixtureOwned:$script:fixtureClipboardOwned }
     try {
         Hover-Control 'Scenario information'
         Wait-Control 'Scenario information details' | Out-Null
@@ -43,7 +43,7 @@ function Test-CaptureInformation([string]$Name, [switch]$SameUrl, [int]$DiffX = 
 }
 
 function Test-ImageContextMenus {
-    $clipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
+    $clipboard = Invoke-FixtureClipboard { Copy-FixtureClipboardData ([System.Windows.Forms.Clipboard]::GetDataObject()) -FixtureOwned:$script:fixtureClipboardOwned }
     try {
         foreach ($pane in @('Reference', 'Test', 'Diff')) {
             Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('Regressify URL copy pending') }
