@@ -14,6 +14,10 @@ are historical evidence, not open implementation tasks.
 - Second review resolved a staging ownership race: claim and teardown now share
   the catalog lock through the final lock-file removal. Two regressions failed
   before the fix; all six staging ownership/recovery tests now pass.
+- Second review resolved stale local HTML opening: Results regenerates the viewed
+  output's latest completed full-suite snapshot in the background before opening.
+  `latest_html_report_` verifies skipped-comparison freshness, custom output/title
+  handling, interrupted-run exclusion, and the actual button's disabled guard.
 - Resolved: the deployment diagnostic fixture
   `preparation_phases_and_resizing_record_readable_stage_diagnostics` in
   [deployment tests](src/desktop/deployment.rs) now uses a realistic 500 MiB

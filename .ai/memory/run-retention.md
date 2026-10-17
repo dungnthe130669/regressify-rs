@@ -13,6 +13,9 @@ Verified: 2026-10-17
 - [Desktop catalogs](../../src/desktop/results.rs) separate existing-only reads
   from on-demand comparison. Background refresh/recovery must use existing-only
   loading. Partial completed runs stay in inventory for explicit IDs, not defaults.
+- Results Open HTML emits a viewed-output request to the workbench's background
+  snapshot path. `latest_html_report_` covers stale HTML after skipped comparison,
+  custom outputs, workspace titles, and disabled button routing.
 - [Cleanup](../../src/run_history/cleanup.rs) reserves the latest full-suite run
   within the strict keep limit, rechecks previews under exclusive artifact locks,
   and persists pending log ownership before removing capture sidecars. Baseline

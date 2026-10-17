@@ -390,6 +390,9 @@ impl Workbench {
         let cleanup_observer = cx.observe(&cleanup, |_, _, cx| cx.notify());
         let results_subscription =
             cx.subscribe_in(&results, window, |this, _, event, window, cx| match event {
+                reports::ResultEvent::OpenHtmlReport(output) => {
+                    this.open_latest_html_report(output.clone(), window, cx);
+                }
                 reports::ResultEvent::Cleanup { root, suite } => {
                     this.open_cleanup(Some(root.clone()), suite.clone(), window, cx);
                 }
@@ -827,6 +830,50 @@ impl Workbench {
 
     fn unsaved(&self) -> bool {
         self.session.dirty() || !self.field_errors.is_empty()
+    }
+
+    fn open_latest_html_report(
+        &mut self,
+        output: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        let Some(workspace) = self
+            .session
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.root.clone())
+        else {
+            return;
+        };
+        self.task(
+            "Preparing latest HTML report",
+            move || {
+                crate::snapshot::snapshot_at(
+                    &workspace,
+                    &output,
+                    crate::cli::args::SnapshotArgs::default(),
+                )?;
+                let output = output.canonicalize()?;
+                let report = output.join("index.html").canonicalize()?;
+                anyhow::ensure!(
+                    report.starts_with(&output),
+                    "Summary report escapes the output directory"
+                );
+                Ok(report)
+            },
+            |this, report, _, _| {
+                this.status = match open::that_detached(report) {
+                    Ok(()) => "Opened latest HTML report".into(),
+                    Err(error) => format!("Cannot open HTML report: {error}"),
+                };
+            },
+            window,
+            cx,
+        );
     }
 
     fn refresh_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {

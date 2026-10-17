@@ -12,13 +12,18 @@ use crate::{
 };
 
 pub fn snapshot(args: SnapshotArgs) -> Result<()> {
-    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+    snapshot_at(
+        common::ROOT_DIR.get_required()?,
+        common::REGRESSIFY_DIR.get_required()?,
+        args,
+    )
+}
 
+pub(crate) fn snapshot_at(root: &Path, regressify_dir: &Path, args: SnapshotArgs) -> Result<()> {
     if !regressify_dir.exists() {
         bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
 
-    let root = common::ROOT_DIR.get_required()?;
     let workspace_config = load_workspace_config(root).with_context(|| {
         format!(
             "Failed to load snapshot workspace configuration in '{}'",
@@ -79,6 +84,44 @@ fn snapshot_suite_directories(regressify_dir: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_html_report_regenerates_after_a_completed_skipped_comparison() {
+        use crate::run_history::{RunLease, RunState};
+        let workspace = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        fs::write(
+            workspace.path().join("regressify.yaml"),
+            "snapshotTitle: Current workspace\n",
+        )
+        .unwrap();
+        let suite = output.path().join("shop");
+        for id in ["old", "new"] {
+            let mut run = RunLease::begin(&suite, id, true).unwrap();
+            let image = lodepng::encode32(&[40_u8, 80, 120, 255], 1, 1).unwrap();
+            fs::write(suite.join("bitmaps_test").join(id).join("home.png"), image).unwrap();
+            run.finish(RunState::Completed, false).unwrap();
+            drop(run);
+            snapshot_at(workspace.path(), output.path(), SnapshotArgs::default()).unwrap();
+            let report: serde_json::Value = serde_json::from_slice(
+                &fs::read(output.path().join("_snapshot/data/suites/shop.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(report["runId"], id);
+            assert!(
+                fs::read_to_string(output.path().join("index.html"))
+                    .unwrap()
+                    .contains("Current workspace")
+            );
+        }
+        drop(RunLease::begin(&suite, "interrupted", true).unwrap());
+        snapshot_at(workspace.path(), output.path(), SnapshotArgs::default()).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(
+            &fs::read(output.path().join("_snapshot/data/suites/shop.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["runId"], "new");
+    }
 
     #[test]
     fn snapshots_filter_exact_names_globs_and_multiple_suites() {

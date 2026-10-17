@@ -70,6 +70,7 @@ fn image_page_url(pair: &Pair, index: usize) -> Option<reqwest::Url> {
 }
 
 pub(super) enum ResultEvent {
+    OpenHtmlReport(PathBuf),
     Cleanup {
         root: PathBuf,
         suite: Option<String>,
@@ -1319,27 +1320,12 @@ impl ResultsPanel {
         .detach();
     }
 
-    fn open_report(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = (|| -> Result<PathBuf> {
-            let root = self
-                .root
-                .as_ref()
-                .ok_or_else(|| anyhow!("No output directory selected"))?;
-            let summary = root.join("index.html");
-            if summary.exists() {
-                let path = summary.canonicalize()?;
-                anyhow::ensure!(
-                    path.starts_with(root.canonicalize()?),
-                    "Summary report escapes the output directory"
-                );
-                Ok(path)
-            } else {
-                self.selected_report()
-                    .ok_or_else(|| anyhow!("No report selected"))?
-                    .html_report(root)
-            }
-        })();
-        self.open_external(target, window, cx);
+    fn open_report(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.disabled
+            && let Some(root) = &self.root
+        {
+            cx.emit(ResultEvent::OpenHtmlReport(root.clone()));
+        }
     }
 
     fn render_captures(&self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2974,7 +2960,7 @@ impl Render for ResultsPanel {
                             .ghost()
                             .icon(gpui_kit::assets::IconName::ExternalLink)
                             .tooltip("Open HTML report")
-                            .disabled(self.root.is_none())
+                            .disabled(self.disabled || self.root.is_none())
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.open_report(window, cx)),
                             ),
@@ -3490,6 +3476,60 @@ mod pointer_tests {
         cx: &mut gpui_kit::TestAppContext,
     ) {
         check_comparison_completion(cx, false, crate::desktop::runner::RunOutcome::Completed).await;
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn latest_html_report_button_requests_the_viewed_output(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::{path::PathBuf, time::Duration};
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let output = directory.path().join("missing-custom-output");
+        let results = cx.update(|cx| view.read(cx).results.clone());
+        let requested = cx.update(|cx| {
+            cx.new(|cx| {
+                cx.subscribe(&results, |outputs: &mut Vec<PathBuf>, _, event, _| {
+                    if let super::ResultEvent::OpenHtmlReport(output) = event {
+                        outputs.push(output.clone());
+                    }
+                })
+                .detach();
+                Vec::<PathBuf>::new()
+            })
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.main_tab = 2;
+                cx.notify();
+            });
+            results.update(cx, |panel, cx| {
+                panel.root = Some(output.clone());
+                panel.disabled = false;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("open-report", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            !view.read(cx).busy
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(requested.read(cx), &vec![output.clone()]);
+            results.update(cx, |panel, cx| {
+                panel.disabled = true;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("open-report", cx);
+            assert_eq!(requested.read(cx), &vec![output]);
+        })
+        .unwrap();
     }
 
     #[cfg(feature = "gui-tests")]
