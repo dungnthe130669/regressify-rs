@@ -39,8 +39,12 @@ are historical evidence, not open implementation tasks.
   reactivating an already-focused editor. Cleanup preview summaries have explicit
   accessible names. Native Cleanup, Default, Comparison, Git, Deployment, and
   Artifact flows pass; compact/large light/dark screenshots were inspected.
-- The full GUI/worker gate passes with no exclusions: 1261 library tests and
+- The final reviewed GUI/worker gate passes with no exclusions: 1266 library tests and
   11 worker tests, with 39 and 4 opt-in tests ignored respectively.
+- Final CLI validation passes 605 tests with 30 opt-in cases ignored. The cached
+  Chromium loopback test was also enabled explicitly and passed without downloads.
+  Native capture/cancel/rerun and scenario-only smoke passed after the review fixes,
+  preserving sibling references, saved source, clipboard data, and preferences.
 - Remaining native coverage gap: Schema smoke cannot open the nested Basic Auth
   completion with synthetic Ctrl+Space on this desktop. The Suggest toolbar
   command and the exact paste/Ctrl+Space/Enter GPUI regression work. An alternate

@@ -35,3 +35,6 @@ Verified: 2026-10-17
   sizes in both themes. Preview summaries need named Status elements for native
   accessibility. Six native flows pass; the separate Schema shortcut coverage gap
   remains in [verification notes](../../OUTSTANDING_ISSUES.md#run-retention-and-verification-2026-10-17).
+- Final review gates pass 605 CLI tests, 1266 GUI/library tests, and 11 worker
+  cases without exclusions. Cached-Chromium loopback capture and native
+  capture/cancel/rerun smoke also pass; no browser download or publication was used.
