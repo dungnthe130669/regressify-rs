@@ -47,6 +47,10 @@ conversion otherwise invalidates those hashes, even in a clean working tree.
 For an already converted checkout, run `bun run build` before rerunning Cargo;
 do not normalize bytes in the hash helpers or bypass the resource-version test.
 
+Frontend text uses `text=auto eol=lf` in the same attributes file so Windows
+autocrlf cannot undo Biome formatting. Binary assets remain binary. Run
+`bun run format` once for an already-converted checkout, then `bun run lint`.
+
 To preview the actual Rust-generated site, run from the repository root:
 
 ```sh
