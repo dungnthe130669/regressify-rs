@@ -469,6 +469,16 @@ pub(super) fn append_action_viewport_diagnostics(
     diagnostics.sort_by_key(|issue| (issue.range.start, issue.range.end));
 }
 
+// Kit 0.7.3 tracks hover help and diagnostic popovers separately on EditorState;
+// clear both so resolved or reconfigured diagnostics cannot leave a stale tooltip.
+pub(super) fn clear_source_popovers(
+    state: &mut gpui_kit::component::input::EditorState,
+    cx: &mut Context<gpui_kit::component::input::EditorState>,
+) {
+    state.clear_hover_state(cx);
+    state.clear_diagnostic_popover(cx);
+}
+
 fn source_diagnostic(range: lsp_types::Range, message: String) -> lsp_types::Diagnostic {
     lsp_types::Diagnostic {
         range,
@@ -749,7 +759,7 @@ impl Workbench {
         if open.document.format == Format::Text {
             self.source.update(cx, |state, cx| {
                 state.set_highlighter("text", cx);
-                state.clear_hover_state(cx);
+                clear_source_popovers(state, cx);
                 state.lsp_mut().completion_provider = None;
                 state.lsp_mut().hover_provider = None;
             });
@@ -777,7 +787,7 @@ impl Workbench {
             if state.language_name().as_ref() != language {
                 state.set_highlighter(language, cx);
             }
-            state.clear_hover_state(cx);
+            clear_source_popovers(state, cx);
             state.lsp_mut().completion_provider = Some(provider.clone());
             state.lsp_mut().hover_provider = Some(provider);
             state.lsp_mut().completion_menu.max_width = px(440.);
@@ -787,7 +797,7 @@ impl Workbench {
     pub(super) fn update_source_diagnostics(&mut self, cx: &mut Context<Self>) {
         let issues = self.source_issues.clone();
         self.source.update(cx, |state, cx| {
-            state.clear_hover_state(cx);
+            clear_source_popovers(state, cx);
             let text = state.text().clone();
             if let Some(diagnostics) = state.diagnostics_mut() {
                 diagnostics.reset(&text);
@@ -1077,7 +1087,11 @@ impl Workbench {
                 this.route_completion(action, window, cx)
             }))
             .capture_action(cx.listener(|this, action: &Escape, window, cx| {
-                this.route_completion(action, window, cx)
+                if this.source.read(cx).completion_menu_state().open {
+                    this.route_completion(action, window, cx);
+                } else {
+                    this.source.update(cx, clear_source_popovers);
+                }
             }))
             .on_action(cx.listener(Self::request_completion))
             .on_action(cx.listener(Self::source_line_command))

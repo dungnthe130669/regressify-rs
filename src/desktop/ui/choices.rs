@@ -398,8 +398,11 @@ impl Workbench {
                         message: format!("{error:#}"),
                     }]
                 });
+                let previous = this.source_issues.clone();
                 this.refresh_value();
-                this.update_source_diagnostics(cx);
+                if this.source_issues != previous {
+                    this.update_source_diagnostics(cx);
+                }
                 cx.notify();
             });
         })

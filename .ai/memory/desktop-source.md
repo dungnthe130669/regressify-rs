@@ -1,6 +1,6 @@
 # Desktop Source Editing
 
-Verified: 2026-10-15
+Verified: 2026-10-18
 
 - [Source font size](../../src/desktop/ui/source.rs) uses a separate unmasked integer 10..24 NumberInput: invalid text never saves; Blur restores the last valid size.
   `source_font_size_` covers input/saved bytes, steps, Reset, reload and unchanged drafts. Activate GPUI fixtures for Blur; inactive windows suppress focus events.
@@ -56,6 +56,9 @@ Verified: 2026-10-15
   retains full-file aligned copies and change navigation.
 - The schema jump/hover/save-guard test failed on offscreen diagnostic 3 until
   scrolled into view before clicking; preserve cursor, hover, draft and save checks.
+  Kit 0.7.3 tracks `diagnostic_popover` separately from `hover_popover`: clear both
+  (`clear_source_popovers`) on diagnostic/source updates, tab switches, and Escape,
+  and skip no-op background viewport diagnostic resets so active hovers do not flicker.
 - [Action viewport choices](../../src/desktop/ui/choices.rs) reuse the native
   list picker and effective consumer labels. Workspace diagnostics call the
   shared CLI validator, point to own/inherited action fields, and retain invalid

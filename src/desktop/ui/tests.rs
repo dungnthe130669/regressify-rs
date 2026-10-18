@@ -2799,8 +2799,52 @@ async fn schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard(
     assert_eq!(hover.range.unwrap().start, lsp_types::Position::new(6, 2));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     cx.update_window(handle.into(), |_, window, cx| {
+        use gpui_kit::InputEvent as _;
         window.focus(&view.read(cx).source.read(cx).focus_handle(cx), cx);
         window.render_frame(cx);
+        let diagnostic_range = view
+            .read(cx)
+            .source
+            .read(cx)
+            .diagnostics()
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
+            .range
+            .clone();
+        let diagnostic_point = view
+            .read(cx)
+            .source
+            .read(cx)
+            .range_to_bounds(&diagnostic_range)
+            .unwrap()
+            .center();
+        window.dispatch_event(
+            gpui_kit::MouseMoveEvent {
+                position: diagnostic_point,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(view.read(cx).source.read(cx).diagnostic_popover().is_some());
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).source.read(cx).diagnostic_popover().is_none());
+        window.dispatch_event(
+            gpui_kit::MouseMoveEvent {
+                position: diagnostic_point,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(view.read(cx).source.read(cx).diagnostic_popover().is_some());
         window.press("ctrl-a", cx);
         window.input(
             "scenarios:\n- url: https://example.com\n  label: Corrected schema\n",
@@ -2821,6 +2865,7 @@ async fn schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard(
                 .unwrap()
                 .is_empty()
         );
+        assert!(view.read(cx).source.read(cx).diagnostic_popover().is_none());
         window.render_frame(cx);
         window.click("save", cx);
     })

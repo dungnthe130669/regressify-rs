@@ -214,7 +214,10 @@ impl Workbench {
                                 this.update_source_diagnostics(cx);
                                 this.load_action_viewport_diagnostics(window, cx);
                             }
-                            Err(error) => this.status = format!("{error:#}"),
+                            Err(error) => {
+                                this.source.update(cx, source::clear_source_popovers);
+                                this.status = format!("{error:#}");
+                            }
                         }
                         cx.notify();
                     }
@@ -1419,6 +1422,7 @@ impl Workbench {
                 .update(cx, |state, cx| state.set_value(source, window, cx));
         }
         self.refresh_value();
+        self.update_source_diagnostics(cx);
         self.refresh_effective(window, cx);
         Ok(())
     }
@@ -1720,6 +1724,7 @@ impl Workbench {
                     self.source
                         .update(cx, |state, cx| state.set_value(source, window, cx));
                 }
+                self.update_source_diagnostics(cx);
                 self.status = "Unsaved changes".into();
             }
             Err(error) => {
@@ -1767,6 +1772,7 @@ impl Workbench {
             self.source
                 .update(cx, |state, cx| state.set_value(source, window, cx));
         }
+        self.update_source_diagnostics(cx);
         self.status = "Override removed".into();
         cx.notify();
     }
@@ -2634,8 +2640,10 @@ impl Workbench {
         }
         self.tab = index;
         if index != 1 {
-            self.source
-                .update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+            self.source.update(cx, |state, cx| {
+                state.dismiss_completion_overlay(cx);
+                source::clear_source_popovers(state, cx);
+            });
         }
         self.session.reconcile_selection();
         self.rebuild_fields(window, cx);
