@@ -415,7 +415,7 @@ pub async fn wait_for_visible(
     }
 }
 
-fn visibility_script(selector: &str, frame: &Option<Frame>) -> String {
+pub(super) fn visibility_script(selector: &str, frame: &Option<Frame>) -> String {
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
     format!(
@@ -579,7 +579,20 @@ pub async fn check_not_obscured(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<ElementInfo> {
-    let script = obscured_script(selector, frame);
+    check_not_obscured_at(page, selector, frame, None, config).await
+}
+
+pub(super) async fn check_not_obscured_at(
+    page: &Page,
+    selector: &str,
+    frame: &Option<Frame>,
+    position: Option<crate::types::ActionPoint>,
+    config: &ActionabilityConfig,
+) -> Result<ElementInfo> {
+    let script = match position {
+        None => obscured_script(selector, frame),
+        Some(_) => obscured_script_at(selector, frame, position),
+    };
 
     let operation = format!("checking whether element '{}' is obscured", selector);
     let val = evaluate_value(page, script, actionability_timeout(config), &operation).await?;
@@ -603,7 +616,7 @@ pub async fn check_not_obscured(
                 .and_then(|field| field.as_str())
                 .unwrap_or("unknown");
             Err(anyhow!(
-                "Element '{}' is obscured by '{}' at its center point",
+                "Element '{}' is obscured by '{}' at the requested point",
                 selector,
                 by
             ))
@@ -625,6 +638,14 @@ pub async fn check_not_obscured(
 }
 
 fn obscured_script(selector: &str, frame: &Option<Frame>) -> String {
+    obscured_script_at(selector, frame, None)
+}
+
+fn obscured_script_at(
+    selector: &str,
+    frame: &Option<Frame>,
+    position: Option<crate::types::ActionPoint>,
+) -> String {
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
     let doc_js = if let Some(frames) = &frame_selectors {
@@ -638,8 +659,11 @@ fn obscured_script(selector: &str, frame: &Option<Frame>) -> String {
             const el = {element_js};
             if (!el) return {{ error: 'not_found' }};
             const rect = el.getBoundingClientRect();
-            const cx = rect.x + rect.width / 2;
-            const cy = rect.y + rect.height / 2;
+            const position = {position};
+            if (position && (position.x < 0 || position.y < 0 || position.x >= rect.width || position.y >= rect.height))
+                return {{ error: 'position_outside_element' }};
+            const cx = rect.x + (position ? position.x : rect.width / 2);
+            const cy = rect.y + (position ? position.y : rect.height / 2);
             const topEl = {doc_js}.elementFromPoint(cx, cy);
             if (!topEl) return {{ error: 'no_element_at_point' }};
             for (let current = topEl; current; current = current.parentElement || current.getRootNode?.()?.host || null) {{
@@ -658,7 +682,8 @@ fn obscured_script(selector: &str, frame: &Option<Frame>) -> String {
                 ? '.' + topEl.className.trim().split(/\s+/).join('.')
                 : '';
             return {{ error: 'obscured', by: tag + id + cls }};
-        }})()"#
+        }})()"#,
+        position = serde_json::json!(position),
     )
 }
 
@@ -693,7 +718,7 @@ pub async fn check_enabled(
     Ok(())
 }
 
-fn enabled_script(selector: &str, frame: &Option<Frame>) -> String {
+pub(super) fn enabled_script(selector: &str, frame: &Option<Frame>) -> String {
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
     format!(
@@ -976,6 +1001,16 @@ pub async fn ensure_actionable(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<ElementInfo> {
+    ensure_actionable_at(page, selector, frame, None, config).await
+}
+
+pub(super) async fn ensure_actionable_at(
+    page: &Page,
+    selector: &str,
+    frame: &Option<Frame>,
+    position: Option<crate::types::ActionPoint>,
+    config: &ActionabilityConfig,
+) -> Result<ElementInfo> {
     use crate::diagnostics::record::SafeValue;
     // 1. Wait for element to exist
     diagnostic_condition(
@@ -1017,7 +1052,7 @@ pub async fn ensure_actionable(
         attempts += 1;
         let result = async {
             condition = SafeValue::Unobscured;
-            let info = check_not_obscured(page, selector, frame, config).await?;
+            let info = check_not_obscured_at(page, selector, frame, position, config).await?;
             check_frame_not_obscured(page, frame, info.center_x, info.center_y, config).await?;
             condition = SafeValue::Enabled;
             check_enabled(page, selector, frame, config).await?;

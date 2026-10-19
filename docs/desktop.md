@@ -1437,7 +1437,7 @@ Execution, Page setup, and Behavior. Short values use a two-column layout; URLs
 and lists use the full width. Document actions stay with the editor. Light and
 dark appearances share restrained teal accents and consistent native typography.
 
-The Add menu supports scenarios, viewports, and all 16 action types. Selected
+The Add menu supports scenarios, viewports, and all 25 action types. Selected
 items can be duplicated, reordered, and removed. Removal is confirmed and
 undoable. Compound changes form one undo step. Scenario copies omit explicit IDs
 and receive unique labels; suite copies omit the suite ID to avoid sharing output

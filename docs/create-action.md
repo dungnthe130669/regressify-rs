@@ -3,7 +3,7 @@ title: Create an action
 description: Reference for creating Optimizely CMS test actions such as click, input, select, wait, scroll, upload files, and frame handling.
 guid: ba348ca1-eb67-4c0f-8461-8f36979aea18
 date: 2023-07-03T17:00:00+00:00
-updated: 2026-10-06T00:00:00+00:00
+updated: 2026-10-19T00:00:00+00:00
 draft: false
 hidden: false
 weight: 40000
@@ -141,6 +141,13 @@ click
 :::::
 
 Click an element.
+
+Optional `button` is `left` (default), `middle`, or `right`; `clickCount` is
+1 (default), 2, or 3. `modifiers` accepts `Alt`, `Control`, `Meta`, `Shift`,
+and `ControlOrMeta`. Modifiers are held for the complete click sequence and
+released afterwards, including failures. `position: {x: 10, y: 10}` selects
+CSS pixels from the element's top-left border box instead of its center.
+The requested point, not just the center, must be inside the element and uncovered.
 
 > Important:
 >
@@ -626,9 +633,170 @@ actions:
 
 {% end %}
 
+## Extended user interactions
+
+### Dragging and file drops
+
+`drag` moves a held left pointer from its source to either `to` (another
+element in the same document) or `offset: {x, y}` (signed CSS pixels).
+Supply exactly one destination form. Optional `position` and `toPosition`
+pick points inside the source and destination; `toPosition` requires `to`.
+Both endpoints must be visible together after preparation. Cross-document
+drags and automatic scrolling during a drag are not supported.
+
+`mode` defaults to `auto`: native draggable elements use HTML5 drag/drop,
+including their real `DataTransfer`; other widgets use pointer events.
+Use `pointer` or `html5` to select explicitly. `duration` is a fixed 1..60000
+milliseconds, default 300. Optional `modifiers` use the same names as `click`.
+The native HTML5 mode fails if the source never starts a drag.
+
+`dropFiles` targets a drop zone and requires `file`, a single path or a list.
+Files must exist, be regular files, and remain inside `visual_tests` after
+canonical resolution. Empty lists and directory paths fail. Optional `position`
+selects the drop point. This sends browser drag events with actual files;
+it does not set a hidden file input or fabricate JavaScript drop events.
+The website must accept the drop; use a following `wait` to verify its result.
+
+```yaml
+actions:
+  - drag: "#card"
+    to: "#done-column"
+    duration: 400
+  - drag: "#slider-handle"
+    offset: {x: 80, y: 0}
+    mode: pointer
+  - dropFiles: "#upload-zone"
+    file: ["uploads/first.pdf", "uploads/second.pdf"]
+  - wait: "#upload-complete"
+```
+
+### Wheel, typing timing, and focused keys
+
+`wheel` sends actual wheel input over its target, with finite `deltaX` and
+`deltaY` CSS-pixel deltas (both default zero; at least one must be nonzero).
+Positive `deltaY` scrolls down. It supports `position` and `modifiers`.
+Unlike `scroll`, it exercises wheel handlers and nested scroll containers.
+Scrolling may be clamped or prevented by the site; wheel completion does not
+mean lazy-loaded content is ready.
+
+`input.typingDelay` adds a fixed 0..10000 milliseconds between characters,
+default zero. It is only valid with `value`, never `file`.
+
+`key` sends a key or shortcut to the current focus without changing it.
+Its key names are the same as `press.key`. This allows real Tab navigation
+without refocusing each destination and masking a site's focus-management
+defect. With `frame`, that frame must already own keyboard focus.
+
+```yaml
+actions:
+  - wheel: "#results"
+    deltaY: 400
+  - wait: "#next-page-loaded"
+  - input: "#search"
+    value: "visual testing"
+    typingDelay: 50
+  - key: Tab
+  - key: Enter
+```
+
+### Browser history and dialogs
+
+`navigate: back`, `navigate: forward`, and `navigate: reload` operate on
+the selected tab. Missing history entries fail instead of silently doing
+nothing. Optional `ignoreCache` is valid only with `reload`, default false.
+Navigation uses the existing bounded navigation waiting and document hooks.
+These operations cannot target an individual frame.
+
+`dialog: accept` or `dialog: dismiss` arms one expectation for the next
+**applicable triggering action in the same tab**, before that action begins.
+Optional `kind` is `alert`, `confirm`, `prompt`, or `beforeunload`; optional
+`message` matches the exact message. `promptText` requires `kind: prompt`
+and `dialog: accept`. Dialog messages and prompt responses are not archived.
+
+The expectation fails if no dialog appears within `elementTimeout`, its
+kind/message differs, or the triggering action opens an extra dialog.
+It cannot precede another expectation, a wait, screenshot, persistence action,
+or tab switch, or remain at the end of the applicable action sequence.
+Viewport filters apply before pairing. DOM modals still use normal actions.
+A `beforeunload` warning requires prior user activation; browsers can suppress
+it otherwise. Dismissing it intentionally cancels navigation and keeps the
+current page. There is no persistent auto-accept policy.
+
+```yaml
+actions:
+  - dialog: accept
+    kind: confirm
+    message: "Delete this item?"
+  - click: "#delete"
+  - navigate: back
+  - navigate: reload
+    ignoreCache: true
+```
+
+### Touch gestures
+
+`tap` touches and releases an actionable element. `longPress` holds it for
+`duration` milliseconds (default 600). `swipe` moves one finger by a required
+nonzero `offset: {x, y}` over `duration` milliseconds (default 300).
+Hold/swipe durations must be 1..60000. All three accept optional `position`.
+The complete swipe must stay within the visible selected document/frame.
+Browser `touch-action`, scrolling, and gesture handling remain in effect;
+`longPress` does not invent a DOM long-press or context-menu event.
+
+A job containing any applicable touch action, including inherited `needs`
+actions, enables touch capability **before navigation**, also for cross-origin
+frames and owned popups. Jobs without applicable touch actions stay unchanged.
+Use `viewportNames` to confine touch to appropriate jobs. This does not change
+the user agent, viewport size, or device scale, and is not full phone emulation.
+Actions own and release their pointer, touch, and modifier state; low-level
+down/move/up steps spanning separate actions are intentionally not exposed.
+
+```yaml
+actions:
+  - tap: "#menu"
+    viewportNames: mobile
+  - swipe: "#carousel"
+    position: {x: 200, y: 50}
+    offset: {x: -150, y: 0}
+    duration: 300
+    viewportNames: mobile
+  - longPress: "#item"
+    duration: 700
+    viewportNames: mobile
+```
+
+### Element-state waits
+
+Selector waits now accept `state`: `visible` (default), `hidden`, `attached`,
+`detached`, `enabled`, or `disabled`. Visibility uses the same ancestor,
+opacity, and content-visibility checks as interactive actions.
+`hidden` also matches an absent element; `detached` requires absence.
+Enabled/disabled use the existing native/ARIA-disabled and inert checks.
+
+Optional `text` matches exact element text, while `containsText` matches a
+substring; both normalize whitespace by collapsing runs and trimming ends.
+They use `innerText`, falling back to `textContent`. Supply at most one.
+Optional `value` matches the exact string value of an input, textarea, or select.
+All supplied conditions must hold together within `elementTimeout`.
+Hidden/detached waits cannot require text or value. These fields cannot be
+used with a numeric wait. An optional `url` is still matched first.
+
+```yaml
+actions:
+  - wait: "#spinner"
+    state: hidden
+  - wait: "#submit"
+    state: enabled
+  - wait: "#status"
+    text: "Order complete"
+  - wait: "#quantity"
+    value: "2"
+```
+
 ## Shared properties
 
-The following properties are applicable to page actions, except `switchTab`.
+The following properties are applicable to page actions, except `switchTab`,
+`navigate`, and `dialog`, which are tab-scoped.
 
 {% spoiler() %}
 

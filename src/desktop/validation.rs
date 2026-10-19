@@ -236,6 +236,7 @@ fn explain(
             let actions = ACTIONS
                 .iter()
                 .filter(|action| instance.get(**action).is_some())
+                .filter(|action| **action != "key" || instance.get("press").is_none())
                 .collect::<Vec<_>>();
             if actions.len() != 1 {
                 let message = if actions.is_empty() {
@@ -491,6 +492,58 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn expanded_actions_report_semantic_and_viewport_sequence_errors() {
+        use crate::desktop::document::semantic_diagnostics;
+        for action in [
+            json!({"drag":"#x","to":"#y","offset":{"x":1,"y":0}}),
+            json!({"wait":10,"state":"hidden"}),
+            json!({"dialog":"dismiss","kind":"prompt","promptText":"private"}),
+            json!({"wheel":"#x"}),
+        ] {
+            let value = json!({"scenarios":[{"url":"/","actions":[action]}]});
+            let issues = semantic_diagnostics(DocumentKind::Suite, &value);
+            assert_eq!(issues.len(), 1, "{issues:?}");
+            assert_eq!(issues[0].pointer, "/scenarios/0/actions/0");
+            assert!(!issues[0].message.contains("private"));
+        }
+        for action in [json!({"key":"Tab"}), json!({"press":"#x","key":"Enter"})] {
+            assert!(
+                diagnostics(
+                    DocumentKind::Suite,
+                    &json!({"scenarios":[{"url":"/","actions":[action]}]})
+                )
+                .unwrap()
+                .is_empty()
+            );
+        }
+        let mut suite: TestSuite =
+            serde_json::from_value(json!({"scenarios":[{"url":"/","actions":[
+                {"dialog":"accept","viewportNames":"mobile"},
+                {"click":"#confirm","viewportNames":"mobile"},
+                {"wait":0,"viewportNames":"desktop"}
+            ]}]}))
+            .unwrap();
+        let viewports = [
+            ViewportDef {
+                label: "mobile".into(),
+                width: 400,
+                height: 600,
+            },
+            ViewportDef {
+                label: "desktop".into(),
+                width: 1000,
+                height: 800,
+            },
+        ];
+        assert!(action_viewport_diagnostics("fixture", &suite, 0, &viewports).is_empty());
+        suite.scenarios[0].actions.as_mut().unwrap().remove(1);
+        let issues = action_viewport_diagnostics("fixture", &suite, 0, &viewports);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].pointer, "/scenarios/0/actions");
+        assert!(issues[0].message.contains("dialog"));
+    }
+
+    #[test]
     fn action_viewport_names_diagnostics_share_preflight_errors() {
         let suite: TestSuite = serde_json::from_value(json!({ "scenarios": [
             { "id": "setup", "url": "/", "actions": [{ "click": "#target", "viewportNames": ["mobile"] }] },
@@ -526,7 +579,7 @@ mod tests {
     fn generated_action_viewport_names_are_consistent_and_optional() {
         let root = schema(DocumentKind::Suite).unwrap().unwrap();
         let branches = root["$defs"]["TestAction"]["anyOf"].as_array().unwrap();
-        assert_eq!(branches.len(), 16);
+        assert_eq!(branches.len(), ACTIONS.len());
         let expected = &root["$defs"]["ClickAction"]["properties"]["viewportNames"];
         let mut field_schema = expected.clone();
         field_schema["$defs"] = root["$defs"].clone();
@@ -554,7 +607,7 @@ mod tests {
             let definition = branches
                 .iter()
                 .map(|branch| resolve(branch, root))
-                .find(|branch| branch["properties"].get(*action).is_some())
+                .find(|branch| super::super::schema::action_discriminator(branch) == Some(*action))
                 .unwrap();
             assert_eq!(
                 &definition["properties"]["viewportNames"], expected,

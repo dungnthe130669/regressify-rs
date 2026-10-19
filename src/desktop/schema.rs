@@ -243,7 +243,7 @@ pub fn fields(scope: &Scope) -> Result<Vec<Field>> {
             .ok_or_else(|| anyhow!("Missing action schema"))?
             .iter()
             .map(|schema| resolve(schema, &root))
-            .find(|schema| schema["properties"].get(name).is_some())
+            .find(|schema| action_discriminator(schema) == Some(name.as_str()))
             .ok_or_else(|| anyhow!("Unknown action '{name}'"))?
     } else {
         &root
@@ -280,6 +280,15 @@ pub(crate) fn resolve<'schema>(schema: &'schema Value, root: &'schema Value) -> 
     } else {
         schema
     }
+}
+
+pub(crate) fn action_discriminator(schema: &Value) -> Option<&'static str> {
+    // Catalog order keeps press ahead of key, which is also press's required argument.
+    super::document::ACTIONS.iter().copied().find(|name| {
+        schema["required"]
+            .as_array()
+            .is_some_and(|required| required.iter().any(|value| value == name))
+    })
 }
 
 pub(crate) fn variants<'schema>(
@@ -883,7 +892,7 @@ mod tests {
             );
             assert_eq!(
                 fields.iter().any(|field| field.key == "frame"),
-                *action != "switchTab",
+                !matches!(*action, "switchTab" | "navigate" | "dialog"),
                 "{action}"
             );
             let value = action_template(action).unwrap();
@@ -915,6 +924,21 @@ mod tests {
         assert_eq!(url.kind, FieldKind::Text);
         assert!(url.description.contains("switchTab: new"));
         assert!(!url.required);
+    }
+
+    #[test]
+    fn focused_key_fields_do_not_select_the_press_schema() {
+        let fields = fields(&Scope::Action("key".into())).unwrap();
+        assert!(
+            fields
+                .iter()
+                .any(|field| field.key == "key" && field.required)
+        );
+        assert!(!fields.iter().any(|field| field.key == "press"));
+        let click = super::fields(&Scope::Action("click".into())).unwrap();
+        for key in ["button", "clickCount", "modifiers", "position"] {
+            assert!(click.iter().any(|field| field.key == key));
+        }
     }
 
     #[test]

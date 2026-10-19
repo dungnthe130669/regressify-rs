@@ -22,10 +22,11 @@ use crate::{
         },
     },
     types::{
-        CheckAction, ClickAction, FileInput, FocusAction, GotoAction, HideAction, HoverAction,
-        InputAction, PersistAction, PressAction, RemoveAction, SaveAction, ScreenshotType,
-        ScrollAction, SelectAction, SelectValue, TabTarget, TestAction, TestScenario, TestSuite,
-        UncheckAction, UrlReplacement, Wait, WaitAction,
+        ActionPoint, CheckAction, DialogKind, DialogResponse, FileInput, FocusAction, GotoAction,
+        HideAction, HoverAction, InputAction, NavigationOperation, PersistAction, PressAction,
+        RemoveAction, SaveAction, ScreenshotType, ScrollAction, SelectAction, SelectValue,
+        TabTarget, TestAction, TestScenario, TestSuite, UncheckAction, UrlReplacement, Wait,
+        WaitAction, WaitState,
     },
 };
 
@@ -55,6 +56,22 @@ fn resolve_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<S
                 .to_str()
                 .ok_or_else(|| anyhow!("Invalid file path"))?
                 .to_string(),
+        );
+    }
+    Ok(paths)
+}
+
+fn resolve_drop_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<String>> {
+    // File drops have stricter requirements than the existing input/chooser path.
+    let paths = resolve_file_paths(file, visual_tests_dir)?;
+    anyhow::ensure!(
+        !paths.is_empty(),
+        "dropFiles.file must contain at least one path"
+    );
+    for path in &paths {
+        anyhow::ensure!(
+            Path::new(path).metadata()?.is_file(),
+            "dropFiles.file must name regular files"
         );
     }
     Ok(paths)
@@ -93,18 +110,212 @@ pub(crate) fn validate_action_fields(action: &TestAction) -> Result<()> {
         ),
         _ => {}
     }
+    let position = |point: Option<ActionPoint>| -> Result<()> {
+        if let Some(point) = point {
+            validate_point(point, false)?;
+        }
+        Ok(())
+    };
+    let duration = |value: Option<u64>| -> Result<()> {
+        anyhow::ensure!(
+            value.is_none_or(|value| (1..=60_000).contains(&value)),
+            "duration must be between 1 and 60000 milliseconds"
+        );
+        Ok(())
+    };
+    match action {
+        TestAction::Click(action) => {
+            anyhow::ensure!(
+                action
+                    .click_count
+                    .is_none_or(|count| (1..=3).contains(&count)),
+                "clickCount must be between 1 and 3"
+            );
+            position(action.position)?;
+        }
+        TestAction::Input(action) => {
+            anyhow::ensure!(
+                action.typing_delay.is_none_or(|delay| delay <= 10_000),
+                "typingDelay must be between 0 and 10000 milliseconds"
+            );
+            anyhow::ensure!(
+                action.typing_delay.is_none() || action.value.is_some(),
+                "typingDelay is only supported with input.value"
+            );
+        }
+        TestAction::Drag(action) => {
+            anyhow::ensure!(
+                !action.drag.trim().is_empty(),
+                "drag requires a nonblank source selector"
+            );
+            anyhow::ensure!(
+                action.to.is_some() != action.offset.is_some(),
+                "drag requires exactly one of to or offset"
+            );
+            anyhow::ensure!(
+                action.to.as_ref().is_none_or(|to| !to.trim().is_empty()),
+                "drag.to must not be blank"
+            );
+            anyhow::ensure!(
+                action.to_position.is_none() || action.to.is_some(),
+                "toPosition requires drag.to"
+            );
+            position(action.position)?;
+            position(action.to_position)?;
+            if let Some(offset) = action.offset {
+                validate_point(offset, true)?;
+            }
+            duration(action.duration)?;
+        }
+        TestAction::DropFiles(action) => {
+            anyhow::ensure!(
+                !action.drop_files.trim().is_empty(),
+                "dropFiles requires a nonblank selector"
+            );
+            position(action.position)?;
+            let valid_files = match &action.file {
+                FileInput::Single(path) => !path.trim().is_empty(),
+                FileInput::Multiple(paths) => {
+                    !paths.is_empty() && paths.iter().all(|path| !path.trim().is_empty())
+                }
+            };
+            anyhow::ensure!(
+                valid_files,
+                "dropFiles.file requires one or more nonblank paths"
+            );
+        }
+        TestAction::Wheel(action) => {
+            anyhow::ensure!(
+                !action.wheel.trim().is_empty(),
+                "wheel requires a nonblank selector"
+            );
+            validate_point(
+                ActionPoint {
+                    x: action.delta_x.unwrap_or(0.0),
+                    y: action.delta_y.unwrap_or(0.0),
+                },
+                true,
+            )?;
+            position(action.position)?;
+        }
+        TestAction::Navigate(action) => {
+            anyhow::ensure!(
+                action.ignore_cache.is_none() || action.navigate == NavigationOperation::Reload,
+                "ignoreCache is only supported with navigate: reload"
+            );
+        }
+        TestAction::Dialog(action) => {
+            anyhow::ensure!(
+                action.prompt_text.is_none()
+                    || (action.kind == Some(DialogKind::Prompt)
+                        && action.dialog == DialogResponse::Accept),
+                "promptText requires kind: prompt and dialog: accept"
+            );
+        }
+        TestAction::Key(action) => {
+            parse_press_key(&action.key)?;
+        }
+        TestAction::Tap(action) => {
+            anyhow::ensure!(
+                !action.tap.trim().is_empty(),
+                "tap requires a nonblank selector"
+            );
+            position(action.position)?;
+        }
+        TestAction::Swipe(action) => {
+            anyhow::ensure!(
+                !action.swipe.trim().is_empty(),
+                "swipe requires a nonblank selector"
+            );
+            position(action.position)?;
+            validate_point(action.offset, true)?;
+            duration(action.duration)?;
+        }
+        TestAction::LongPress(action) => {
+            anyhow::ensure!(
+                !action.long_press.trim().is_empty(),
+                "longPress requires a nonblank selector"
+            );
+            position(action.position)?;
+            duration(action.duration)?;
+        }
+        TestAction::Wait(action) => {
+            let condition = action.state.is_some()
+                || action.text.is_some()
+                || action.contains_text.is_some()
+                || action.value.is_some();
+            anyhow::ensure!(
+                !condition
+                    || matches!(&action.wait, Wait::String(selector) if !selector.trim().is_empty()),
+                "wait conditions require a nonblank selector, not a numeric wait"
+            );
+            anyhow::ensure!(
+                action.text.is_none() || action.contains_text.is_none(),
+                "wait accepts only one of text or containsText"
+            );
+            anyhow::ensure!(
+                !matches!(action.state, Some(WaitState::Hidden | WaitState::Detached))
+                    || (action.text.is_none()
+                        && action.contains_text.is_none()
+                        && action.value.is_none()),
+                "hidden/detached waits cannot also require text or value"
+            );
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_point(point: ActionPoint, offset: bool) -> Result<()> {
+    anyhow::ensure!(
+        point.x.is_finite() && point.y.is_finite(),
+        "Coordinates must be finite numbers"
+    );
+    if offset {
+        anyhow::ensure!(
+            point.x != 0.0 || point.y != 0.0,
+            "At least one offset or delta must be nonzero"
+        );
+    } else {
+        anyhow::ensure!(
+            point.x >= 0.0 && point.y >= 0.0,
+            "Element-relative positions cannot be negative"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_dialog_sequence<'a>(
+    actions: impl Iterator<Item = &'a TestAction>,
+) -> Result<()> {
+    let mut pending = false;
+    for action in actions {
+        if pending {
+            anyhow::ensure!(
+                action.can_trigger_dialog(),
+                "dialog must be immediately followed by an applicable triggering action in the same tab"
+            );
+        }
+        pending = matches!(action, TestAction::Dialog(_));
+    }
+    anyhow::ensure!(
+        !pending,
+        "dialog has no following applicable triggering action"
+    );
     Ok(())
 }
 
 /// Confirm upload files exist inside `visual_tests` during suite preflight.
 pub(crate) fn validate_action_files(action: &TestAction, visual_tests_dir: &Path) -> Result<()> {
-    if let TestAction::Input(InputAction {
-        file: Some(file), ..
-    }) = action
-    {
-        resolve_file_paths(file, visual_tests_dir)?;
+    match action {
+        TestAction::Input(InputAction {
+            file: Some(file), ..
+        }) => resolve_file_paths(file, visual_tests_dir).map(|_| ()),
+        TestAction::DropFiles(action) => {
+            resolve_drop_file_paths(&action.file, visual_tests_dir).map(|_| ())
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Build an ActionabilityConfig from a ResolvedConfig.
@@ -303,7 +514,19 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
     };
     diagnostics::action_scope(
         fields.clone(),
-        diagnostics::stage(stage, fields, exec_test_action_inner(ctx, action)),
+        diagnostics::stage(stage, fields, async {
+            validate_action_fields(action)?;
+            if let TestAction::Dialog(expectation) = action {
+                return ctx.runtime.arm_dialog(expectation.clone());
+            }
+            ctx.runtime
+                .with_dialog(
+                    action,
+                    Duration::from_millis(ctx.config.element_timeout_ms),
+                    exec_test_action_inner(ctx, action),
+                )
+                .await
+        }),
     )
     .await
 }
@@ -327,6 +550,15 @@ pub(crate) fn action_diagnostic_identity(
         TestAction::Select(action) => (SafeValue::Select, Some(&action.select)),
         TestAction::Scroll(action) => (SafeValue::Scroll, Some(&action.scroll)),
         TestAction::SwitchTab(_) => (SafeValue::SwitchTab, None),
+        TestAction::Drag(action) => (SafeValue::Drag, Some(&action.drag)),
+        TestAction::DropFiles(action) => (SafeValue::DropFiles, Some(&action.drop_files)),
+        TestAction::Wheel(action) => (SafeValue::Wheel, Some(&action.wheel)),
+        TestAction::Navigate(_) => (SafeValue::Navigate, None),
+        TestAction::Dialog(_) => (SafeValue::Dialog, None),
+        TestAction::Key(_) => (SafeValue::Key, None),
+        TestAction::Tap(action) => (SafeValue::Tap, Some(&action.tap)),
+        TestAction::Swipe(action) => (SafeValue::Swipe, Some(&action.swipe)),
+        TestAction::LongPress(action) => (SafeValue::LongPress, Some(&action.long_press)),
         TestAction::Uncheck(action) => (SafeValue::Uncheck, Some(&action.uncheck)),
         TestAction::Wait(action) => (
             SafeValue::Wait,
@@ -383,7 +615,7 @@ async fn exec_test_action_inner(
     } = ctx;
     let ac = actionability_config(config);
     match action {
-        TestAction::SwitchTab(_) => {
+        TestAction::SwitchTab(_) | TestAction::Dialog(_) => {
             anyhow::bail!("Tab selection must run through the scenario page manager");
         }
         TestAction::Persist(PersistAction { persist, frame, .. }) => {
@@ -465,6 +697,14 @@ async fn exec_test_action_inner(
             | TestAction::Press(_)
             | TestAction::Input(_)
             | TestAction::Select(_)
+            | TestAction::Key(_)
+            | TestAction::Navigate(_)
+            | TestAction::Tap(_)
+            | TestAction::LongPress(_)
+            | TestAction::Drag(_)
+            | TestAction::DropFiles(_)
+            | TestAction::Swipe(_)
+            | TestAction::Wheel(_)
     ) {
         Some(page.navigation_watch().await?)
     } else {
@@ -472,7 +712,10 @@ async fn exec_test_action_inner(
     };
 
     match action {
-        TestAction::SwitchTab(_) | TestAction::Persist(_) | TestAction::Save(_) => {
+        TestAction::SwitchTab(_)
+        | TestAction::Dialog(_)
+        | TestAction::Persist(_)
+        | TestAction::Save(_) => {
             unreachable!("handled before target resolution")
         }
         TestAction::Check(CheckAction { check, .. }) => {
@@ -514,16 +757,61 @@ async fn exec_test_action_inner(
             }
         }
 
-        TestAction::Click(ClickAction { click, .. }) => {
-            let info = ensure_actionable(page, click, frame, &ac).await?;
-            let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
-            cdp_click(
+        TestAction::Click(action) => super::gestures::click(page, action, &ac).await?,
+        TestAction::Drag(action) => super::gestures::drag(page, action, &ac).await?,
+        TestAction::DropFiles(action) => {
+            let root = ROOT_DIR
+                .get()
+                .ok_or_else(|| anyhow!("ROOT_DIR not initialized"))?;
+            let files = resolve_drop_file_paths(&action.file, &root.join("visual_tests"))?;
+            super::gestures::drop_files(page, action, files, &ac).await?;
+        }
+        TestAction::Wheel(action) => super::gestures::wheel(page, action, &ac).await?,
+        TestAction::Navigate(action) => {
+            runtime
+                .navigate_history(action, Duration::from_millis(ac.element_timeout_ms))
+                .await?
+        }
+        TestAction::Key(action) => {
+            if page.has_frames() {
+                let focused: bool = evaluate_action(
+                    page,
+                    "document.hasFocus()",
+                    &ac,
+                    "checking keyboard frame focus",
+                )
+                .await?;
+                anyhow::ensure!(
+                    focused,
+                    "The selected frame must already own keyboard focus"
+                );
+            }
+            dispatch_key_stroke(page, &parse_press_key(&action.key)?, &ac).await?;
+        }
+        TestAction::Tap(action) => {
+            super::gestures::touch(page, &action.tap, action.position, None, 0, &ac).await?
+        }
+        TestAction::Swipe(action) => {
+            super::gestures::touch(
                 page,
-                frame_offset.0 + info.center_x,
-                frame_offset.1 + info.center_y,
+                &action.swipe,
+                action.position,
+                Some(action.offset),
+                action.duration.unwrap_or(300),
                 &ac,
             )
-            .await?;
+            .await?
+        }
+        TestAction::LongPress(action) => {
+            super::gestures::touch(
+                page,
+                &action.long_press,
+                action.position,
+                None,
+                action.duration.unwrap_or(600),
+                &ac,
+            )
+            .await?
         }
 
         TestAction::Focus(FocusAction { focus, .. }) => {
@@ -590,6 +878,7 @@ async fn exec_test_action_inner(
             append,
             file,
             use_file_chooser,
+            typing_delay,
             ..
         }) => {
             if value.is_some() && file.is_some() {
@@ -634,7 +923,7 @@ async fn exec_test_action_inner(
                     dispatch_key_stroke(page, &parse_press_key("ControlOrMeta+A")?, &ac).await?;
                     dispatch_key_stroke(page, &parse_press_key("Backspace")?, &ac).await?;
                 }
-                type_text(page, value, &ac).await?;
+                type_text(page, value, typing_delay.unwrap_or(0), &ac).await?;
                 if matches!(target, TextInputTarget::Native) {
                     let script = format!(
                         "(() => {{ const element = {doc}.querySelector('{sel}'); element.dispatchEvent(new Event('change', {{bubbles:true}})); }})()",
@@ -840,7 +1129,7 @@ async fn exec_test_action_inner(
             }
         }
 
-        TestAction::Wait(WaitAction { wait, url, .. }) => {
+        TestAction::Wait(wait_action @ WaitAction { wait, url, .. }) => {
             if let Some(url) = url {
                 let target_url = apply_action_url_replacements(url, url_replacements)?;
                 let matcher = UrlMatcher::compile(&target_url)?;
@@ -890,14 +1179,22 @@ async fn exec_test_action_inner(
                     tokio::time::sleep(std::time::Duration::from_millis(*milliseconds)).await;
                 }
                 Wait::String(selector) => {
-                    wait_for_selector(
-                        page,
-                        selector,
-                        frame,
-                        &ac,
-                        crate::diagnostics::record::Stage::ActionsFrames,
-                    )
-                    .await?;
+                    if wait_action.state.is_none()
+                        && wait_action.text.is_none()
+                        && wait_action.contains_text.is_none()
+                        && wait_action.value.is_none()
+                    {
+                        wait_for_selector(
+                            page,
+                            selector,
+                            frame,
+                            &ac,
+                            crate::diagnostics::record::Stage::ActionsFrames,
+                        )
+                        .await?;
+                    } else {
+                        super::gestures::wait_condition(page, selector, wait_action, &ac).await?;
+                    }
                 }
             }
         }
@@ -944,6 +1241,140 @@ impl UrlMatcher {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn expanded_actions_validate_combinations_and_boundaries() {
+        use serde_json::json;
+        for value in [
+            json!({"click":"#x","clickCount":3,"position":{"x":0,"y":0},"modifiers":["ControlOrMeta","Shift"]}),
+            json!({"drag":"#x","to":"#y","duration":1}),
+            json!({"drag":"#x","offset":{"x":-1,"y":0},"duration":60000}),
+            json!({"input":"#x","value":"abc","typingDelay":10000}),
+            json!({"wheel":"#x","deltaX":-2}),
+            json!({"navigate":"reload","ignoreCache":false}),
+            json!({"dialog":"accept","kind":"prompt","promptText":""}),
+            json!({"dialog":"dismiss","kind":"beforeunload"}),
+            json!({"key":"Shift+Tab"}),
+            json!({"wait":"#x","state":"hidden"}),
+            json!({"wait":"#x","state":"enabled","text":"Ready","value":"yes"}),
+            json!({"longPress":"#x","duration":60000}),
+        ] {
+            let action = serde_json::from_value::<crate::types::TestAction>(value.clone()).unwrap();
+            assert!(super::validate_action_fields(&action).is_ok(), "{value}");
+        }
+        for value in [
+            json!({"click":"#x","clickCount":0}),
+            json!({"click":"#x","clickCount":4}),
+            json!({"click":"#x","position":{"x":-1,"y":0}}),
+            json!({"drag":"#x"}),
+            json!({"drag":"#x","to":"#y","offset":{"x":1,"y":0}}),
+            json!({"drag":"#x","to":" "}),
+            json!({"drag":"#x","offset":{"x":0,"y":0}}),
+            json!({"drag":"#x","offset":{"x":1,"y":0},"toPosition":{"x":0,"y":0}}),
+            json!({"drag":"#x","to":"#y","duration":0}),
+            json!({"longPress":"#x","duration":60001}),
+            json!({"wheel":"#x"}),
+            json!({"input":"#x","file":"data.txt","typingDelay":0}),
+            json!({"input":"#x","value":"","typingDelay":10001}),
+            json!({"navigate":"back","ignoreCache":false}),
+            json!({"dialog":"dismiss","kind":"prompt","promptText":"secret"}),
+            json!({"dialog":"accept","promptText":"secret"}),
+            json!({"key":"not-a-key"}),
+            json!({"wait":0,"state":"hidden"}),
+            json!({"wait":"#x","text":"a","containsText":"a"}),
+            json!({"wait":"#x","state":"detached","value":"a"}),
+        ] {
+            let action = serde_json::from_value::<crate::types::TestAction>(value.clone()).unwrap();
+            assert!(super::validate_action_fields(&action).is_err(), "{value}");
+        }
+        assert!(
+            super::validate_point(
+                crate::types::ActionPoint {
+                    x: f64::NAN,
+                    y: 1.0
+                },
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            super::validate_point(
+                crate::types::ActionPoint {
+                    x: 1.0,
+                    y: f64::INFINITY
+                },
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn file_drops_reuse_confined_regular_file_validation() {
+        use crate::types::FileInput;
+        let root = tempfile::tempdir().unwrap();
+        let tests = root.path().join("visual_tests");
+        std::fs::create_dir(&tests).unwrap();
+        std::fs::write(tests.join("sample.txt"), "sample").unwrap();
+        std::fs::write(root.path().join("outside.txt"), "outside").unwrap();
+        assert_eq!(
+            super::resolve_drop_file_paths(&FileInput::Single("sample.txt".into()), &tests)
+                .unwrap()
+                .len(),
+            1
+        );
+        for file in [
+            FileInput::Multiple(vec![]),
+            FileInput::Single("".into()),
+            FileInput::Single(".".into()),
+            FileInput::Single("missing.txt".into()),
+            FileInput::Single("../outside.txt".into()),
+            FileInput::Single(
+                root.path()
+                    .join("outside.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ] {
+            assert!(super::resolve_drop_file_paths(&file, &tests).is_err());
+        }
+        assert!(
+            super::resolve_file_paths(&FileInput::Multiple(vec![]), &tests)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            super::resolve_file_paths(&FileInput::Single(".".into()), &tests)
+                .unwrap()
+                .len(),
+            1
+        );
+        let empty_drop =
+            serde_json::from_value(serde_json::json!({"dropFiles":"#zone","file":[]})).unwrap();
+        assert!(super::validate_action_fields(&empty_drop).is_err());
+    }
+
+    #[test]
+    fn dialog_sequences_require_one_immediate_trigger() {
+        let parse =
+            |source: &str| serde_yaml::from_str::<Vec<crate::types::TestAction>>(source).unwrap();
+        let valid = parse(
+            "- dialog: accept\n- click: '#x'\n- dialog: dismiss\n  kind: beforeunload\n- navigate: back\n",
+        );
+        super::validate_dialog_sequence(valid.iter()).unwrap();
+        for source in [
+            "- dialog: accept\n",
+            "- dialog: accept\n- dialog: dismiss\n",
+            "- dialog: accept\n- wait: 20\n",
+            "- dialog: accept\n- switchTab: new\n",
+            "- dialog: accept\n- save: final\n",
+        ] {
+            assert!(
+                super::validate_dialog_sequence(parse(source).iter()).is_err(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
     fn action_diagnostics_keep_selectors_and_omit_simulated_input() {
         use crate::diagnostics::record::{Field, FieldValue, SafeIdentity};
 
@@ -966,6 +1397,22 @@ mod tests {
             let encoded = serde_json::to_string(&fields).unwrap();
             assert!(encoded.contains("literal-selector"));
             assert!(!encoded.contains(payload));
+        }
+        for value in [
+            serde_json::json!({"dialog":"accept","kind":"prompt","message":"private-expectation","promptText":"private-response"}),
+            serde_json::json!({"wait":"#status","text":"private-expectation","value":"private-response"}),
+            serde_json::json!({"dropFiles":"#drop","file":"private-file.txt"}),
+        ] {
+            let action = serde_json::from_value(value).unwrap();
+            let encoded =
+                serde_json::to_string(&super::action_diagnostic_fields(&action, 1)).unwrap();
+            for secret in [
+                "private-expectation",
+                "private-response",
+                "private-file.txt",
+            ] {
+                assert!(!encoded.contains(secret));
+            }
         }
     }
 

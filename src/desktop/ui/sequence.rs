@@ -299,13 +299,13 @@ impl gpui_kit::component::list::ListDelegate for SequenceRows {
 fn action_icon(kind: &str) -> gpui_kit::assets::IconName {
     use gpui_kit::assets::IconName as Icon;
     match kind {
-        "goto" => Icon::Globe,
+        "goto" | "navigate" => Icon::Globe,
         "switchTab" => Icon::ExternalLink,
         "wait" => Icon::Timer,
-        "input" | "press" => Icon::Keyboard,
+        "input" | "press" | "key" => Icon::Keyboard,
         "check" | "uncheck" => Icon::SquareCheck,
         "select" => Icon::ListFilter,
-        "scroll" => Icon::ArrowDown,
+        "scroll" | "wheel" | "swipe" => Icon::ArrowDown,
         "hide" => Icon::EyeOff,
         "remove" => Icon::Trash,
         "save" => Icon::Camera,
@@ -813,7 +813,7 @@ mod tests {
 
 fn action_group(kind: &str) -> usize {
     match kind {
-        "goto" | "switchTab" | "wait" => 0,
+        "goto" | "switchTab" | "navigate" | "dialog" | "wait" => 0,
         "hide" | "remove" => 2,
         "save" | "persist" => 3,
         _ => 1,

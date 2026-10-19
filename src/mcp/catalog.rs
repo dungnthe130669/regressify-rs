@@ -185,6 +185,21 @@ pub(super) fn build() -> Result<Value> {
             "wait",
             json!({"wait": "#dashboard", "url": "**/dashboard*"}),
         ),
+        ("drag", json!({"drag": "#card", "to": "#column"})),
+        (
+            "dropFiles",
+            json!({"dropFiles": "#drop-zone", "file": "uploads/sample.pdf"}),
+        ),
+        ("wheel", json!({"wheel": "#list", "deltaY": 300})),
+        ("navigate", json!({"navigate": "back"})),
+        ("dialog", json!({"dialog": "accept", "kind": "confirm"})),
+        ("key", json!({"key": "Tab"})),
+        ("tap", json!({"tap": "#menu", "viewportNames": "mobile"})),
+        (
+            "swipe",
+            json!({"swipe": "#carousel", "offset": {"x": -100, "y": 0}}),
+        ),
+        ("longPress", json!({"longPress": "#item", "duration": 600})),
     ];
     let mut action_names = Vec::new();
     for (name, value) in actions {
@@ -406,7 +421,10 @@ mod tests {
                             .and_then(|reference| reference.strip_prefix('#'))
                             .and_then(|pointer| root.pointer(pointer))
                             .unwrap_or(variant);
-                        schema["properties"].get(name).is_some()
+                        actions
+                            .iter()
+                            .find(|name| schema["required"].as_array().unwrap().contains(name))
+                            == Some(action)
                     })
                     .count(),
                 1,

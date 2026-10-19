@@ -51,6 +51,7 @@ pub(crate) struct Runtime {
     client: Client,
     main_session: String,
     cache: Arc<Mutex<ContextCache>>,
+    dialogs: Arc<super::dialogs::DialogState>,
 }
 
 struct ContextCache {
@@ -149,11 +150,91 @@ impl Runtime {
             client,
             main_session,
             cache: Arc::new(Mutex::new(ContextCache::new(events))),
+            dialogs: Arc::new(super::dialogs::DialogState::default()),
         })
     }
 
     pub(super) fn client(&self) -> Client {
         self.client.clone()
+    }
+
+    pub(super) fn arm_dialog(&self, action: crate::types::DialogAction) -> Result<()> {
+        self.dialogs.arm(action)
+    }
+
+    pub(super) fn ensure_no_pending_dialog(&self) -> Result<()> {
+        self.dialogs.ensure_clear()
+    }
+
+    pub(super) async fn with_dialog(
+        &self,
+        action: &crate::types::TestAction,
+        timeout: Duration,
+        work: impl std::future::Future<Output = Result<()>>,
+    ) -> Result<()> {
+        self.dialogs
+            .run(&self.client, &self.main_session, action, timeout, work)
+            .await
+    }
+
+    async fn execute_main<C: Command>(&self, command: C, timeout: Duration) -> Result<C::Response> {
+        let std::borrow::Cow::Borrowed(method) = command.identifier() else {
+            bail!("CDP command identifier must be static");
+        };
+        let response = self
+            .client
+            .call_with_timeout(
+                Some(&self.main_session),
+                method,
+                serde_json::to_value(command)?,
+                timeout,
+            )
+            .await?;
+        Ok(serde_json::from_value(response)?)
+    }
+
+    pub(super) async fn navigate_history(
+        &self,
+        action: &crate::types::NavigateAction,
+        timeout: Duration,
+    ) -> Result<()> {
+        use crate::types::NavigationOperation;
+        use chromiumoxide::cdp::browser_protocol::page::{
+            GetNavigationHistoryParams, NavigateToHistoryEntryParams, ReloadParams,
+        };
+        match action.navigate {
+            NavigationOperation::Reload => {
+                self.execute_main(
+                    ReloadParams::builder()
+                        .ignore_cache(action.ignore_cache.unwrap_or(false))
+                        .build(),
+                    timeout,
+                )
+                .await?;
+            }
+            NavigationOperation::Back | NavigationOperation::Forward => {
+                let history = self
+                    .execute_main(GetNavigationHistoryParams {}, timeout)
+                    .await?;
+                let offset = if action.navigate == NavigationOperation::Back {
+                    -1
+                } else {
+                    1
+                };
+                let index = history
+                    .current_index
+                    .checked_add(offset)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .ok_or_else(|| anyhow!("No requested navigation history entry"))?;
+                let entry = history
+                    .entries
+                    .get(index)
+                    .ok_or_else(|| anyhow!("No requested navigation history entry"))?;
+                self.execute_main(NavigateToHistoryEntryParams::new(entry.id), timeout)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     pub(super) async fn evaluate_main_document_with_timeout(
@@ -446,6 +527,9 @@ impl Target {
         mut watch: NavigationWatch,
         timeout: Duration,
     ) -> Result<()> {
+        if self.runtime.dialogs.navigation_cancelled() {
+            return Ok(());
+        }
         let mut deadline = tokio::time::Instant::now() + Duration::from_millis(75);
         let mut started = false;
         loop {
@@ -524,6 +608,13 @@ impl Target {
         Ok(Response {
             result: serde_json::from_value(result)?,
         })
+    }
+
+    pub(super) fn input_connection(&self) -> (Client, String) {
+        (
+            self.runtime.client.clone(),
+            self.runtime.main_session.clone(),
+        )
     }
 
     pub async fn find_element(&self, selector: &str) -> Result<Element> {
@@ -657,6 +748,9 @@ impl Target {
             )
             .await?;
         if let Some(error) = result["errorText"].as_str() {
+            if error == "net::ERR_ABORTED" && self.runtime.dialogs.navigation_cancelled() {
+                return Ok(());
+            }
             bail!("Navigation failed: {}", error);
         }
         Ok(())

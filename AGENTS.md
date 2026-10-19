@@ -45,7 +45,7 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 
 - Core automation and injected scripts use `chromiumoxide`/CDP; only Chromium is
   supported, without Node/Playwright processes. Ready scripts finish before actions.
-  Interactive actions wait for existence, visibility, stability, scrolling, unobscured targeting, and enabled controls, including frames. Popup actions/captures require explicit `switchTab`, opener isolation, and setup before scripts.
+  Selector-targeted actions wait for existence, visibility, stability, scrolling, unobscured targeting, and enabled controls, including frames. Gestures own/release input state; `key` preserves focus. Popup actions/captures require explicit `switchTab`, opener isolation, and setup before scripts.
 - A scenario failure stops that scenario, not its peers. Website/action/visual
   failures are report results with zero exit; config, infrastructure, and artifact
   write failures are process errors. Do not panic or swallow errors in these paths.
@@ -55,8 +55,7 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 - Preserve `camelCase` config and untagged action deserialization precedence.
   Configuration resolves scenario -> suite -> workspace -> defaults.
 - Suite `displayName` is presentation-only; keep file, output, and route identity separate.
-- Desktop writes must preserve user edits and detect external conflicts. Keep
-  blocking work off the UI thread; cancellation must account for child processes.
+- Desktop writes must preserve user edits and detect external conflicts. Keep blocking work off the UI thread; cancellation must account for child processes.
 - Validate workspace-relative paths at filesystem boundaries. Escape for the
   actual JS/CSS/HTML sink; pass process arguments separately from shell strings.
 

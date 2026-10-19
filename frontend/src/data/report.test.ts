@@ -65,6 +65,27 @@ describe("snapshot contract", () => {
       errorCause: null,
     };
     const parsed = logRecordSchema.parse(record);
+    for (const value of [
+      "drag",
+      "dropFiles",
+      "wheel",
+      "dialog",
+      "key",
+      "tap",
+      "swipe",
+      "longPress",
+      "hidden",
+      "detached",
+      "disabled",
+      "content",
+    ]) {
+      expect(
+        logRecordSchema.safeParse({
+          ...record,
+          fields: { actionType: { type: "kind", value } },
+        }).success,
+      ).toBe(true);
+    }
     expect(formatLogRecord(parsed)).toContain("statusCode=200");
     expect(matchesLog(parsed, "error", "all", "")).toBe(false);
     expect(matchesLog(parsed, "debug", "navigation", "STATUSCODE")).toBe(true);

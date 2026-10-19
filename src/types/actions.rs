@@ -26,6 +26,15 @@ pub enum TestAction {
     SwitchTab(SwitchTabAction),
     Uncheck(UncheckAction),
     Wait(WaitAction),
+    Drag(DragAction),
+    DropFiles(DropFilesAction),
+    Wheel(WheelAction),
+    Navigate(NavigateAction),
+    Dialog(DialogAction),
+    Key(KeyAction),
+    Tap(TapAction),
+    Swipe(SwipeAction),
+    LongPress(LongPressAction),
 }
 
 impl TestAction {
@@ -47,6 +56,14 @@ impl TestAction {
             Self::SwitchTab(_) => &None,
             Self::Uncheck(action) => &action.frame,
             Self::Wait(action) => &action.frame,
+            Self::Drag(action) => &action.frame,
+            Self::DropFiles(action) => &action.frame,
+            Self::Wheel(action) => &action.frame,
+            Self::Navigate(_) | Self::Dialog(_) => &None,
+            Self::Key(action) => &action.frame,
+            Self::Tap(action) => &action.frame,
+            Self::Swipe(action) => &action.frame,
+            Self::LongPress(action) => &action.frame,
         }
     }
 
@@ -68,8 +85,44 @@ impl TestAction {
             Self::SwitchTab(action) => &action.viewport_names,
             Self::Uncheck(action) => &action.viewport_names,
             Self::Wait(action) => &action.viewport_names,
+            Self::Drag(action) => &action.viewport_names,
+            Self::DropFiles(action) => &action.viewport_names,
+            Self::Wheel(action) => &action.viewport_names,
+            Self::Navigate(action) => &action.viewport_names,
+            Self::Dialog(action) => &action.viewport_names,
+            Self::Key(action) => &action.viewport_names,
+            Self::Tap(action) => &action.viewport_names,
+            Self::Swipe(action) => &action.viewport_names,
+            Self::LongPress(action) => &action.viewport_names,
         };
         names.as_ref().map(Selectors::values)
+    }
+
+    pub(crate) fn uses_touch(&self) -> bool {
+        matches!(self, Self::Tap(_) | Self::Swipe(_) | Self::LongPress(_))
+    }
+
+    pub(crate) fn can_trigger_dialog(&self) -> bool {
+        matches!(
+            self,
+            Self::Click(_)
+                | Self::Check(_)
+                | Self::Uncheck(_)
+                | Self::Input(_)
+                | Self::Press(_)
+                | Self::Key(_)
+                | Self::Select(_)
+                | Self::Goto(_)
+                | Self::Navigate(_)
+                | Self::Tap(_)
+                | Self::LongPress(_)
+                | Self::Drag(_)
+                | Self::DropFiles(_)
+                | Self::Swipe(_)
+                | Self::Wheel(_)
+                | Self::Focus(_)
+                | Self::Hover(_)
+        )
     }
 }
 
@@ -119,13 +172,26 @@ pub struct CheckAction {
     pub viewport_names: Option<Selectors>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct ClickAction {
     /// Element selector to click. Scrolls into view and waits until visible, stable, enabled, and not covered by another element. Navigation that starts immediately is awaited; add a wait for later or client-side changes.
     #[schemars(example = "#submit")]
     pub click: String,
+    /// Mouse button, default left. Right clicks open page context menus; middle clicks retain normal browser behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub button: Option<PointerButton>,
+    /// Number of consecutive clicks: 1 (default), 2 for double-click, or 3 for triple-click.
+    #[schemars(range(min = 1, max = 3))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub click_count: Option<u8>,
+    /// Keyboard modifiers held for this click and released afterwards.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modifiers: Option<Vec<PointerModifier>>,
+    /// CSS-pixel position inside the element's border box; omitted means its center.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<ActionPoint>,
     pub frame: Option<Frame>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
     /// Omitted, null, or an empty list means all scenario viewports.
@@ -203,7 +269,7 @@ pub struct RemoveAction {
     pub viewport_names: Option<Selectors>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct InputAction {
@@ -219,6 +285,10 @@ pub struct InputAction {
     pub file: Option<FileInput>,
     /// Click the target (for example a visible upload button) to open a file chooser, then supply file (default: false).
     pub use_file_chooser: Option<bool>,
+    /// Fixed milliseconds between typed characters, from 0 (default) to 10000. Only valid with value, not file.
+    #[schemars(range(max = 10000))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typing_delay: Option<u64>,
     pub frame: Option<Frame>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
     /// Omitted, null, or an empty list means all scenario viewports.
@@ -361,6 +431,18 @@ pub struct WaitAction {
     /// URL or glob the page or frame URL must match within elementTimeout before the wait continues. * matches within one path segment, ** across segments, {a,b} lists alternatives, and ? is literal. Test captures apply URL replacements.
     #[schemars(example = "**/dashboard")]
     pub url: Option<String>,
+    /// Element condition, default visible. Hidden also matches an absent element; detached requires absence. Only valid with a selector wait.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<WaitState>,
+    /// Exact visible text after trimming and collapsing whitespace. Combined with the element state; mutually exclusive with containsText.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Visible text substring after trimming and collapsing whitespace. Combined with the element state; mutually exclusive with text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains_text: Option<String>,
+    /// Exact string value of an input, textarea, or select. Combined with the element state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
     pub frame: Option<Frame>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
     /// Omitted, null, or an empty list means all scenario viewports.
@@ -377,11 +459,250 @@ pub enum Wait {
     String(String),
 }
 
+/// CSS pixels relative to an element's top-left border box, or a signed gesture offset.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActionPoint {
+    /// Horizontal CSS pixels. Positions must be nonnegative; offsets may be negative.
+    pub x: f64,
+    /// Vertical CSS pixels. Positions must be nonnegative; offsets may be negative.
+    pub y: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PointerButton {
+    #[default]
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, schemars::JsonSchema)]
+pub enum PointerModifier {
+    Alt,
+    Control,
+    Meta,
+    Shift,
+    ControlOrMeta,
+}
+
+#[derive(
+    Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum DragMode {
+    #[default]
+    Auto,
+    Pointer,
+    Html5,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DragAction {
+    /// Source element to drag within the selected document. Auto uses native HTML5 dragging for draggable elements, pointer dragging otherwise.
+    pub drag: String,
+    /// Destination element in the same document. Supply exactly one of to or offset.
+    pub to: Option<String>,
+    /// Signed CSS-pixel displacement from the start position, instead of a destination element.
+    pub offset: Option<ActionPoint>,
+    /// Start position inside the source border box; default center.
+    pub position: Option<ActionPoint>,
+    /// End position inside the destination border box; only valid with to. Default center.
+    pub to_position: Option<ActionPoint>,
+    /// Override automatic pointer versus HTML5 drag selection.
+    pub mode: Option<DragMode>,
+    /// Fixed gesture duration in milliseconds, 1..60000; default 300. Both endpoints must be visible together.
+    #[schemars(range(min = 1, max = 60000))]
+    pub duration: Option<u64>,
+    /// Keyboard modifiers held during the drag and released afterwards.
+    pub modifiers: Option<Vec<PointerModifier>>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DropFilesAction {
+    /// Drop-zone element receiving native browser drag-enter, drag-over, and drop events.
+    pub drop_files: String,
+    /// One or more existing regular files relative to visual_tests. Paths must remain inside that directory.
+    pub file: FileInput,
+    /// CSS-pixel drop position inside the border box; default center.
+    pub position: Option<ActionPoint>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WheelAction {
+    /// Element under the wheel pointer, such as a scroll container or canvas. This sends wheel input, not scrollIntoView alone.
+    pub wheel: String,
+    /// Horizontal wheel delta in CSS pixels, default zero. At least one delta must be nonzero.
+    pub delta_x: Option<f64>,
+    /// Vertical wheel delta in CSS pixels, default zero. Positive values scroll down.
+    pub delta_y: Option<f64>,
+    /// CSS-pixel pointer position inside the border box; default center.
+    pub position: Option<ActionPoint>,
+    /// Keyboard modifiers held for this wheel event and released afterwards.
+    pub modifiers: Option<Vec<PointerModifier>>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum NavigationOperation {
+    Back,
+    Forward,
+    Reload,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NavigateAction {
+    /// Use the selected tab's real history or reload it. Missing back/forward entries fail; frame is not supported.
+    pub navigate: NavigationOperation,
+    /// Bypass the browser cache on reload (default false). Only valid with navigate: reload.
+    pub ignore_cache: Option<bool>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum DialogResponse {
+    Accept,
+    Dismiss,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DialogKind {
+    Alert,
+    Confirm,
+    Prompt,
+    BeforeUnload,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DialogAction {
+    /// Arm a one-shot JavaScript dialog expectation for the next applicable triggering action in this tab. Missing, extra, or mismatched dialogs fail.
+    pub dialog: DialogResponse,
+    /// Expected dialog kind; omitted accepts any supported kind. beforeunload requires prior browser user activation.
+    pub kind: Option<DialogKind>,
+    /// Optional exact expected dialog message. Message contents are never written to diagnostic archives.
+    pub message: Option<String>,
+    /// Text supplied when accepting a prompt. Requires kind: prompt and dialog: accept; never logged.
+    pub prompt_text: Option<String>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeyAction {
+    /// Send a key or shortcut, for example Tab or ControlOrMeta+A, to the current focus without changing it. A selected frame must already own focus.
+    pub key: String,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TapAction {
+    /// Element to tap with real touch input. Applicable touch actions enable touch capability before the capture's initial navigation.
+    pub tap: String,
+    /// CSS-pixel touch position inside the border box; default center.
+    pub position: Option<ActionPoint>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SwipeAction {
+    /// Element where a one-finger swipe starts. Browser touch-action and scrolling behavior remain in effect.
+    pub swipe: String,
+    /// Signed CSS-pixel displacement from the start. The complete gesture must stay inside the visible selected frame and top-level viewport.
+    pub offset: ActionPoint,
+    /// CSS-pixel start position inside the border box; default center.
+    pub position: Option<ActionPoint>,
+    /// Fixed gesture duration in milliseconds, 1..60000; default 300.
+    #[schemars(range(min = 1, max = 60000))]
+    pub duration: Option<u64>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LongPressAction {
+    /// Element to hold with one finger, then release. This sends touch input, not a synthetic contextmenu event.
+    pub long_press: String,
+    /// CSS-pixel touch position inside the border box; default center.
+    pub position: Option<ActionPoint>,
+    /// Fixed hold duration in milliseconds, 1..60000; default 600.
+    #[schemars(range(min = 1, max = 60000))]
+    pub duration: Option<u64>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(
+    Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitState {
+    #[default]
+    Visible,
+    Hidden,
+    Attached,
+    Detached,
+    Enabled,
+    Disabled,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn action_shapes() -> [serde_json::Value; 16] {
+    fn action_shapes() -> [serde_json::Value; 25] {
         use serde_json::json;
 
         [
@@ -401,6 +722,15 @@ mod tests {
             json!({ "switchTab": "new", "url": "**/quote" }),
             json!({ "uncheck": "#newsletter" }),
             json!({ "wait": 100 }),
+            json!({ "drag": "#card", "to": "#column" }),
+            json!({ "dropFiles": "#upload", "file": "uploads/sample.pdf" }),
+            json!({ "wheel": "#list", "deltaY": 200 }),
+            json!({ "navigate": "back" }),
+            json!({ "dialog": "accept", "kind": "confirm" }),
+            json!({ "key": "Tab" }),
+            json!({ "tap": "#button" }),
+            json!({ "swipe": "#carousel", "offset": { "x": -100, "y": 0 } }),
+            json!({ "longPress": "#button" }),
         ]
     }
 

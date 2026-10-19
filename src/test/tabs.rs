@@ -44,6 +44,7 @@ impl Tabs {
         storage: Arc<StorageState>,
         config: &ResolvedConfig,
         viewport: Option<&ViewportDef>,
+        has_touch: bool,
     ) -> Result<Self> {
         let client = storage.client();
         let mut events = client.subscribe();
@@ -89,10 +90,19 @@ impl Tabs {
                             Some(opener) => shared.lock().await.owned.contains(opener),
                             None => false,
                         };
+                    let touch_frame = has_touch && info["type"] == "iframe";
                     if owned {
                         shared.lock().await.owned.insert(target.to_string());
                     }
                     let prepared = tokio::time::timeout(timeout, async {
+                        if touch_frame {
+                            connection.call_all(session, vec![
+                                ("Emulation.setTouchEmulationEnabled", serde_json::to_value(chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::new(true))?),
+                                ("Target.setAutoAttach", touch_frame_auto_attach()),
+                                ("Runtime.runIfWaitingForDebugger", json!({})),
+                            ]).await?;
+                            return Ok(None);
+                        }
                         if !owned {
                             connection
                                 .call(Some(session), "Runtime.runIfWaitingForDebugger", json!({}))
@@ -109,6 +119,7 @@ impl Tabs {
                             bypass_csp,
                             source,
                             authentication.is_some(),
+                            has_touch,
                         )?;
                         connection.call_all(session, commands).await?;
                         Ok(authentication)
@@ -117,6 +128,9 @@ impl Tabs {
                     .map_err(|_| anyhow!("New tab setup exceeded {}ms", timeout.as_millis()))
                     .and_then(|result| result);
                     let failed = prepared.is_err();
+                    if touch_frame && let Err(error) = &prepared {
+                        shared.lock().await.failure = Some(format!("Cannot initialize touch-enabled frame: {error:#}"));
+                    }
                     if owned {
                         let mut state = shared.lock().await;
                         match prepared {
@@ -168,6 +182,18 @@ impl Tabs {
                 }),
             )
             .await?;
+        if has_touch {
+            // OOPIF emulation is target-scoped, not inherited from the top-level page.
+            // Pause child documents so their first scripts see the same touch capability.
+            let session = tabs.client.attach(&tabs.original).await?;
+            tabs.client
+                .call(
+                    Some(&session),
+                    "Target.setAutoAttach",
+                    touch_frame_auto_attach(),
+                )
+                .await?;
+        }
         Ok(tabs)
     }
 
@@ -321,13 +347,32 @@ fn new_tab_candidates(
         .collect()
 }
 
+fn touch_frame_auto_attach() -> Value {
+    json!({
+        "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true,
+        "filter": [{"type": "iframe"}, {"exclude": true}]
+    })
+}
+
 fn popup_commands(
     viewport: Option<&ViewportDef>,
     bypass_csp: bool,
     storage_script: String,
     authenticate: bool,
+    has_touch: bool,
 ) -> Result<Vec<(&'static str, Value)>> {
     let mut commands = vec![("Page.enable", json!({}))];
+    commands.push((
+        "Emulation.setTouchEmulationEnabled",
+        serde_json::to_value(
+            chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::new(
+                has_touch,
+            ),
+        )?,
+    ));
+    if has_touch {
+        commands.push(("Target.setAutoAttach", touch_frame_auto_attach()));
+    }
     if let Some(viewport) = viewport {
         let params = chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams::builder()
             .width(viewport.width as i64)
@@ -429,7 +474,7 @@ mod tests {
             };
             let storage =
                 Arc::new(StorageState::install(&browser, &page, None, &site.origin).await?);
-            let mut tabs = Tabs::install(&page, storage, &config, Some(&viewport)).await?;
+            let mut tabs = Tabs::install(&page, storage, &config, Some(&viewport), false).await?;
             page.goto(site.origin.as_str()).await?;
             for kind in ["blank", "noopener", "script"] {
                 page.find_element(format!("#{kind}")).await?.click().await?;
@@ -527,7 +572,7 @@ mod tests {
             };
             let storage =
                 Arc::new(StorageState::install(&browser, &page, None, &site.origin).await?);
-            let mut tabs = Tabs::install(&page, storage.clone(), &config, None).await?;
+            let mut tabs = Tabs::install(&page, storage.clone(), &config, None, false).await?;
             page.goto(site.origin.as_str()).await?;
             page.find_element("#both").await?.click().await?;
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -604,6 +649,7 @@ mod tests {
                     click: "#nested".into(),
                     frame: Some(crate::types::Frame::Single("#child-frame".into())),
                     viewport_names: None,
+                    ..Default::default()
                 }),
             )
             .await?;
@@ -692,7 +738,7 @@ mod tests {
             let storage = Arc::new(
                 StorageState::install(&browser, &page, None, "https://example.test").await?,
             );
-            let mut tabs = Tabs::install(&page, storage, &config, None).await?;
+            let mut tabs = Tabs::install(&page, storage, &config, None, false).await?;
             let original_id = tabs.active.clone();
             let unrelated = browser.new_page("about:blank").await?;
             for action in [

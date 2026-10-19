@@ -45,6 +45,7 @@ fn legacy_actions(scenario: &TestScenario) -> Vec<TestAction> {
             use_file_chooser: None,
             frame: None,
             viewport_names: None,
+            ..Default::default()
         }));
     }
     let selectors = |multiple: &Option<crate::types::Selectors>, single: &Option<String>| {
@@ -65,6 +66,7 @@ fn legacy_actions(scenario: &TestScenario) -> Vec<TestAction> {
             click,
             frame: None,
             viewport_names: None,
+            ..Default::default()
         }));
     }
     if let Some(scroll) = &scenario.scroll_to_selector {
@@ -130,6 +132,17 @@ fn collect_needs_actions<'a>(
         .into_iter()
         .flat_map(|source| source.actions.iter().flatten())
         .collect()
+}
+
+pub(super) fn scenario_uses_touch(
+    scenario: &TestScenario,
+    all_scenarios: &[TestScenario],
+    viewport: Option<&str>,
+) -> bool {
+    collect_needs_actions(scenario, all_scenarios, &mut Vec::new())
+        .into_iter()
+        .chain(scenario.actions.iter().flatten())
+        .any(|action| action.uses_touch() && action_applies_to_viewport(action, viewport))
 }
 
 /// Build a yellow `[index of total]` log prefix, padding the index to the width
@@ -314,14 +327,18 @@ async fn install_tab_tracker_for_actions<'a>(
     storage: Arc<super::storage_state::StorageState>,
     resolved: &ResolvedConfig,
     viewport: Option<&config::viewports::ViewportDef>,
-    mut actions: impl Iterator<Item = &'a TestAction>,
+    actions: impl Iterator<Item = &'a TestAction>,
 ) -> Result<Option<super::tabs::Tabs>> {
     let label = viewport.map(|viewport| viewport.label.as_str());
-    if actions.any(|action| {
-        matches!(action, TestAction::SwitchTab(_)) && action_applies_to_viewport(action, label)
-    }) {
+    let mut needs_tabs = false;
+    let mut has_touch = false;
+    for action in actions.filter(|action| action_applies_to_viewport(action, label)) {
+        needs_tabs |= matches!(action, TestAction::SwitchTab(_));
+        has_touch |= action.uses_touch();
+    }
+    if needs_tabs || has_touch {
         Ok(Some(
-            super::tabs::Tabs::install(page, storage, resolved, viewport).await?,
+            super::tabs::Tabs::install(page, storage, resolved, viewport, has_touch).await?,
         ))
     } else {
         Ok(None)
@@ -350,6 +367,7 @@ impl ScenarioPage {
         // A popup can close itself. Handle switching before touching the old
         // document so returning to a surviving tab does not depend on that page.
         if let TestAction::SwitchTab(selection) = action {
+            self.runtime.ensure_no_pending_dialog()?;
             use crate::diagnostics::{record::Stage, runtime as diagnostics};
             let fields = super::test_action::action_diagnostic_fields(
                 action,
@@ -646,6 +664,15 @@ async fn run_scenario_capture_inner(
         page.execute(cmd).await?;
     }
     apply_viewport(&page, viewport).await?;
+    let has_touch = scenario_uses_touch(scenario, all_scenarios, viewport_label);
+    if has_touch {
+        page.execute(
+            chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::new(
+                true,
+            ),
+        )
+        .await?;
+    }
     let storage = super::storage_state::StorageState::install_with_client(
         runtime.client(),
         &page,
@@ -777,6 +804,7 @@ async fn run_scenario_capture_inner(
 
     hooks.apply(&active.page).await?;
 
+    active.runtime.ensure_no_pending_dialog()?;
     if screenshot_types.is_empty() {
         if let Some(tabs) = &active.tabs {
             tabs.check().await?;
@@ -1028,6 +1056,33 @@ fn parse_same_site(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expanded_actions_touch_activation_uses_consumer_viewports_and_needs() {
+        let suite: TestSuite = serde_yaml::from_str("scenarios:\n- id: base\n  url: /\n  actions:\n  - tap: '#menu'\n    viewportNames: mobile\n- id: child\n  url: /\n  needs: base\n- id: plain\n  url: /\n  actions:\n  - click: '#menu'\n").unwrap();
+        for scenario in &suite.scenarios[..2] {
+            assert!(super::scenario_uses_touch(
+                scenario,
+                &suite.scenarios,
+                Some("MOBILE")
+            ));
+            assert!(!super::scenario_uses_touch(
+                scenario,
+                &suite.scenarios,
+                Some("desktop")
+            ));
+            assert!(!super::scenario_uses_touch(
+                scenario,
+                &suite.scenarios,
+                None
+            ));
+        }
+        assert!(!super::scenario_uses_touch(
+            &suite.scenarios[2],
+            &suite.scenarios,
+            Some("mobile")
+        ));
+    }
+
     use super::*;
 
     #[tokio::test]
@@ -1826,6 +1881,15 @@ mod tests {
                     json!({ "scroll": "#never" }),
                     json!({ "uncheck": "#never" }),
                     json!({ "wait": 60000 }),
+                    json!({ "drag": "#never", "to": "#missing" }),
+                    json!({ "dropFiles": "#never", "file": "missing-file.txt" }),
+                    json!({ "wheel": "#never", "deltaY": 100 }),
+                    json!({ "navigate": "back" }),
+                    json!({ "dialog": "accept" }),
+                    json!({ "key": "Tab" }),
+                    json!({ "tap": "#never" }),
+                    json!({ "swipe": "#never", "offset": {"x": 100, "y": 0} }),
+                    json!({ "longPress": "#never", "duration": 60000 }),
                 ] {
                     shape["viewportNames"] = json!([excluded]);
                     skipped.push(serde_json::from_value::<TestAction>(shape)?);

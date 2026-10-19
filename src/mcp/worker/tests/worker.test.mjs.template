@@ -63,6 +63,13 @@ test("every guide, schema, and example can be retrieved", async () => {
     const schema = JSON.parse(result.content[0].text.split("\n\n").slice(1).join("\n\n"));
     assert.ok(schema.required.includes(action));
     assert.ok(schema.$defs);
+    if (action === "key") {
+      assert.deepEqual(schema.required, ["key"]);
+      assert.equal(Object.hasOwn(schema.properties, "press"), false);
+    }
+    if (action === "press") {
+      assert.ok(schema.required.includes("press") && schema.required.includes("key"));
+    }
   }
   for (const task of Object.keys(catalog.examples)) {
     const result = await client.callTool({ name: "get_example", arguments: { task } });

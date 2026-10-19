@@ -832,6 +832,22 @@ pub(crate) fn semantic_diagnostics(
                         );
                     }
                     scope_semantics(scenario, &pointer, &mut issues);
+                    for (action_index, action) in scenario["actions"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                    {
+                        if let Ok(action) = crate::types::TestAction::deserialize(action)
+                            && let Err(error) = crate::test::validate_action_fields(&action)
+                        {
+                            semantic_issue(
+                                &mut issues,
+                                format!("{pointer}/actions/{action_index}"),
+                                error.to_string(),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -964,6 +980,15 @@ pub const ACTIONS: &[&str] = &[
     "switchTab",
     "uncheck",
     "wait",
+    "drag",
+    "dropFiles",
+    "wheel",
+    "navigate",
+    "dialog",
+    "key",
+    "tap",
+    "swipe",
+    "longPress",
 ];
 
 pub fn action_template(action: &str) -> Result<Value> {
@@ -977,6 +1002,13 @@ pub fn action_template(action: &str) -> Result<Value> {
         "save" => json!({"save": "checkpoint"}),
         "persist" => json!({"persist": "session"}),
         "switchTab" => json!({"switchTab": "new"}),
+        "drag" => json!({"drag": "#source", "to": "#destination"}),
+        "dropFiles" => json!({"dropFiles": "#drop-zone", "file": "uploads/sample.pdf"}),
+        "wheel" => json!({"wheel": "#scroll-container", "deltaY": 300}),
+        "navigate" => json!({"navigate": "back"}),
+        "dialog" => json!({"dialog": "accept", "kind": "confirm"}),
+        "key" => json!({"key": "Tab"}),
+        "swipe" => json!({"swipe": "#carousel", "offset": {"x": -100, "y": 0}}),
         selector => json!({selector: "#element"}),
     })
 }

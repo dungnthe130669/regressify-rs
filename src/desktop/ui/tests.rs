@@ -4699,6 +4699,67 @@ async fn switch_tab_can_be_added_from_navigation_menu(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+async fn assert_expanded_navigation_action(
+    cx: &mut TestAppContext,
+    index: usize,
+    kind: &str,
+    value: &str,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.edit(
+                |session| session.set_field("actions", Some(serde_json::json!([]))),
+                window,
+                cx,
+            );
+            this.field_search
+                .update(cx, |state, cx| state.set_value("actions", window, cx));
+        });
+        window.render_frame(cx);
+        window.click("sequence-add", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.within("popup-menu").try_find(index).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.within("popup-menu").find(index).label(), Some(kind));
+        window.within("popup-menu").click(index, cx);
+        view.update(cx, |this, cx| {
+            this.field_search
+                .update(cx, |state, cx| state.set_value("", window, cx));
+        });
+    })
+    .unwrap();
+    let field = format!("field-{kind}");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find(field.clone()).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0][kind],
+            value
+        );
+        assert!(window.try_find("field-frame").is_none());
+        window.click("undo", cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn expanded_actions_can_be_added_from_navigation_menu(cx: &mut TestAppContext) {
+    assert_expanded_navigation_action(cx, 3, "navigate", "back").await;
+}
+
+#[gpui_kit::test]
+async fn expanded_actions_dialog_can_be_added_from_navigation_menu(cx: &mut TestAppContext) {
+    assert_expanded_navigation_action(cx, 4, "dialog", "accept").await;
+}
+
 #[gpui_kit::test]
 fn scenario_sequence_supports_reordering_duplication_and_direct_editing(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();

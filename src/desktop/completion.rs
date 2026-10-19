@@ -608,10 +608,7 @@ fn nodes_at<'schema>(
     let selected = ACTIONS.iter().find(|action| properties.contains(**action));
     let matches_action = |node: &&Value| {
         selected.is_none_or(|selected| {
-            !ACTIONS
-                .iter()
-                .any(|action| node["properties"].get(*action).is_some())
-                || node["properties"].get(*selected).is_some()
+            schema::action_discriminator(node).is_none_or(|name| name == *selected)
         })
     };
     let mut nodes = vec![root];
@@ -812,6 +809,55 @@ mod tests {
                 .iter()
                 .any(|item| item.label == "frame" || item.label == "click")
         );
+    }
+
+    #[test]
+    fn expanded_actions_completion_distinguishes_focused_keys_and_navigation() {
+        for (source, format) in [
+            (
+                "scenarios:\n- url: /\n  actions:\n  - key: Tab\n    |",
+                Format::Yaml,
+            ),
+            (
+                r#"{"scenarios":[{"url":"/","actions":[{"key":"Tab",|}]}]}"#,
+                Format::Json,
+            ),
+        ] {
+            let fields = suggestions(source, format);
+            assert!(
+                fields.iter().any(|item| item.label == "frame"),
+                "{fields:?}"
+            );
+            assert!(
+                !fields.iter().any(|item| item.label == "press"),
+                "{fields:?}"
+            );
+        }
+        let fields = suggestions(
+            "scenarios:\n- url: /\n  actions:\n  - press: '#first'\n    |",
+            Format::Yaml,
+        );
+        assert!(fields.iter().any(|item| item.label == "key"));
+        for (source, format) in [
+            (
+                "scenarios:\n- url: /\n  actions:\n  - navigate: |",
+                Format::Yaml,
+            ),
+            (
+                r#"{"scenarios":[{"url":"/","actions":[{"navigate":|}]}]}"#,
+                Format::Json,
+            ),
+        ] {
+            let values = suggestions(source, format);
+            for value in ["back", "forward", "reload"] {
+                assert!(
+                    values
+                        .iter()
+                        .any(|item| item.text == format!("\"{value}\"")),
+                    "{values:?}"
+                );
+            }
+        }
     }
 
     #[test]

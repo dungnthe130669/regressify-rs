@@ -184,6 +184,11 @@ pub async fn exec_single_scenario(
         viewport: req
             .viewport
             .map(|viewport| (viewport.width, viewport.height)),
+        has_touch: super::test_scenario::scenario_uses_touch(
+            req.scenario,
+            req.all_scenarios,
+            req.viewport.map(|viewport| viewport.label.as_str()),
+        ),
     };
     let (mut browser, handle, user_data_dir) =
         match launch_browser(exe_path, &log_prefix, launch_options).await {

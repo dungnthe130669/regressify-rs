@@ -31,6 +31,7 @@ pub struct LaunchOptions {
     pub debug: bool,
     pub ignore_ssl_errors: bool,
     pub viewport: Option<(u32, u32)>,
+    pub has_touch: bool,
 }
 
 pub async fn fetcher() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -363,7 +364,7 @@ async fn launch_browser_inner(
                 height: viewport_height,
                 device_scale_factor: Some(1.0),
                 emulating_mobile: false,
-                has_touch: false,
+                has_touch: options.has_touch,
                 is_landscape: true,
             }))
             .launch_timeout(Duration::from_secs(45))

@@ -128,13 +128,11 @@ pub(super) fn parse_press_key(input: &str) -> Result<KeyStroke> {
     })
 }
 
-async fn dispatch_event(
-    target: &Target,
+pub(super) fn key_event(
     stroke: &KeyStroke,
     modifiers: i64,
     down: bool,
-    config: &ActionabilityConfig,
-) -> Result<()> {
+) -> Result<DispatchKeyEventParams> {
     let mut command = DispatchKeyEventParams::builder()
         .r#type(if !down {
             DispatchKeyEventType::KeyUp
@@ -156,16 +154,9 @@ async fn dispatch_event(
     if down && let Some(text) = &stroke.text {
         command = command.text(text.clone()).unmodified_text(text.clone());
     }
-    let command = command
+    command
         .build()
-        .map_err(|error| anyhow!("Invalid key event: {error}"))?;
-    cdp_with_timeout(
-        Duration::from_millis(config.actionability_timeout_ms),
-        "dispatching keyboard event",
-        target.execute(command),
-    )
-    .await?;
-    Ok(())
+        .map_err(|error| anyhow!("Invalid key event: {error}"))
 }
 
 pub(super) async fn dispatch_key_stroke(
@@ -173,45 +164,45 @@ pub(super) async fn dispatch_key_stroke(
     stroke: &KeyStroke,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    let mut held = Vec::new();
-    let mut modifiers = 0;
-    for name in ["Alt", "Control", "Meta", "Shift"] {
-        let bit = modifier_bit(name).unwrap_or(0);
-        if stroke.modifiers & bit != 0 && modifier_bit(&stroke.key) != Some(bit) {
-            let modifier = parse_press_key(name)?;
-            modifiers |= bit;
-            dispatch_event(target, &modifier, modifiers, true, config).await?;
-            held.push(modifier);
-        }
-    }
+    let mut guard = super::gestures::InputGuard::new(target, config);
     let result = async {
-        dispatch_event(target, stroke, stroke.modifiers, true, config).await?;
-        dispatch_event(
-            target,
+        let mut modifiers = 0;
+        for name in ["Alt", "Control", "Meta", "Shift"] {
+            let bit = modifier_bit(name).unwrap_or(0);
+            if stroke.modifiers & bit != 0 && modifier_bit(&stroke.key) != Some(bit) {
+                let modifier = parse_press_key(name)?;
+                guard.release_on_exit(key_event(&modifier, modifiers, false)?)?;
+                modifiers |= bit;
+                guard.send(key_event(&modifier, modifiers, true)?).await?;
+            }
+        }
+        let release = key_event(
             stroke,
             stroke.modifiers & !modifier_bit(&stroke.key).unwrap_or(0),
             false,
-            config,
-        )
-        .await
+        )?;
+        let cleanup = guard.release_on_exit(release.clone())?;
+        guard
+            .send(key_event(stroke, stroke.modifiers, true)?)
+            .await?;
+        guard.send(release).await?;
+        guard.released(cleanup);
+        Ok(())
     }
     .await;
-    for modifier in held.iter().rev() {
-        modifiers &= !modifier_bit(&modifier.key).unwrap_or(0);
-        let release = dispatch_event(target, modifier, modifiers, false, config).await;
-        if result.is_ok() {
-            release?;
-        }
-    }
-    result
+    guard.finish(result).await
 }
 
 pub(super) async fn type_text(
     target: &Target,
     text: &str,
+    delay_ms: u64,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    for character in text.chars() {
+    for (index, character) in text.chars().enumerate() {
+        if index > 0 && delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
         let text = character.to_string();
         if let Ok(stroke) = parse_press_key(&text) {
             dispatch_key_stroke(target, &stroke, config).await?;

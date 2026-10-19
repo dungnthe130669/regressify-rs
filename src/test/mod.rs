@@ -3,6 +3,8 @@ mod authentication;
 mod browsers;
 pub mod capture;
 mod cdp;
+mod dialogs;
+mod gestures;
 mod hooks;
 mod keyboard;
 mod page_stability;
@@ -35,7 +37,7 @@ pub(crate) use test_suites::{
 #[cfg(any(feature = "desktop", test))]
 pub(crate) use test_suites::validate_scenario_dependencies;
 
-#[cfg(test)]
+#[cfg(any(feature = "desktop", test))]
 pub(crate) use test_action::validate_action_fields;
 
 #[cfg(feature = "desktop")]

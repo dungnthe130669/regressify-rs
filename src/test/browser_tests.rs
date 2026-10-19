@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
 use crate::types::BasicAuth;
@@ -63,6 +63,368 @@ impl Drop for Site {
             let _ = thread.join();
         }
     }
+}
+
+fn expanded_action_page(request: Request) {
+    let _ = request.respond(Response::from_string(r#"<!doctype html><html><head>
+<style>
+body { margin:8px; font:14px sans-serif; }
+button,input { width:95px; height:32px; margin:3px; }
+.row { display:flex; gap:15px; margin:12px 0; }
+#pointer,#native,#drop,#files { width:100px; height:65px; background:lightblue; }
+#scroller { width:160px; height:60px; overflow:auto; }
+#scroller > div { width:600px; height:600px; }
+#touch { width:200px; height:90px; background:lightgreen; touch-action:none; }
+#covered-wrap { position:relative; width:140px; height:40px; }
+#covered { width:130px; margin:0; }
+#cover { position:absolute; width:60px; height:40px; left:40px; top:0; background:gray; }
+</style></head><body>
+<div class="row"><button id="click">Click</button><button id="context">Context</button><a id="aux" href='#aux-link'>Aux link</a><button id="odd'id">Quoted</button>
+<div id="covered-wrap"><button id="covered">Partial cover</button><div id="cover"></div></div></div>
+<div><input id="first"><input id="second"><input id="typed"></div>
+<div class="row"><div id="pointer">Pointer source</div><div id="native" draggable="true">Native source</div><div id="drop">Drop target</div><div id="files">Files</div></div>
+<div class="row"><div id="scroller"><div>Scrollable</div></div><div id="touch">Touch</div></div>
+<button id="change">Change</button><span id="status">Loading</span><span id="busy">Busy</span><span id="gone">Remove</span>
+<button id="delayed" disabled>Delayed</button><button id="disabled" disabled>Disabled</button><input id="value">
+<div><button id="confirm">Confirm</button><button id="prompt">Prompt</button><button id="alert">Alert</button><button id="extra">Two dialogs</button><button id="noop">No dialog</button><button id="unload">Arm unload</button></div>
+<script>
+const body = document.body;
+body.dataset.initialTouch = String(navigator.maxTouchPoints);
+body.dataset.loads = String(Number(sessionStorage.loads || 0) + 1);
+sessionStorage.loads = body.dataset.loads;
+const get = id => document.getElementById(id);
+get('click').addEventListener('dblclick', e => {
+  body.dataset.double = String(e.isTrusted && e.detail === 2 && e.ctrlKey && e.shiftKey);
+});
+get('click').addEventListener('click', e => { body.dataset.modifiers = String(e.ctrlKey || e.shiftKey || e.altKey || e.metaKey); });
+get('context').addEventListener('contextmenu', e => { e.preventDefault(); body.dataset.context = String(e.isTrusted && e.button === 2); });
+get('aux').addEventListener('auxclick', e => { e.preventDefault(); body.dataset.aux = String(e.isTrusted && e.button === 1); });
+get('covered').onclick = e => body.dataset.position = String(e.isTrusted && e.offsetX < 30);
+get("odd'id").onclick = e => body.dataset.quoted = String(e.isTrusted);
+const typing = [];
+get('typed').onkeydown = e => { typing.push({time:e.timeStamp, trusted:e.isTrusted}); body.dataset.typing = JSON.stringify(typing); };
+let pointer = false;
+get('pointer').onpointerdown = e => { pointer = true; body.dataset.pointerStart = String(e.isTrusted); };
+document.addEventListener('pointermove', e => { if (pointer && e.buttons === 1) body.dataset.pointerMoved = String(e.isTrusted); });
+document.addEventListener('pointerup', e => { if (pointer) { body.dataset.pointerDrop = String(e.target === get('drop') && e.isTrusted); pointer = false; } });
+get('native').ondragstart = e => { e.dataTransfer.setData('text/plain', 'native-payload'); body.dataset.dragStart = String(e.isTrusted); };
+get('drop').ondragover = e => e.preventDefault();
+get('drop').ondrop = e => { e.preventDefault(); body.dataset.nativeDrop = String(e.isTrusted && e.dataTransfer.getData('text/plain') === 'native-payload'); };
+get('files').ondragover = e => e.preventDefault();
+get('files').ondrop = async e => {
+  e.preventDefault();
+  const files = [...e.dataTransfer.files];
+  body.dataset.fileDrop = String(e.isTrusted && files.length === 2 && await files[0].text() === 'first-file' && await files[1].text() === 'second-file');
+};
+get('scroller').onscroll = () => { get('scroller').dataset.moved = String(get('scroller').scrollTop > 0 && get('scroller').scrollLeft > 0); };
+get('scroller').addEventListener('wheel', e => { body.dataset.wheelTrusted = String(e.isTrusted); });
+let touchStart;
+get('touch').addEventListener('touchstart', e => { touchStart = {time:e.timeStamp, x:e.touches[0].clientX}; body.dataset.touchStarted = 'true'; });
+get('touch').addEventListener('touchmove', e => { body.dataset.swipe = String(e.isTrusted && Math.abs(e.touches[0].clientX - touchStart.x) >= 50); });
+get('touch').addEventListener('touchend', e => {
+  body.dataset.touchTrusted = String(e.isTrusted);
+  body.dataset.touchDuration = String(e.timeStamp - touchStart.time);
+});
+get('touch').addEventListener('touchcancel', () => body.dataset.touchCancelled = 'true');
+get('change').onclick = () => setTimeout(() => {
+  get('status').textContent = '  Ready   now ';
+  get('busy').style.display = 'none'; get('gone').remove();
+  get('delayed').disabled = false; get('value').value = 'ready';
+}, 150);
+get('confirm').onclick = () => body.dataset.confirm = String(confirm('Continue?'));
+get('prompt').onclick = () => body.dataset.prompt = String(prompt('Name?'));
+get('alert').onclick = () => { alert('Notice'); body.dataset.alert = 'handled'; };
+get('extra').onclick = () => { confirm('First'); confirm('Second'); };
+get('unload').onclick = () => window.onbeforeunload = () => '';
+</script></body></html>"#)
+        .with_header(Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap()));
+}
+
+#[tokio::test]
+#[ignore = "requires managed Chromium; isolated child owns fixture paths"]
+async fn expanded_actions_dispatch_trusted_events_and_preserve_frames() -> Result<()> {
+    use super::{
+        runtime::Runtime,
+        storage_state::StorageState,
+        test_action::{ActionExecutionContext, exec_test_action},
+    };
+    use crate::{
+        config::ResolvedConfig,
+        types::{Frame, TestAction, TestScenario, TestSuite},
+    };
+    use serde_json::{Value, json};
+    let root = match std::env::var_os("REGRESSIFY_EXPANDED_ACTION_FIXTURE") {
+        Some(root) => PathBuf::from(root),
+        None => {
+            let workspace = tempfile::tempdir()?;
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "test::browser_tests::expanded_actions_dispatch_trusted_events_and_preserve_frames", "--ignored", "--nocapture"])
+                .env("REGRESSIFY_EXPANDED_ACTION_FIXTURE", workspace.path()).output()?;
+            anyhow::ensure!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+    };
+    crate::common::ROOT_DIR
+        .set(root.clone())
+        .map_err(|_| anyhow!("Fixture root already initialized"))?;
+    std::fs::create_dir_all(root.join("visual_tests").join("uploads"))?;
+    std::fs::write(
+        root.join("visual_tests").join("uploads").join("first.txt"),
+        "first-file",
+    )?;
+    std::fs::write(
+        root.join("visual_tests").join("uploads").join("second.txt"),
+        "second-file",
+    )?;
+    let files = ["first.txt", "second.txt"].map(|name| {
+        PathBuf::from("uploads")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    });
+    let outer = Site::new(expanded_action_page)?;
+    let inner = Site::new(expanded_action_page)?;
+    let (mut browser, handler, directory) = launch_browser(
+        "expanded-actions",
+        LaunchOptions {
+            has_touch: true,
+            viewport: Some((1100, 900)),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let result: Result<()> = async {
+        let page = browser.new_page("about:blank").await?;
+        let runtime = Runtime::new(&browser, &page).await?;
+        let storage = Arc::new(StorageState::install_with_client(runtime.client(), &page, None, &outer.origin).await?);
+        let touch_config = ResolvedConfig { element_timeout_ms: 4000, ..Default::default() };
+        let touch_tabs = super::tabs::Tabs::install(&page, storage.clone(), &touch_config, None, true).await?;
+        page.goto(outer.origin.as_str()).await?;
+        let child = inner.origin.replace("127.0.0.1", "localhost");
+        super::runtime::evaluate_main_document(&page, format!("(() => {{ const frame = document.createElement('iframe'); frame.id = 'frame'; frame.width = 1000; frame.height = 600; frame.src = {}; document.body.append(frame); }})()", serde_json::to_string(&child)?)).await?;
+        let child_target = runtime.target(&Some(Frame::Single("#frame".into())), Duration::from_secs(4)).await?;
+        super::actionability::wait_for_selector(&child_target, "body[data-initial-touch]", &None, &super::actionability::ActionabilityConfig { element_timeout_ms: 4000, ..Default::default() }, crate::diagnostics::record::Stage::Navigation).await?;
+        child_target.evaluate(format!("(() => {{ const frame = document.createElement('iframe'); frame.id = 'nested'; frame.width = 950; frame.height = 580; frame.src = {}; document.body.append(frame); }})()", serde_json::to_string(&outer.origin)?)).await?;
+        let suite = TestSuite::default();
+        let scenario = TestScenario { url: outer.origin.clone(), ..Default::default() };
+        let config = ResolvedConfig { element_timeout_ms: 4000, actionability_timeout_ms: 2000, ..Default::default() };
+        let context = || ActionExecutionContext { page: &page, runtime: &runtime, storage: &storage, test_suite: &suite, scenario: &scenario, config: &config, url_replacements: &[], viewport_label: None, log_prefix: "expanded" };
+        for frame in [None, Some(Frame::Single("#frame".into())), Some(Frame::Multiple(vec!["#frame".into(), "#nested".into()]))] {
+            touch_tabs.check().await?;
+            for mut value in [
+                json!({"click":"#click","clickCount":2,"modifiers":["Control","Shift"]}),
+                json!({"click":"#context","button":"right"}),
+                json!({"click":"#aux","button":"middle"}),
+                json!({"click":"#covered","position":{"x":10,"y":10}}),
+                json!({"click":"[id=\"odd'id\"]"}),
+                json!({"input":"#typed","value":"abc","typingDelay":35}),
+                json!({"focus":"#first"}),
+                json!({"key":"Tab"}),
+                json!({"key":"x"}),
+                json!({"drag":"#pointer","to":"#drop","mode":"pointer","duration":120}),
+                json!({"drag":"#native","to":"#drop","duration":180}),
+                json!({"dropFiles":"#files","file":files}),
+                json!({"wait":"body[data-file-drop=true]"}),
+                json!({"wheel":"#scroller","deltaY":100,"deltaX":50}),
+                json!({"wait":"#scroller[data-moved=true]"}),
+                json!({"tap":"#touch"}),
+                json!({"longPress":"#touch","duration":600}),
+            ] {
+                value["frame"] = json!(frame);
+                let action: TestAction = serde_json::from_value(value.clone())?;
+                exec_test_action(context(), &action).await.with_context(|| format!("expanded action {}", value.as_object().unwrap().keys().filter(|key| *key != "frame").cloned().collect::<Vec<_>>().join(",")))?;
+            }
+            let target = runtime.target(&frame, Duration::from_secs(4)).await?;
+            exec_test_action(context(), &serde_json::from_value(json!({"dialog":"accept","kind":"confirm"}))?).await?;
+            exec_test_action(context(), &serde_json::from_value(json!({"click":"#confirm","frame":frame}))?).await?;
+            let values: Value = target.evaluate("({...document.body.dataset, second:document.querySelector('#second').value, typed:document.querySelector('#typed').value})").await?.into_value()?;
+            for name in ["double", "context", "aux", "position", "quoted", "pointerStart", "pointerMoved", "pointerDrop", "dragStart", "nativeDrop", "fileDrop", "wheelTrusted", "touchTrusted", "confirm"] {
+                anyhow::ensure!(values[name] == "true", "Missing trusted interaction result: {name} = {}", values[name]);
+            }
+            anyhow::ensure!(values["second"] == "x" && values["typed"] == "abc", "Focused keys or typing changed the wrong field");
+            anyhow::ensure!(values["initialTouch"].as_str().unwrap().parse::<u64>()? > 0, "Touch was not enabled before document scripts");
+            anyhow::ensure!(values["touchDuration"].as_str().unwrap().parse::<f64>()? >= 550.0, "Long press released before its duration");
+            let typing: Vec<Value> = serde_json::from_str(values["typing"].as_str().unwrap())?;
+            let characters = &typing[typing.len() - 3..];
+            anyhow::ensure!(characters.iter().all(|key| key["trusted"] == true), "Typing used synthetic key events");
+            anyhow::ensure!(characters.windows(2).all(|pair| pair[1]["time"].as_f64().unwrap() - pair[0]["time"].as_f64().unwrap() >= 30.0), "typingDelay did not separate character events");
+            for value in [
+                json!({"swipe":"#touch","position":{"x":30,"y":30},"offset":{"x":70,"y":0},"duration":160,"frame":frame}),
+                json!({"click":"#change","frame":frame}),
+                json!({"wait":"#status","text":"Ready now","frame":frame}),
+                json!({"wait":"#status","containsText":"Ready","frame":frame}),
+                json!({"wait":"#busy","state":"hidden","frame":frame}),
+                json!({"wait":"#gone","state":"detached","frame":frame}),
+                json!({"wait":"#delayed","state":"enabled","frame":frame}),
+                json!({"wait":"#disabled","state":"disabled","frame":frame}),
+                json!({"wait":"#value","value":"ready","frame":frame}),
+                json!({"wait":"#busy","state":"attached","frame":frame}),
+            ] {
+                exec_test_action(context(), &serde_json::from_value(value)?).await?;
+            }
+            let swiped: String = target.evaluate("document.body.dataset.swipe").await?.into_value()?;
+            anyhow::ensure!(swiped == "true", "Swipe did not move a trusted touch point");
+            let cancelling: TestAction = serde_json::from_value(json!({"longPress":"#touch","duration":5000,"frame":frame}))?;
+            anyhow::ensure!(tokio::time::timeout(Duration::from_millis(800), exec_test_action(context(), &cancelling)).await.is_err(), "Cancellation fixture did not interrupt the hold");
+            exec_test_action(context(), &serde_json::from_value(json!({"wait":"body[data-touch-cancelled=true]","frame":frame}))?).await?;
+            exec_test_action(context(), &serde_json::from_value(json!({"click":"#click","frame":frame}))?).await?;
+            let released: String = target.evaluate("document.body.dataset.modifiers").await?.into_value()?;
+            anyhow::ensure!(released == "false", "Gesture modifiers remained held");
+        }
+        let short = ResolvedConfig { element_timeout_ms: 500, actionability_timeout_ms: 300, ..Default::default() };
+        for value in [
+            json!({"click":"#covered","position":{"x":500,"y":10}}),
+            json!({"tap":"#disabled"}),
+            json!({"wheel":"#missing","deltaY":10}),
+            json!({"swipe":"#touch","offset":{"x":10000,"y":0}}),
+            json!({"wait":"#status","text":"never"}),
+            json!({"wait":"#busy","state":"visible"}),
+        ] {
+            let context = ActionExecutionContext { config: &short, ..context() };
+            anyhow::ensure!(exec_test_action(context, &serde_json::from_value(value)?).await.is_err(), "Invalid/unsatisfied interaction succeeded");
+        }
+        Ok(())
+    }.await;
+    browser.close().await?;
+    tokio::time::timeout(Duration::from_secs(10), browser.wait()).await??;
+    handler.await?;
+    drop(browser);
+    let cleanup = std::fs::remove_dir_all(directory);
+    result?;
+    cleanup?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires managed Chromium; loopback history and real JavaScript dialogs"]
+async fn expanded_actions_dialogs_and_history_are_strict() -> Result<()> {
+    use super::{
+        runtime::Runtime,
+        storage_state::StorageState,
+        test_action::{ActionExecutionContext, exec_test_action},
+    };
+    use crate::{
+        config::ResolvedConfig,
+        types::{TestAction, TestScenario, TestSuite},
+    };
+    use serde_json::{Value, json};
+    let site = Site::new(expanded_action_page)?;
+    let (mut browser, handler, directory) =
+        launch_browser("expanded-dialogs", Default::default()).await?;
+    let result: Result<()> = async {
+        let page = browser.new_page("about:blank").await?;
+        let runtime = Runtime::new(&browser, &page).await?;
+        let storage = StorageState::install(&browser, &page, None, &site.origin).await?;
+        let suite = TestSuite::default();
+        let scenario = TestScenario {
+            url: site.origin.clone(),
+            ..Default::default()
+        };
+        let config = ResolvedConfig {
+            element_timeout_ms: 2500,
+            actionability_timeout_ms: 1500,
+            ..Default::default()
+        };
+        let context = || ActionExecutionContext {
+            page: &page,
+            runtime: &runtime,
+            storage: &storage,
+            test_suite: &suite,
+            scenario: &scenario,
+            config: &config,
+            url_replacements: &[],
+            viewport_label: None,
+            log_prefix: "dialogs",
+        };
+        let back: TestAction = serde_json::from_value(json!({"navigate":"back"}))?;
+        anyhow::ensure!(
+            exec_test_action(context(), &back).await.is_err(),
+            "Missing history must fail"
+        );
+        page.goto(format!("{}/one", site.origin)).await?;
+        for value in [
+            json!({"dialog":"accept","kind":"confirm","message":"Continue?"}),
+            json!({"click":"#confirm"}),
+            json!({"dialog":"accept","kind":"prompt","promptText":"fixture response"}),
+            json!({"click":"#prompt"}),
+            json!({"dialog":"dismiss","kind":"alert","message":"Notice"}),
+            json!({"click":"#alert"}),
+        ] {
+            exec_test_action(context(), &serde_json::from_value(value)?).await?;
+        }
+        let target = runtime.target(&None, Duration::from_secs(3)).await?;
+        let values: Value = target
+            .evaluate("({...document.body.dataset})")
+            .await?
+            .into_value()?;
+        anyhow::ensure!(
+            values["confirm"] == "true"
+                && values["prompt"] == "fixture response"
+                && values["alert"] == "handled",
+            "Dialog outcomes were incorrect"
+        );
+        for (expectation, trigger) in [
+            (
+                json!({"dialog":"accept","kind":"prompt"}),
+                json!({"click":"#confirm"}),
+            ),
+            (
+                json!({"dialog":"accept","kind":"confirm","message":"Wrong message"}),
+                json!({"click":"#confirm"}),
+            ),
+            (
+                json!({"dialog":"accept","kind":"confirm"}),
+                json!({"click":"#extra"}),
+            ),
+            (
+                json!({"dialog":"accept","kind":"confirm"}),
+                json!({"click":"#noop"}),
+            ),
+        ] {
+            exec_test_action(context(), &serde_json::from_value(expectation)?).await?;
+            anyhow::ensure!(
+                tokio::time::timeout(
+                    Duration::from_secs(6),
+                    exec_test_action(context(), &serde_json::from_value(trigger)?)
+                )
+                .await?
+                .is_err(),
+                "Unmet/extra dialog expectation succeeded"
+            );
+        }
+        for value in [
+            json!({"goto":format!("{}/two", site.origin)}),
+            json!({"navigate":"back"}),
+            json!({"wait":0,"url":format!("{}/one", site.origin)}),
+            json!({"navigate":"forward"}),
+            json!({"wait":0,"url":format!("{}/two", site.origin)}),
+            json!({"click":"#unload"}),
+            json!({"dialog":"dismiss","kind":"beforeunload"}),
+            json!({"goto":format!("{}/cancelled", site.origin)}),
+            json!({"wait":0,"url":format!("{}/two", site.origin)}),
+            json!({"dialog":"accept","kind":"beforeunload"}),
+            json!({"navigate":"reload","ignoreCache":true}),
+            json!({"wait":"#click","url":format!("{}/two", site.origin)}),
+        ] {
+            exec_test_action(context(), &serde_json::from_value(value)?).await?;
+        }
+        runtime.ensure_no_pending_dialog()?;
+        Ok(())
+    }
+    .await;
+    browser.close().await?;
+    tokio::time::timeout(Duration::from_secs(10), browser.wait()).await??;
+    handler.await?;
+    drop(browser);
+    let cleanup = std::fs::remove_dir_all(directory);
+    result?;
+    cleanup?;
+    Ok(())
 }
 
 #[tokio::test]

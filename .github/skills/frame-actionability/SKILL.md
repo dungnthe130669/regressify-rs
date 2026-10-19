@@ -15,6 +15,7 @@ description: 'Use when fixing iframe/nested-frame actions, frame visibility and 
 1. Preserve bounded waits for frames and their targets, including delayed navigation and disappearing/replaced documents. Do not retry beyond the action deadline.
 1. Apply target visibility, stability, enabled-state, scroll, and hit-testing rules inside the frame. Also test covering elements in ancestor documents.
 1. Convert local frame coordinates into top-level viewport coordinates before CDP pointer input. Include nested offsets, frame borders, and scrolling.
+1. Position-aware clicks hit-test the requested point; drag/swipe endpoints must stay in the same visible document. Touch jobs configure OOPIF capability before first scripts, not during late target resolution.
 1. Preserve context-cache invalidation on navigation, detach, and event overflow. Distinguish missing/wrong-type/inaccessible targets from supported cross-origin frames; never silently execute in the parent document after resolution fails.
 
 ## Checks

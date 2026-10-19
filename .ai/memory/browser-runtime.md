@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-10-14
+Verified: 2026-10-19
 
 - [Script hooks](../../src/test/hooks.rs) run entirely in Chromium: document-start
   `onBeforeScript`, then CSS/`jsOnReadyPath`/`onReadyScript` after readiness and
@@ -104,3 +104,12 @@ Verified: 2026-10-14
   persistence across tabs, once-per-document hooks, and return after popup closure.
   Desktop schema/completion checks and the native `switch_tab_can_be_added_from_navigation_menu`
   regression verify authoring the same action in the app.
+- [Expanded actions](../../src/test/gestures.rs) use complete CDP gestures with
+  owned input cleanup; the pinned bindings need explicit empty touchPoints and
+  drag items arrays. Native HTML5 data and confined regular file drops are distinct.
+- [Touch setup](../../src/test/tabs.rs) must pause/configure OOPIF targets before
+  first scripts, recursively, even in jobs without switchTab. Top-level touch
+  emulation alone left cross-origin frames at zero maxTouchPoints in the live fixture.
+- The ignored `expanded_actions_` [browser fixtures](../../src/test/browser_tests.rs)
+  verify trusted events, actual drop payloads, focus, timing, cancellation, and
+  strict dialogs/history, including intentional beforeunload cancellation.

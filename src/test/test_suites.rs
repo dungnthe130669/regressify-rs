@@ -1332,7 +1332,7 @@ pub(crate) fn validate_action_viewport_names(
         .map(|viewport| viewport.label.as_str())
         .collect::<Vec<_>>();
     let sources = collect_needs_scenarios(scenario, all_scenarios, &mut Vec::new());
-    for source in sources.into_iter().chain(std::iter::once(scenario)) {
+    for source in sources.iter().copied().chain(std::iter::once(scenario)) {
         for (index, action) in source.actions.iter().flatten().enumerate() {
             let Some(names) = action.viewport_names() else {
                 continue;
@@ -1381,6 +1381,32 @@ pub(crate) fn validate_action_viewport_names(
             }
             .into());
         }
+    }
+    let labels: Vec<_> = if effective_viewports.is_empty() {
+        vec![None]
+    } else {
+        effective_viewports
+            .iter()
+            .map(|viewport| Some(viewport.label.as_str()))
+            .collect()
+    };
+    for label in labels {
+        super::test_action::validate_dialog_sequence(
+            sources
+                .iter()
+                .copied()
+                .chain(std::iter::once(scenario))
+                .flat_map(|source| source.actions.iter().flatten())
+                .filter(|action| super::test_scenario::action_applies_to_viewport(action, label)),
+        )
+        .map_err(|error| {
+            anyhow!(
+                "Invalid dialog sequence in suite '{}' scenario '{}': {}",
+                suite_name,
+                scenario_identifier(scenario, "<unnamed>"),
+                error
+            )
+        })?;
     }
     Ok(())
 }

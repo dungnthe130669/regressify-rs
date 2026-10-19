@@ -48,7 +48,10 @@ YAML selectors that begin with `#`; unquoted, YAML reads them as comments.
 ## Action Reference
 
 - `click`: element selector. Scrolls into view and waits for a stable, visible,
-  enabled, unobscured target, then clicks its center with the real pointer.
+  enabled, unobscured target. Optional `button` is left/middle/right;
+  `clickCount` is 1..3. `position: {x, y}` uses CSS pixels from the border-box
+  top-left, default center. `modifiers` accepts Alt, Control, Meta, Shift,
+  and ControlOrMeta, held for the gesture and released on completion/failure.
 - `hover`: element selector. Moves the real pointer to an actionable target.
 - `check`: native `<input type="checkbox">` or `<input type="radio">` selector.
   Clicks only if not already checked. Use `click` for custom `role="checkbox"`
@@ -72,6 +75,38 @@ YAML selectors that begin with `#`; unquoted, YAML reads them as comments.
 - `persist`: state name without `.json`; stores cookies and origin-scoped
   localStorage in the active output's `states/` folder.
 - `switchTab`: `new`, `previous`, or `original`; later steps use that tab.
+- `drag`: source selector and exactly one of `to` (same-document destination)
+  or `offset: {x, y}` (signed CSS pixels). `position` and `toPosition` choose
+  source/destination points; `toPosition` needs `to`. Both endpoints must be
+  visible together. `mode` is auto (default), pointer, or html5. Auto preserves
+  real HTML5 drag data for native draggable sources, otherwise sends pointer
+  input. Optional `duration` is 1..60000 milliseconds (default 300); optional
+  `modifiers` use click's names. Cross-document/auto-scrolling drags are unsupported.
+- `dropFiles`: drop-zone selector plus `file` path or list relative to
+  `visual_tests`. Sends native browser file-drop events. Files must be existing
+  regular files, confined after canonical resolution; empty lists fail.
+  Optional `position` picks the drop point. Follow with a wait for site acceptance.
+- `wheel`: target selector plus `deltaX`/`deltaY` CSS-pixel deltas, default zero;
+  at least one must be nonzero. Supports `position` and `modifiers`. This sends
+  wheel input, not just scrollIntoView. Follow with waits for lazy content.
+- `navigate`: back, forward, or reload in the selected tab. Missing history
+  entries fail. Optional `ignoreCache` is reload-only and defaults false.
+- `dialog`: accept or dismiss; arms one expectation for the next applicable
+  triggering action in the same tab. Optional `kind` is alert, confirm, prompt,
+  or beforeunload. Optional `message` matches exactly. `promptText` requires
+  kind prompt and response accept. Missing, extra, or mismatched dialogs fail;
+  this is not a persistent policy. The expectation must precede an interaction
+  or navigation, not a wait/save/persist/tab switch or another expectation.
+  Beforeunload needs prior user activation; dismissal intentionally cancels
+  navigation. Messages and prompt text are not archived.
+- `key`: sends a key/shortcut to current focus without refocusing a selector,
+  unlike `press`. Useful for Tab journeys. A selected frame must already own focus.
+- `tap`: touch and release an element.
+- `swipe`: start selector and nonzero `offset: {x, y}` in CSS pixels, with
+  optional `duration` (1..60000 milliseconds, default 300).
+- `longPress`: hold a touch on the selector; duration defaults 600 milliseconds
+  and must be 1..60000. All touch actions accept `position`; a swipe must stay
+  inside the selected visible document. Browser touch-action remains effective.
 
 Finding an element uses `elementTimeout`; visibility, stability, coverage, and
 enabled checks use `actionabilityTimeout`. `hide`, `remove`, and `scroll` only
@@ -82,7 +117,7 @@ to every document. Never hide an element that a later action must use.
 
 ## Waiting and Navigation
 
-`click`, `check`, `uncheck`, `press`, `input`, and `select` await a document
+Interactive pointer/touch actions, `key`, `press`, `input`, `select`, and `navigate` await a document
 navigation that starts immediately after the action, until the new page fires
 `load` (bounded by `elementTimeout`). Client-side transitions and navigation
 started later are not awaited; follow them with a `wait`.
@@ -94,8 +129,18 @@ runs afterwards. URL patterns are exact URLs or globs: `*` stays within one path
 segment, `**` spans segments, `{login,dashboard}` lists alternatives, and `?` is
 a literal character. Query strings and fragments are part of the URL, so use
 `**/dashboard*` when a query may follow. Prefer
-`{wait: "#dashboard", url: "**/dashboard*"}` to a long fixed sleep. There is no
-wait-until-hidden action; remove transient overlays with `removeSelectors`.
+`{wait: "#dashboard", url: "**/dashboard*"}` to a long fixed sleep.
+
+Selector waits also accept `state`: visible (default), hidden, attached,
+detached, enabled, or disabled. Hidden includes absence; detached requires
+absence. Visibility and enabled checks share the interactive helpers, including
+ancestor opacity, content visibility, native/ARIA disabled, and inert state.
+`text` (exact) or `containsText` (substring) compares innerText, falling back
+to textContent, with whitespace collapsed and trimmed. These are mutually
+exclusive. `value` matches the exact string value of an input/textarea/select.
+All supplied conditions must hold together within elementTimeout. Numeric
+waits cannot have these conditions; hidden/detached cannot require text/value.
+Wait for transient overlays to become hidden rather than hiding them manually.
 
 In `test` captures, URL replacement rules also apply to `goto`, `wait.url`, and
 `switchTab.url`; `ref` captures use them as written. Initial navigation has
@@ -129,6 +174,12 @@ contents. Without `useFileChooser`, the target must be a visible
 
 ## Checks Beyond the Schema
 
+`input.typingDelay` optionally waits a fixed 0..10000 milliseconds between
+characters (default zero). It requires text `value` and is invalid with `file`.
+`key: Tab` and `key: Enter` retain the current focus; `press` still explicitly
+focuses its selector first. Do not combine a standalone key action with another
+action, except that `press` continues to require its existing `key` argument.
+
 The JSON Schema cannot express every rule, so capture preflight checks these
 before any browser starts and fails the command with
 `Invalid action #N in test suite '<suite>' scenario '<scenario>': ...`:
@@ -138,6 +189,13 @@ before any browser starts and fails the command with
 - `press.key` must be a known, correctly cased key name.
 - `persist` needs a valid state name.
 - `switchTab.url` is allowed only with `switchTab: new`.
+- `drag` needs exactly one destination form, finite coordinates, and a valid
+  duration; element-relative positions cannot be negative.
+- Wheel/swipe deltas must be finite and not both zero.
+- `navigate.ignoreCache` is reload-only.
+- Dialog prompt text is accepted-prompt-only; each applicable expectation needs
+  an immediately following triggering action, after viewport filtering.
+- Wait state/text/value conditions require a selector and compatible fields.
 
 Preflight also rejects unknown fields, unknown viewport labels, invalid save
 and restore names, colliding screenshot names, missing upload files, and
@@ -149,7 +207,7 @@ selector.
 
 ## Frames and Responsive Actions
 
-All actions except `switchTab` support optional `frame`: one iframe selector
+All actions except `switchTab`, `navigate`, and `dialog` support optional `frame`: one iframe selector
 or an array ordered from the outermost to innermost frame. Same-origin and
 cross-origin frames work; each selector must match an `<iframe>` or `<frame>`,
 which may take up to `elementTimeout` to appear and load. Interactive actions
@@ -179,6 +237,44 @@ does not create new viewport jobs or override the scenario selection. Labels
 match case-insensitively and must be inside the consumer's effective viewport
 set. Blank, unknown, or out-of-scope labels fail before browser capture. Define
 the example's phone/desktop labels in the viewport file before using it.
+
+Applicable touch actions automatically enable touch capability before
+navigation, including prerequisite actions, nested cross-origin frames, and
+owned popups. Jobs without applicable touch actions remain unchanged.
+This does not change the user agent, device scale, or viewport dimensions.
+Constrain gestures with viewportNames instead of assuming a viewport named
+mobile automatically enables touch. Pointer, touch, and modifier state is
+released after each high-level interaction and on cancellation; separate
+mouseDown/keyDown steps spanning actions are intentionally not exposed.
+
+```yaml
+scenarios:
+  - id: interaction-examples
+    url: https://example.com
+    actions:
+      - click: "#editable-title"
+        clickCount: 2
+      - input: "#search"
+        value: "visual testing"
+        typingDelay: 40
+      - key: Tab
+      - drag: "#card"
+        to: "#done"
+      - wheel: "#results"
+        deltaY: 300
+      - wait: "#spinner"
+        state: hidden
+      - dialog: accept
+        kind: confirm
+      - click: "#delete"
+      - tap: "#menu"
+      - swipe: "#carousel"
+        position: {x: 200, y: 40}
+        offset: {x: -100, y: 0}
+      - longPress: "#item"
+        duration: 700
+      - navigate: reload
+```
 
 ## Checkpoints and State
 

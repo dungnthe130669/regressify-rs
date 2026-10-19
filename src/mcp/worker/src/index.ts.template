@@ -48,7 +48,9 @@ function schemaFor(kind: string, action?: string): Schema {
   const variants = schema.anyOf as { $ref: string }[];
   const selected = variants.find((variant) => {
     const definition = definitions[variant.$ref.slice("#/$defs/".length)];
-    return Object.hasOwn(definition.properties as object, action);
+    const required = definition.required as string[];
+    // press owns its key argument; a standalone key action has a separate schema.
+    return catalog.actions.find((name) => required.includes(name)) === action;
   });
   if (!selected) throw new Error("Unknown action.");
   return {
