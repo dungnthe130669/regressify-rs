@@ -1525,6 +1525,13 @@ language-server installation. Validation uses an offline, cached JSON Schema
 validator plus the existing semantic checks. Tests check field-help coverage and
 validate documented examples against the generated schemas.
 
+Duplicate YAML/JSON properties remain invalid Source drafts rather than being
+silently collapsed by Fields. Save and Fields navigation stay blocked until the
+duplicates are repaired. Scenario dependencies are checked even without action
+viewport filters; dependency errors do not hide independent viewport errors.
+Semantic errors such as blank URLs, invalid replacement regexes, and duplicate
+viewport labels point to their source fields alongside schema errors.
+
 For example, a Basic Auth entry without `origin` reports
 `basicAuth[0].origin: Missing required field`, followed by an origin example and
 an explanation. A complete entry is:
@@ -1585,7 +1592,7 @@ errors underline their source line; schema errors identify the
 field and offer corrections for missing fields, misspellings, types, supported
 choices, and numeric limits. Up to 50 issues are reported together in a scrollable
 panel. Each line link unfolds and focuses the affected field, or its enclosing
-object when a required field is missing. The issue button moves to the next
+object's first line when a required field is missing. The issue button moves to the next
 issue, wrapping to the first. Fixing the draft clears resolved diagnostics.
 
 `./ci/desktop-smoke.ps1 -SchemaFlows` verifies missing-origin guidance, credential-safe

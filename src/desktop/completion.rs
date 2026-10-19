@@ -43,6 +43,7 @@ pub struct SourceIndex {
     ranges: BTreeMap<String, Range<usize>>,
     fields: Vec<SourceField>,
     excluded: Vec<Range<usize>>,
+    line_ends: Vec<usize>,
 }
 
 impl SourceIndex {
@@ -57,6 +58,15 @@ impl SourceIndex {
             Format::Json => tree_sitter_json::LANGUAGE.into(),
             Format::Text => return index,
         };
+        let mut offset = 0;
+        index.line_ends = source
+            .split_inclusive('\n')
+            .map(|line| {
+                let end = offset + line.trim_end_matches(['\r', '\n']).len();
+                offset += line.len();
+                end
+            })
+            .collect();
         if parser.set_language(&language).is_ok()
             && let Some(tree) = parser.parse(source, None)
         {
@@ -69,7 +79,14 @@ impl SourceIndex {
         let mut parent = pointer;
         loop {
             if let Some(range) = self.ranges.get(parent) {
-                return range.clone();
+                if parent == pointer {
+                    return range.clone();
+                }
+                let line = self.line_ends.partition_point(|end| *end < range.start);
+                return range.start
+                    ..range
+                        .end
+                        .min(self.line_ends.get(line).copied().unwrap_or(range.end));
             }
             match parent.rsplit_once('/') {
                 Some((prefix, _)) => parent = prefix,
@@ -1081,6 +1098,33 @@ mod tests {
             &source[index.range("/scenarios/0/actions/0/key")],
             "{\"press\":\"#search\"}"
         );
+    }
+
+    #[test]
+    fn source_validation_missing_fields_highlight_only_the_enclosing_header() {
+        for (format, source, pointer, expected) in [
+            (
+                Format::Yaml,
+                "debug: true\r\nheadless: true\r\n",
+                "/scenarios",
+                "debug: true",
+            ),
+            (
+                Format::Yaml,
+                "scenarios:\n- label: Missing URL\n  delay: 12\n  actions: []\n",
+                "/scenarios/0/url",
+                "- label: Missing URL",
+            ),
+            (
+                Format::Json,
+                "{\n  \"debug\": true,\n  \"headless\": true\n}\n",
+                "/scenarios",
+                "{",
+            ),
+        ] {
+            let index = SourceIndex::new(format, source);
+            assert_eq!(&source[index.range(pointer)], expected);
+        }
     }
 
     #[test]

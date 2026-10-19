@@ -28,7 +28,9 @@ pub(crate) use test_suites::is_reserved_suite_identifier;
 pub(crate) use test_suites::validate_suite_identifier;
 
 #[cfg(feature = "desktop")]
-pub(crate) use test_suites::{ActionViewportNameError, validate_action_viewport_names};
+pub(crate) use test_suites::{
+    ActionViewportNameError, ScenarioDependencyError, validate_action_viewport_names,
+};
 
 #[cfg(any(feature = "desktop", test))]
 pub(crate) use test_suites::validate_scenario_dependencies;

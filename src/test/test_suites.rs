@@ -970,6 +970,35 @@ fn needs_ids(needs: &Needs) -> Vec<&str> {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct ScenarioDependencyError {
+    #[cfg(feature = "desktop")]
+    pub scenario_index: usize,
+    #[cfg(feature = "desktop")]
+    pub field: &'static str,
+    message: String,
+}
+
+impl ScenarioDependencyError {
+    fn new(_scenario_index: usize, _field: &'static str, message: String) -> Self {
+        Self {
+            #[cfg(feature = "desktop")]
+            scenario_index: _scenario_index,
+            #[cfg(feature = "desktop")]
+            field: _field,
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for ScenarioDependencyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ScenarioDependencyError {}
+
 fn validate_dependency_chain(
     input: &TestSuiteInput,
     scenarios: &[TestScenario],
@@ -980,11 +1009,16 @@ fn validate_dependency_chain(
     active_ids: &mut Vec<String>,
 ) -> Result<()> {
     if level >= 100 {
-        anyhow::bail!(
-            "Scenario dependency depth exceeded 100 in test suite '{}': {}",
-            input.name,
-            trail.join(" -> ")
-        );
+        return Err(ScenarioDependencyError::new(
+            scenario_idx,
+            "needs",
+            format!(
+                "Scenario dependency depth exceeded 100 in test suite '{}': {}",
+                input.name,
+                trail.join(" -> ")
+            ),
+        )
+        .into());
     }
 
     let Some(needs) = scenarios[scenario_idx].needs.as_ref() else {
@@ -996,20 +1030,29 @@ fn validate_dependency_chain(
         if active_ids.contains(&normalized_need) {
             let mut cycle = trail.clone();
             cycle.push(needed_id.to_string());
-            anyhow::bail!(
-                "Circular scenario dependency detected in test suite '{}': {}",
-                input.name,
-                cycle.join(" -> ")
-            );
+            return Err(ScenarioDependencyError::new(
+                scenario_idx,
+                "needs",
+                format!(
+                    "Circular scenario dependency detected in test suite '{}': {}",
+                    input.name,
+                    cycle.join(" -> ")
+                ),
+            )
+            .into());
         }
 
         let matching_indices = id_map.get(&normalized_need).cloned().unwrap_or_default();
         if matching_indices.len() != 1 {
-            anyhow::bail!(
-                "The test suite '{}' must contain exactly one scenario with id: {}",
-                input.name,
-                needed_id
-            );
+            return Err(ScenarioDependencyError::new(
+                scenario_idx,
+                "needs",
+                format!(
+                    "The test suite '{}' must contain exactly one scenario with id: {}",
+                    input.name, needed_id
+                ),
+            )
+            .into());
         }
 
         let target_idx = matching_indices[0];
@@ -1045,12 +1088,20 @@ pub(crate) fn validate_scenario_dependencies(
         }
     }
 
-    if let Some((id, _)) = id_map.iter().find(|(_, indices)| indices.len() > 1) {
-        anyhow::bail!(
-            "Duplicate scenario ID found in test suite '{}': '{}'. Scenario IDs must be unique.",
-            input.name,
-            id
-        );
+    if let Some((id, indices)) = id_map
+        .iter()
+        .filter(|(_, indices)| indices.len() > 1)
+        .min_by_key(|(_, indices)| indices[1])
+    {
+        return Err(ScenarioDependencyError::new(
+            indices[1],
+            "id",
+            format!(
+                "Duplicate scenario ID found in test suite '{}': '{}'. Scenario IDs must be unique.",
+                input.name,
+                id
+            ),
+        ).into());
     }
 
     for (index, scenario) in suite.scenarios.iter().enumerate() {

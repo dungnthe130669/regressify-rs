@@ -24,6 +24,7 @@ description: 'Use when changing workspace, suite, or scenario configuration, def
    empty/blank capture selectors while retaining zero navigation/readiness
    fallbacks, disabled settling, and empty viewport selections. Keep constraints
    on the owning property instead of narrowing shared string/list types globally.
+1. Shared viewport validation retains field/index metadata for desktop diagnostics while preserving CLI error text. Desktop semantic diagnostics use pointers and validate well-typed independent fields alongside schema errors, including replacement rules at each cascade scope.
 1. Preserve reference versus test URL replacement behavior and precedence of CLI options/environment settings. Compile regexes once at the owning boundary.
 1. Resolve configured files through the existing canonical containment helpers. An absolute configured file is allowed only inside the canonical workspace; missing optional defaults and missing explicit files have different semantics.
 1. Keep authentication origin-scoped and secrets out of serialized effective configuration, diagnostics, completion examples, and progress events.

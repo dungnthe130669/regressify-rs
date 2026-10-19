@@ -22,6 +22,12 @@ are historical evidence, not open implementation tasks.
   undoable with explicit save/Fields rejection. Guards inspect pending native text;
   Source inspection reconciles selection. Native paste/cancel/undo/redo/recovery and
   mixed-history regressions pass.
+- Resolved: JSON duplicate keys could look clean and be collapsed by Fields; raw
+  parsing now rejects them with source locations. Desktop dependency checks no
+  longer depend on action viewport filters or suppress independent viewport errors.
+  Semantic diagnostics retain field pointers alongside schema errors, including
+  scenario-level replacement rules. Missing-field underlines stop at the enclosing
+  header, and multiline diagnostic Markdown no longer adds visible backslashes.
 
 ## Run Retention and Verification (2026-10-17)
 

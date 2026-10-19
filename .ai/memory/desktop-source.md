@@ -88,9 +88,8 @@ Verified: 2026-10-19
 - [Schema smoke](../../ci/desktop-smoke/flows/schema.ps1) includes line shortcuts
   and menu screenshots. Interactive execution requires the isolation guards in
   the [native UI skill](../../.github/skills/desktop-native-ui/SKILL.md).
-- [Workspace saves](../../src/desktop/workspace.rs) validate the corrected draft,
-  not the previous saved source. Unparseable old source skips optional report-label
-  migration without weakening exact-byte external-conflict checks.
+- [Workspace saves](../../src/desktop/workspace.rs) validate the corrected draft, not the previous saved source; unparseable old metadata only skips optional report-label migration.
+  Raw JSON parsing rejects duplicate/escaped keys before Fields; dependency checks run without viewport filters and retain independent viewport errors. `source_validation_` covers pointer-bearing semantics, bounded fallback headers, and literal Markdown diagnostics.
 - Create/Save As validates resolved suite destinations, including Windows case
   aliases, and promotes Data templates to Suite validation before writing.
   `save_as_` covers name/content rejection, no-clobber writes, and kept source bytes;

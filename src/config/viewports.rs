@@ -50,54 +50,85 @@ pub fn load_viewports(path: &Path) -> Result<Vec<ViewportDef>> {
     Ok(viewports)
 }
 
+#[derive(Debug)]
+pub(crate) struct ViewportValidationError {
+    pub index: usize,
+    pub field: &'static str,
+    message: String,
+}
+
+impl std::fmt::Display for ViewportValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ViewportValidationError {}
+
 pub(crate) fn validate_viewports(viewports: &[ViewportDef], path: &Path) -> Result<()> {
     let mut labels = HashSet::new();
     let mut capture_names = HashSet::new();
-    for viewport in viewports {
-        let label = viewport.label.trim();
-        if label.is_empty() {
-            return Err(anyhow!(
-                "Viewport file '{}' contains a viewport with an empty label",
-                path.display()
-            ));
-        }
-        if viewport.width == 0 || viewport.height == 0 {
-            return Err(anyhow!(
-                "Viewport '{}' in '{}' must have non-zero width and height",
-                viewport.label,
-                path.display()
-            ));
-        }
-        let key = label.to_ascii_lowercase();
-        if !labels.insert(key) {
-            return Err(anyhow!(
-                "Viewport file '{}' contains duplicate label '{}' (case-insensitive)",
-                path.display(),
-                viewport.label
-            ));
-        }
-        let capture_name = slugify(label);
-        if capture_name.is_empty() {
-            return Err(anyhow!(
-                "Viewport label '{}' in '{}' cannot produce a screenshot filename",
-                viewport.label,
-                path.display()
-            ));
-        }
-        if capture_name.len() > MAX_CAPTURE_NAME_BYTES {
-            return Err(anyhow!(
-                "Viewport label '{}' in '{}' produces a screenshot name longer than {} bytes",
-                viewport.label,
-                path.display(),
-                MAX_CAPTURE_NAME_BYTES
-            ));
-        }
-        if !capture_names.insert(capture_name) {
-            return Err(anyhow!(
-                "Viewport file '{}' contains labels that produce duplicate screenshot names",
-                path.display()
-            ));
-        }
+    for (index, viewport) in viewports.iter().enumerate() {
+        let result = (|| -> Result<()> {
+            let label = viewport.label.trim();
+            if label.is_empty() {
+                return Err(anyhow!(
+                    "Viewport file '{}' contains a viewport with an empty label",
+                    path.display()
+                ));
+            }
+            if viewport.width == 0 || viewport.height == 0 {
+                return Err(anyhow!(
+                    "Viewport '{}' in '{}' must have non-zero width and height",
+                    viewport.label,
+                    path.display()
+                ));
+            }
+            let key = label.to_ascii_lowercase();
+            if !labels.insert(key) {
+                return Err(anyhow!(
+                    "Viewport file '{}' contains duplicate label '{}' (case-insensitive)",
+                    path.display(),
+                    viewport.label
+                ));
+            }
+            let capture_name = slugify(label);
+            if capture_name.is_empty() {
+                return Err(anyhow!(
+                    "Viewport label '{}' in '{}' cannot produce a screenshot filename",
+                    viewport.label,
+                    path.display()
+                ));
+            }
+            if capture_name.len() > MAX_CAPTURE_NAME_BYTES {
+                return Err(anyhow!(
+                    "Viewport label '{}' in '{}' produces a screenshot name longer than {} bytes",
+                    viewport.label,
+                    path.display(),
+                    MAX_CAPTURE_NAME_BYTES
+                ));
+            }
+            if !capture_names.insert(capture_name) {
+                return Err(anyhow!(
+                    "Viewport file '{}' contains labels that produce duplicate screenshot names",
+                    path.display()
+                ));
+            }
+            Ok(())
+        })();
+        result.map_err(|error| ViewportValidationError {
+            index,
+            field: if viewport.label.trim().is_empty()
+                || (viewport.width > 0 && viewport.height > 0)
+            {
+                "label"
+            } else if viewport.width == 0 {
+                "width"
+            } else {
+                "height"
+            },
+            message: error.to_string(),
+        })?;
     }
     Ok(())
 }
@@ -148,6 +179,25 @@ mod tests {
             label: label.to_string(),
             width,
             height,
+        }
+    }
+
+    #[test]
+    fn source_validation_viewport_errors_keep_field_identity() {
+        for (second, field) in [
+            (viewport("invalid", 0, 600), "width"),
+            (viewport("invalid", 400, 0), "height"),
+            (viewport("PHONE", 400, 600), "label"),
+            (viewport("", 0, 0), "label"),
+        ] {
+            let error = validate_viewports(
+                &[viewport("phone", 375, 667), second],
+                Path::new("viewports.yaml"),
+            )
+            .unwrap_err();
+            let location = error.downcast_ref::<ViewportValidationError>().unwrap();
+            assert_eq!(location.index, 1);
+            assert_eq!(location.field, field);
         }
     }
 

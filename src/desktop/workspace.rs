@@ -490,6 +490,27 @@ impl Workspace {
             return Ok(Vec::new());
         }
         let mut suite: crate::types::TestSuite = serde_json::from_value(value)?;
+        crate::test::assign_scenario_ids(&mut suite.scenarios);
+        let input = crate::types::TestSuiteInput {
+            name: suite_name.into(),
+            path: PathBuf::from(suite_name),
+            format: match document.format {
+                Format::Json => crate::types::TestSuiteFormat::Json,
+                _ => crate::types::TestSuiteFormat::Yaml,
+            },
+        };
+        let mut issues = Vec::new();
+        if let Err(error) = crate::test::validate_scenario_dependencies(&input, &suite) {
+            let pointer = error
+                .downcast_ref::<crate::test::ScenarioDependencyError>()
+                .map_or_else(String::new, |error| {
+                    format!("/scenarios/{}/{}", error.scenario_index, error.field)
+                });
+            issues.push(super::validation::Diagnostic {
+                pointer,
+                message: error.to_string(),
+            });
+        }
         if !suite
             .scenarios
             .iter()
@@ -500,21 +521,10 @@ impl Workspace {
                     .is_some_and(|names| !names.is_empty())
             })
         {
-            return Ok(Vec::new());
+            return Ok(issues);
         }
-        crate::test::assign_scenario_ids(&mut suite.scenarios);
-        let input = crate::types::TestSuiteInput {
-            name: suite_name.into(),
-            path: PathBuf::from(suite_name),
-            format: match document.format {
-                Format::Json => crate::types::TestSuiteFormat::Json,
-                _ => crate::types::TestSuiteFormat::Yaml,
-            },
-        };
-        crate::test::validate_scenario_dependencies(&input, &suite)?;
         let workspace = crate::config::load_workspace_config(&self.root)?;
         let mut files = BTreeMap::new();
-        let mut issues = Vec::new();
         for (index, scenario) in suite.scenarios.iter().enumerate() {
             let resolved = crate::config::resolve_config(&workspace, &suite, scenario);
             let key = (
@@ -1731,9 +1741,9 @@ mod tests {
         assert!(
             workspace
                 .action_viewport_diagnostics(&cyclic, "fixture")
-                .unwrap_err()
-                .to_string()
-                .contains("Circular scenario dependency")
+                .unwrap()
+                .iter()
+                .any(|issue| issue.message.contains("Circular scenario dependency"))
         );
         let many = document(json!({ "scenarios": (0..60).map(|index| json!({
             "id": format!("page-{index}"), "url": "/", "actions": [{ "wait": 0, "viewportNames": ["missing"] }]
@@ -1744,6 +1754,64 @@ mod tests {
                 .unwrap()
                 .len(),
             super::super::validation::MAX_DIAGNOSTICS
+        );
+    }
+
+    #[test]
+    fn source_validation_dependencies_without_viewport_filters_block_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let mut open = workspace.create_suite("dependencies.tests.json").unwrap();
+        let original = fs::read_to_string(directory.path().join(&open.entry.path)).unwrap();
+        for scenarios in [
+            json!([{"id":"page","url":"/","needs":"missing"}]),
+            json!([
+                {"id":"first","url":"/","needs":"second"},
+                {"id":"second","url":"/","needs":"first"}
+            ]),
+            json!([{"id":"same","url":"/"},{"id":"SAME","url":"/"}]),
+        ] {
+            let source = json!({"scenarios":scenarios}).to_string();
+            open.document.set_source(source.clone()).unwrap();
+            let issues = workspace
+                .action_viewport_diagnostics(&open.document, "dependencies")
+                .unwrap();
+            assert_eq!(issues.len(), 1, "{source}");
+            assert!(issues[0].pointer.starts_with("/scenarios/"));
+            assert!(issues[0].pointer.ends_with("/needs") || issues[0].pointer.ends_with("/id"));
+            assert!(workspace.save(&mut open).is_err());
+            assert_eq!(open.document.source(), source);
+            assert_eq!(
+                fs::read_to_string(directory.path().join(&open.entry.path)).unwrap(),
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn source_validation_dependency_errors_do_not_hide_viewport_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let document = Document::new(
+            DocumentKind::Suite,
+            Format::Json,
+            json!({"scenarios":[{"id":"page","url":"/","needs":"missing",
+                "actions":[{"wait":0,"viewportNames":["mobile"]}]}]})
+            .to_string(),
+        )
+        .unwrap();
+        let issues = workspace
+            .action_viewport_diagnostics(&document, "dependencies")
+            .unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.pointer == "/scenarios/0/needs")
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| { issue.pointer == "/scenarios/0/actions/0/viewportNames" })
         );
     }
 

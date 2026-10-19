@@ -15,7 +15,7 @@ use lsp_types::{
 use super::*;
 use crate::desktop::{
     completion::{CompletionCatalog, SourceIndex},
-    document::{Document, Format, validate_semantics},
+    document::{Document, Format, semantic_diagnostics},
     validation,
 };
 
@@ -401,9 +401,19 @@ pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Di
                 document.validate()?;
                 return Ok(Vec::new());
             }
-            let issues = validation::diagnostics(document.kind, value)?;
+            let mut issues = validation::diagnostics(document.kind, value)?;
+            for issue in semantic_diagnostics(document.kind, value) {
+                if issues.len() >= validation::MAX_DIAGNOSTICS {
+                    break;
+                }
+                if !issues.iter().any(|existing| {
+                    existing.pointer == issue.pointer
+                        || existing.pointer.starts_with(&format!("{}/", issue.pointer))
+                }) {
+                    issues.push(issue);
+                }
+            }
             if issues.is_empty() {
-                validate_semantics(document.kind, value)?;
                 return Ok(Vec::new());
             }
             let index = SourceIndex::new(document.format, text);
@@ -496,6 +506,21 @@ fn source_diagnostic(range: lsp_types::Range, message: String) -> lsp_types::Dia
         source: Some("Regressify".into()),
         ..Default::default()
     }
+}
+
+fn diagnostic_markdown(message: &str) -> String {
+    let mut description = String::with_capacity(message.len());
+    for character in message.replace("\r\n", "\n").chars() {
+        if character == '\n' {
+            description.push_str("  \n");
+        } else {
+            if character.is_ascii_punctuation() {
+                description.push('\\');
+            }
+            description.push(character);
+        }
+    }
+    description
 }
 
 fn position(text: &str, offset: usize) -> Position {
@@ -880,17 +905,7 @@ impl Workbench {
             .enumerate()
             .map(|(index, issue)| {
                 let position = issue.range.start;
-                let mut description = String::with_capacity(issue.message.len());
-                for character in issue.message.chars() {
-                    if character == '\n' {
-                        description.push_str("\\\n");
-                    } else {
-                        if character.is_ascii_punctuation() {
-                            description.push('\\');
-                        }
-                        description.push(character);
-                    }
-                }
+                let description = diagnostic_markdown(&issue.message);
                 let (severity, color) =
                     if issue.severity == Some(lsp_types::DiagnosticSeverity::WARNING) {
                         ("Warning", cx.theme().warning)
@@ -1351,6 +1366,78 @@ mod tests {
         completion::CompletionCatalog,
         document::{DocumentKind, Format},
     };
+
+    #[test]
+    fn source_validation_semantic_issues_keep_locations_alongside_schema_errors() {
+        for (kind, source, expected_line, message) in [
+            (
+                DocumentKind::Suite,
+                "scenarios:\n- url: '   '\nunknown: true\n",
+                1,
+                "needs a URL",
+            ),
+            (
+                DocumentKind::Suite,
+                "scenarios: []\nurlReplacements:\n- ref: '['\n  test: /\n  regex: true\n",
+                2,
+                "regex",
+            ),
+            (
+                DocumentKind::Suite,
+                "scenarios:\n- url: /\n  urlReplacements:\n  - ref: '['\n    test: /\n    regex: true\n",
+                3,
+                "regex",
+            ),
+            (
+                DocumentKind::Viewports,
+                "- label: phone\n  width: 375\n  height: 667\n- label: PHONE\n  width: 400\n  height: 700\n",
+                3,
+                "duplicate",
+            ),
+        ] {
+            let document = super::Document::new(kind, Format::Yaml, source.into()).unwrap();
+            let (_, diagnostics) = super::inspect_document(&document);
+            let issue = diagnostics
+                .iter()
+                .find(|issue| issue.message.contains(message))
+                .unwrap_or_else(|| panic!("Missing semantic issue: {diagnostics:?}"));
+            assert_eq!(issue.range.start.line, expected_line, "{diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn source_validation_duplicate_keys_are_not_reported_as_clean() {
+        let document = super::Document::new(
+            DocumentKind::Suite,
+            Format::Json,
+            "{\n\"scenarios\":[],\n\"debug\":true,\n\"debug\":false\n}".into(),
+        )
+        .unwrap();
+        let (_, issues) = super::inspect_document(&document);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].range.start.line, 3);
+    }
+
+    #[test]
+    fn source_validation_diagnostic_markdown_never_adds_visible_backslashes() {
+        for message in [
+            "first\nsecond",
+            "first\n\nsecond\n",
+            "first\r\n\r\nsecond\r\n",
+            "literal `[*] <x> & \\\n",
+        ] {
+            let markdown = super::diagnostic_markdown(message);
+            let visible = pulldown_cmark::Parser::new(&markdown)
+                .filter_map(|event| match event {
+                    pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text) => {
+                        Some(text.into_string())
+                    }
+                    _ => None,
+                })
+                .collect::<String>();
+            assert_eq!(visible, message.lines().collect::<String>(), "{markdown:?}");
+        }
+    }
 
     #[test]
     fn action_viewport_diagnostics_preserve_the_combined_issue_bound() {

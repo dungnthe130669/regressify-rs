@@ -9,12 +9,13 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, ensure};
 use saphyr_parser::{Event, Parser as YamlParser, ScalarStyle, Span};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use yaml_edit::{AsYaml, Document as YamlDocument, Sequence, SyntaxKind, YamlFile, YamlNode};
 
 use crate::{
     config::{WorkspaceConfig, replacements::validate_replacements, viewports},
-    types::{Browser, TestSuite},
+    types::{Browser, TestSuite, UrlReplacement},
 };
 
 pub const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
@@ -56,7 +57,9 @@ impl Format {
             "Document exceeds the 4 MiB editing limit"
         );
         match self {
-            Self::Json => serde_json::from_str(source).context("Invalid JSON"),
+            Self::Json => serde_json::from_str::<UniqueJsonValue>(source)
+                .map(|value| value.0)
+                .context("Invalid JSON"),
             Self::Yaml => serde_yaml::from_str(source).context("Invalid YAML"),
             Self::Text => {
                 ensure!(is_text(source), "Binary content cannot be edited as text");
@@ -74,6 +77,69 @@ impl Format {
                 .map(str::to_string)
                 .ok_or_else(|| anyhow!("Expected plain text")),
         }
+    }
+}
+
+struct UniqueJsonValue(Value);
+
+impl<'de> Deserialize<'de> for UniqueJsonValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = Value;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("JSON with unique object properties")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
+                Ok(Value::Null)
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Value, E> {
+                Ok(Value::Bool(value))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Value, E> {
+                Ok(value.into())
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Value, E> {
+                Ok(value.into())
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(Value::Number)
+                    .ok_or_else(|| E::custom("Invalid JSON number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Value, E> {
+                Ok(Value::String(value.into()))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Value, E> {
+                Ok(Value::String(value))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element::<UniqueJsonValue>()? {
+                    values.push(value.0);
+                }
+                Ok(Value::Array(values))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if values.contains_key(&key) {
+                        // Reject before Value can collapse a property that Fields would erase.
+                        return Err(serde::de::Error::custom("Duplicate JSON object property"));
+                    }
+                    values.insert(key, map.next_value::<UniqueJsonValue>()?.0);
+                }
+                Ok(Value::Object(values))
+            }
+        }
+        deserializer.deserialize_any(Visitor).map(Self)
     }
 }
 
@@ -709,81 +775,169 @@ pub fn validate_value(kind: DocumentKind, value: &Value) -> Result<()> {
 pub(crate) fn validate_semantics(kind: DocumentKind, value: &Value) -> Result<()> {
     match kind {
         DocumentKind::Workspace => {
-            let config: WorkspaceConfig = serde_json::from_value(value.clone())?;
-            ensure!(
-                config
-                    .browser
-                    .is_none_or(|browser| browser == Browser::Chromium),
-                "Only Chromium is supported"
-            );
-            if let Some(rules) = config.url_replacements {
-                validate_replacements(&rules, "workspace")?;
-            }
+            WorkspaceConfig::deserialize(value)?;
         }
         DocumentKind::Suite => {
-            let suite: TestSuite = serde_json::from_value(value.clone())?;
-            ensure!(
-                suite
-                    .browser
-                    .is_none_or(|browser| browser == Browser::Chromium),
-                "Only Chromium is supported"
-            );
-            if let Some(rules) = suite.url_replacements {
-                validate_replacements(&rules, "suite")?;
-            }
-            for (index, scenario) in suite.scenarios.iter().enumerate() {
-                ensure!(
-                    !scenario.url.trim().is_empty(),
-                    "Scenario {} needs a URL",
-                    index + 1
-                );
+            TestSuite::deserialize(value)?;
+        }
+        DocumentKind::Viewports => {
+            Vec::<viewports::ViewportDef>::deserialize(value)?;
+        }
+        DocumentKind::Data => {}
+    }
+    let issues = semantic_diagnostics(kind, value);
+    ensure!(
+        issues.is_empty(),
+        "{}",
+        issues
+            .iter()
+            .map(|issue| issue.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+    Ok(())
+}
+
+pub(crate) fn semantic_diagnostics(
+    kind: DocumentKind,
+    value: &Value,
+) -> Vec<super::validation::Diagnostic> {
+    let mut issues = Vec::new();
+    match kind {
+        DocumentKind::Workspace | DocumentKind::Suite => {
+            scope_semantics(value, "", &mut issues);
+            if kind == DocumentKind::Suite
+                && let Some(scenarios) = value["scenarios"].as_array()
+            {
+                for (index, scenario) in scenarios.iter().enumerate() {
+                    if issues.len() >= super::validation::MAX_DIAGNOSTICS {
+                        break;
+                    }
+                    let pointer = format!("/scenarios/{index}");
+                    if scenario["url"]
+                        .as_str()
+                        .is_some_and(|url| url.trim().is_empty())
+                    {
+                        semantic_issue(
+                            &mut issues,
+                            format!("{pointer}/url"),
+                            format!("Scenario {} needs a URL", index + 1),
+                        );
+                    }
+                    scope_semantics(scenario, &pointer, &mut issues);
+                }
             }
         }
         DocumentKind::Viewports => {
-            let definitions = serde_json::from_value::<Vec<viewports::ViewportDef>>(value.clone())?;
-            viewports::validate_viewports(&definitions, Path::new("viewport editor"))?;
+            // Schema diagnostics own ill-typed fragments; inspect independent valid ones.
+            if let Ok(definitions) = Vec::<viewports::ViewportDef>::deserialize(value)
+                && let Err(error) =
+                    viewports::validate_viewports(&definitions, Path::new("viewport editor"))
+            {
+                let pointer = error
+                    .downcast_ref::<viewports::ViewportValidationError>()
+                    .map_or_else(String::new, |error| {
+                        format!("/{}/{}", error.index, error.field)
+                    });
+                semantic_issue(&mut issues, pointer, error.to_string());
+            }
         }
-        DocumentKind::Data => ensure!(
-            value.is_object() || value.is_array(),
-            "Expected a mapping or a list"
-        ),
+        DocumentKind::Data => {
+            if !value.is_object() && !value.is_array() {
+                semantic_issue(
+                    &mut issues,
+                    String::new(),
+                    "Expected a mapping or a list".into(),
+                );
+            }
+        }
     }
-    validate_numbers(value)
+    number_semantics(value, "", &mut issues, 0);
+    issues
 }
 
-fn validate_numbers(value: &Value) -> Result<()> {
-    if let Some(mapping) = value.as_object() {
-        for (key, value) in mapping {
-            if !value.is_null() {
-                if matches!(key.as_str(), "misMatchThreshold" | "pixelMatchThreshold") {
-                    ensure!(
-                        value
-                            .as_f64()
-                            .is_some_and(|number| (0.0..=100.0).contains(&number)),
-                        "{key} must be between 0 and 100"
-                    );
-                }
-                if matches!(key.as_str(), "asyncCaptureLimit" | "asyncCompareLimit") {
-                    ensure!(
-                        value.as_u64().is_some_and(|number| number > 0),
-                        "{key} must be a positive integer"
-                    );
-                }
-                if matches!(key.as_str(), "delay" | "postInteractionWait") {
-                    ensure!(
-                        value.as_f64().is_some_and(|number| number >= 0.0),
-                        "{key} cannot be negative"
-                    );
-                }
+fn semantic_issue(
+    issues: &mut Vec<super::validation::Diagnostic>,
+    pointer: String,
+    message: String,
+) {
+    if issues.len() < super::validation::MAX_DIAGNOSTICS {
+        issues.push(super::validation::Diagnostic { pointer, message });
+    }
+}
+
+fn scope_semantics(value: &Value, pointer: &str, issues: &mut Vec<super::validation::Diagnostic>) {
+    if let Ok(browser) = Browser::deserialize(&value["browser"])
+        && browser != Browser::Chromium
+    {
+        semantic_issue(
+            issues,
+            format!("{pointer}/browser"),
+            "Only Chromium is supported".into(),
+        );
+    }
+    if let Some(rules) = value["urlReplacements"].as_array() {
+        for (index, value) in rules.iter().enumerate() {
+            if issues.len() >= super::validation::MAX_DIAGNOSTICS {
+                break;
             }
-            validate_numbers(value)?;
-        }
-    } else if let Some(items) = value.as_array() {
-        for item in items {
-            validate_numbers(item)?;
+            let path = format!("{pointer}/urlReplacements/{index}");
+            if let Ok(rule) = UrlReplacement::deserialize(value)
+                && let Err(error) = validate_replacements(
+                    std::slice::from_ref(&rule),
+                    &super::validation::display_path(&path),
+                )
+            {
+                semantic_issue(issues, path, format!("{error:#}"));
+            }
         }
     }
-    Ok(())
+}
+
+fn number_semantics(
+    value: &Value,
+    pointer: &str,
+    issues: &mut Vec<super::validation::Diagnostic>,
+    depth: usize,
+) {
+    if depth > 128 || issues.len() >= super::validation::MAX_DIAGNOSTICS {
+        return;
+    }
+    if let Some(mapping) = value.as_object() {
+        for (key, value) in mapping {
+            let path = format!("{pointer}/{}", super::validation::escape_pointer(key));
+            if !value.is_null() {
+                let message = match key.as_str() {
+                    "misMatchThreshold" | "pixelMatchThreshold"
+                        if !value
+                            .as_f64()
+                            .is_some_and(|number| (0.0..=100.0).contains(&number)) =>
+                    {
+                        Some(format!("{key} must be between 0 and 100"))
+                    }
+                    "asyncCaptureLimit" | "asyncCompareLimit"
+                        if !value.as_u64().is_some_and(|number| number > 0) =>
+                    {
+                        Some(format!("{key} must be a positive integer"))
+                    }
+                    "delay" | "postInteractionWait"
+                        if !value.as_f64().is_some_and(|number| number >= 0.0) =>
+                    {
+                        Some(format!("{key} cannot be negative"))
+                    }
+                    _ => None,
+                };
+                if let Some(message) = message {
+                    semantic_issue(issues, path.clone(), message);
+                }
+            }
+            number_semantics(value, &path, issues, depth + 1);
+        }
+    } else if let Some(items) = value.as_array() {
+        for (index, item) in items.iter().enumerate() {
+            number_semantics(item, &format!("{pointer}/{index}"), issues, depth + 1);
+        }
+    }
 }
 
 pub const ACTIONS: &[&str] = &[
@@ -837,6 +991,55 @@ mod tests {
         "# Workspace defaults\r\n\r\n  # Keep this note\r\n",
         "# Caf\u{e9} settings\r\n  # No final newline",
     ];
+
+    #[test]
+    fn source_validation_duplicate_json_keys_cannot_be_collapsed_by_fields() {
+        for (kind, source) in [
+            (DocumentKind::Workspace, r#"{"debug":true,"debug":false}"#),
+            (
+                DocumentKind::Suite,
+                r#"{"scenarios":[{"url":"/","url":"/other"}]}"#,
+            ),
+            (
+                DocumentKind::Viewports,
+                r#"[{"label":"phone","label":"other","width":375,"height":667}]"#,
+            ),
+            (DocumentKind::Data, r#"{"map":{"key":1,"key":2}}"#),
+            (
+                DocumentKind::Workspace,
+                r#"{"debug":true,"d\u0065bug":false}"#,
+            ),
+        ] {
+            let mut document = Document::new(kind, Format::Json, source.into()).unwrap();
+            assert!(document.value().is_err(), "{source}");
+            assert!(document.validate().is_err());
+            assert!(
+                document
+                    .apply(Edit::Set {
+                        parent: String::new(),
+                        key: "debug".into(),
+                        value: Some(json!(true)),
+                    })
+                    .is_err()
+            );
+            assert_eq!(document.source(), source);
+            assert!(!document.can_undo());
+        }
+    }
+
+    #[test]
+    fn source_validation_json_values_keep_standard_number_and_string_semantics() {
+        for source in [
+            r#"{"text":"\uD83D\uDE80","array":[true,false,null,{"other":1}]}"#,
+            r#"{"min":-9223372036854775808,"max":18446744073709551615,"float":1.25e-3}"#,
+            r#"{"left":{"key":1},"right":{"key":2}}"#,
+        ] {
+            assert_eq!(
+                Format::Json.parse(source).unwrap(),
+                serde_json::from_str::<Value>(source).unwrap()
+            );
+        }
+    }
 
     #[test]
     fn blank_workspace_yaml_uses_defaults_without_changing_source() {

@@ -11406,6 +11406,45 @@ fn duplicate_and_undo_buttons_update_the_actual_editor(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn source_validation_duplicate_keys_block_fields_but_schema_errors_do_not(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let open = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("duplicate-json.tests.json")
+                .unwrap();
+            this.session.install_document(open).unwrap();
+            for (source, fields_allowed) in [
+                (r#"{"scenarios":[],"debug":true,"debug":false}"#, false),
+                (r#"{"scenarios":[],"unknown":true}"#, true),
+            ] {
+                this.session.open.as_mut().unwrap().document = super::Document::new(
+                    super::DocumentKind::Suite,
+                    super::Format::Json,
+                    source.into(),
+                )
+                .unwrap();
+                this.tab = 1;
+                this.sync_editor_content(window, cx);
+                assert!(this.diagnostic.is_some());
+                assert_eq!(this.select_editor_tab(0, window, cx), fields_allowed);
+                assert_eq!(
+                    this.session.open.as_ref().unwrap().document.source(),
+                    source
+                );
+                assert_eq!(this.source.read(cx).value().as_ref(), source);
+            }
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn invalid_source_exposes_a_diagnostic_and_save_does_not_write(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

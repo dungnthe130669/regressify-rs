@@ -16,7 +16,7 @@ description: 'Use when authoring or debugging visual_tests YAML/JSON suites, sce
 1. Use `visual_tests/<name>.tests.yaml`, `.tests.yml`, or `.tests.json`. Preserve discovered paths; format precedence is YAML, YML, then JSON. Same-priority duplicate suite names are ambiguous, including across subdirectories.
 1. Use documented `camelCase` fields and explicit readable scenario labels/IDs. Unknown fields are errors. Keep generated IDs and case-insensitive uniqueness consistent with capture names and desktop selection.
 1. Resolve configuration as scenario -> suite -> workspace -> defaults. Lists replace rather than implicitly append. Consult the types before adding a key.
-1. `needs` reuses dependency actions within the scenario; it is not scheduling or shared browser state. Reject missing/duplicate/cyclic dependencies and excessive depth before launching browsers. Do not make tests depend on run order.
+1. `needs` reuses dependency actions within the scenario; it is not scheduling or shared browser state. Reject missing/duplicate/cyclic dependencies and excessive depth before launching browsers. Preserve `ScenarioDependencyError` field/index metadata for desktop source locations without changing CLI messages; desktop save validation must not depend on action viewport filters. Do not make tests depend on run order.
 1. Match waits to observable page state. URL waits support exact URLs, segment `*`, multi-segment `**`, and query-value wildcards. Test mode applies replacements; reference mode uses raw URLs.
 1. Use target `selectors` only for intended captures: full page, `viewport`, or CSS clips. Do not assume captures always use full-page mode. Use hide/remove for nondeterministic regions without hiding the behavior under test.
 
