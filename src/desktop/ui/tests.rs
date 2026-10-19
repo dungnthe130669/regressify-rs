@@ -2184,6 +2184,210 @@ fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn source_assistance_quoted_hyphenated_viewports_complete_through_native_keys(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    std::fs::write(
+        directory.path().join("common/_viewports.yaml"),
+        "- label: phone-wide\n  width: 500\n  height: 700\n- label: tablet\n  width: 768\n  height: 1024\n",
+    )
+    .unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "scenarios:\n- url: /\n  actions:\n  - click: '#toggle'\n    viewportNames: ";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .open
+                .as_mut()
+                .unwrap()
+                .document
+                .set_source(original.into())
+                .unwrap();
+            this.tab = 1;
+            this.sync_editor_content(window, cx);
+            this.source.update(cx, |state, cx| {
+                state.set_selected_range(original.len()..original.len(), cx);
+                state.focus(window, cx);
+            });
+        });
+        window.render_frame(cx);
+        window.input("'", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        let menu = view.read(cx).source.read(cx).completion_menu_state();
+        menu.open && menu.items.iter().any(|item| item.label == "phone-wide")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.input("phone-", cx))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        let menu = view.read(cx).source.read(cx).completion_menu_state();
+        menu.open && menu.items.len() == 1 && menu.items[0].label == "phone-wide"
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("enter", cx);
+    })
+    .unwrap();
+    let expected = format!("{original}\"phone-wide\"");
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).source.read(cx).value().as_ref() == expected
+            && view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source()
+                == expected
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn source_assistance_shift_tab_dismisses_without_editing(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "scenarios:\n- url: /\n  del";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.source.update(cx, |state, cx| {
+                state.set_value(original, window, cx);
+                state.set_selected_range(original.len()..original.len(), cx);
+                state.focus(window, cx);
+            });
+            this.request_completion(&super::CompleteSource, window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).source.read(cx).completion_menu_state().open
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("shift-tab", cx);
+        assert!(!view.read(cx).source.read(cx).completion_menu_state().open);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.press("shift-tab", cx);
+        assert_eq!(
+            view.read(cx).source.read(cx).value().as_ref(),
+            "scenarios:\n- url: /\ndel"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn source_assistance_busy_find_and_non_schema_providers_are_guarded(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.busy = true;
+        });
+        window.render_frame(cx);
+        window.click("source-find", cx);
+        assert!(!view.read(cx).source.read(cx).search_session().open);
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            for format in [
+                super::Format::Yaml,
+                super::Format::Json,
+                super::Format::Text,
+            ] {
+                let open = this.session.open.as_mut().unwrap();
+                open.entry.kind = super::DocumentKind::Data;
+                open.document.kind = super::DocumentKind::Data;
+                open.document.format = format;
+                this.configure_source(cx);
+                let source = this.source.read(cx);
+                assert!(source.lsp().completion_provider.is_none());
+                assert!(source.lsp().hover_provider.is_none());
+                assert!(!source.completion_menu_state().open);
+                assert_eq!(
+                    source.language_name().as_ref(),
+                    match format {
+                        super::Format::Yaml => "yaml",
+                        super::Format::Json => "json",
+                        super::Format::Text => "text",
+                    }
+                );
+            }
+            this.session.open = None;
+            this.configure_source(cx);
+            assert!(this.source.read(cx).lsp().completion_provider.is_none());
+            assert!(this.source.read(cx).lsp().hover_provider.is_none());
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn source_assistance_completion_is_cleared_when_schema_scope_disappears(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.source.update(cx, |state, cx| {
+                state.set_value("scenarios: []\n", window, cx);
+                state.set_selected_range(state.text().len()..state.text().len(), cx);
+            });
+            this.request_completion(&super::CompleteSource, window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).source.read(cx).completion_menu_state().open
+    })
+    .await;
+    cx.update_window(handle.into(), |_, _, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open = None;
+            this.configure_source(cx);
+            assert!(!this.source.read(cx).completion_menu_state().open);
+            assert!(this.source.read(cx).lsp().completion_provider.is_none());
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn source_assistance_focus_restore_is_scoped_to_workspace(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.is_window_active()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.tab = 1;
+            window.focus(&this.focus, cx);
+            this.source_focus_restore = Some((
+                this.session.workspace.as_ref().unwrap().root.clone(),
+                this.session.open.as_ref().unwrap().entry.path.clone(),
+            ));
+            this.session.workspace.as_mut().unwrap().root = other.path().canonicalize().unwrap();
+            this.source_window_activation_changed(window, cx);
+            assert!(this.focus.is_focused(window));
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn source_editor_registers_schema_completion(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
@@ -2623,15 +2827,23 @@ async fn source_focus_restoration_respects_other_controls_and_document_state(
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        let path = view
-            .read(cx)
-            .session
-            .open
-            .as_ref()
-            .unwrap()
-            .entry
-            .path
-            .clone();
+        let identity = (
+            view.read(cx)
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .root
+                .clone(),
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .path
+                .clone(),
+        );
         for (tab, main_tab, overview, busy) in [
             (0, 0, false, false),
             (1, 1, false, false),
@@ -2644,7 +2856,7 @@ async fn source_focus_restoration_respects_other_controls_and_document_state(
                 this.main_tab = main_tab;
                 this.overview = overview;
                 this.busy = busy;
-                this.source_focus_restore = Some(path.clone());
+                this.source_focus_restore = Some(identity.clone());
                 this.source_window_activation_changed(window, cx);
                 assert!(this.source_focus_restore.is_none());
             });
@@ -2657,12 +2869,13 @@ async fn source_focus_restoration_respects_other_controls_and_document_state(
             this.busy = false;
             let other_focus = this.search.read(cx).focus_handle(cx);
             window.focus(&other_focus, cx);
-            this.source_focus_restore = Some(path);
+            this.source_focus_restore = Some(identity.clone());
             this.source_window_activation_changed(window, cx);
             assert!(other_focus.is_focused(window));
 
             window.focus(&this.focus, cx);
-            this.source_focus_restore = Some(directory.path().join("different.tests.yaml"));
+            this.source_focus_restore =
+                Some((identity.0, directory.path().join("different.tests.yaml")));
             this.source_window_activation_changed(window, cx);
             assert!(this.focus.is_focused(window));
 

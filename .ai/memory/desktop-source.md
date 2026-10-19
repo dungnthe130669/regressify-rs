@@ -70,7 +70,7 @@ Verified: 2026-10-19
   assertion. The repaired `-SchemaFlows` smoke passed with preferences restored.
 - [Viewport completion](../../src/desktop/completion.rs) uses parsed full value
   spans for spaces/hyphens and forces YAML block-list probes into value mode.
-  The `action_viewport` desktop tests cover source preservation and these cases.
+  `source_assistance_` covers native quoted/hyphenated acceptance, dismiss-only Shift+Tab, provider/overlay guards, and workspace-scoped focus restoration; acceptance callbacks are deferred.
 - [Source commands](../../src/desktop/ui/source.rs) bind inside `RegressifySource > Input`, check focus/busy/editable state, and apply atomic line edits via `apply_lsp_edits`; the Edit menu uses `action_context` and JSON disables comment toggling. Document owns grouped Source/Fields history; native Source Undo/Redo is captured before Kit, while Fields inputs keep local undo. `source_history_` covers mixed controls, selection, bounds, oversized paste and recovery.
 - Kit 0.7.3 LSP-shaped positions use scalar columns, not UTF-16. `source_ranges_` covers
   Rope round-trips, completion/navigation after emoji, whitespace-safe commands, and quoted viewport preservation.

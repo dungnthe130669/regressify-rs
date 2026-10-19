@@ -356,7 +356,8 @@ impl CompletionProvider for SourceCompletions {
     fn is_completion_trigger(&self, _: usize, text: &str, _: &mut App) -> bool {
         !text.is_empty()
             && text.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '_' | '"' | ':' | ' ')
+                character.is_ascii_alphanumeric()
+                    || matches!(character, '_' | '"' | '\'' | '-' | ':' | ' ')
             })
     }
 }
@@ -695,13 +696,14 @@ impl Workbench {
         if !window.is_window_active() {
             self.source_focus_restore = self
                 .session
-                .open
+                .workspace
                 .as_ref()
+                .zip(self.session.open.as_ref())
                 .filter(|_| self.source.read(cx).focus_handle(cx).is_focused(window))
-                .map(|open| open.entry.path.clone());
+                .map(|(workspace, open)| (workspace.root.clone(), open.entry.path.clone()));
             return;
         }
-        let Some(path) = self.source_focus_restore.take() else {
+        let Some((root, path)) = self.source_focus_restore.take() else {
             return;
         };
         // Restore only the same visible editor, without taking focus from another control.
@@ -709,6 +711,11 @@ impl Workbench {
             || self.main_tab != 0
             || self.overview
             || self.tab != 1
+            || self
+                .session
+                .workspace
+                .as_ref()
+                .is_none_or(|workspace| workspace.root != root)
             || self
                 .session
                 .open
@@ -805,7 +812,12 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy || self.tab != 1 || self.session.open.is_none() {
+        if self.busy
+            || self.tab != 1
+            || self.session.open.is_none()
+            || self.source.read(cx).lsp().completion_provider.is_none()
+            || !self.source.read(cx).is_editable()
+        {
             return;
         }
         self.source
@@ -813,18 +825,30 @@ impl Workbench {
     }
 
     pub(super) fn configure_source(&mut self, cx: &mut Context<Self>) {
-        let Some(open) = &self.session.open else {
+        let configuration = self
+            .session
+            .open
+            .as_ref()
+            .map(|open| (open.entry.kind, open.document.format));
+        let language = match configuration.map(|(_, format)| format) {
+            Some(Format::Yaml) => "yaml",
+            Some(Format::Json) => "json",
+            Some(Format::Text) | None => "text",
+        };
+        self.source.update(cx, |state, cx| {
+            if state.language_name().as_ref() != language {
+                state.set_highlighter(language, cx);
+            }
+            state.dismiss_completion_overlay(cx);
+            clear_source_popovers(state, cx);
+            state.lsp_mut().completion_provider = None;
+            state.lsp_mut().hover_provider = None;
+        });
+        let Some((kind, format)) = configuration
+            .filter(|(kind, format)| *kind != DocumentKind::Data && *format != Format::Text)
+        else {
             return;
         };
-        if open.document.format == Format::Text {
-            self.source.update(cx, |state, cx| {
-                state.set_highlighter("text", cx);
-                clear_source_popovers(state, cx);
-                state.lsp_mut().completion_provider = None;
-                state.lsp_mut().hover_provider = None;
-            });
-            return;
-        }
         let catalog = match CompletionCatalog::new() {
             Ok(catalog) => Arc::new(catalog),
             Err(error) => {
@@ -832,22 +856,13 @@ impl Workbench {
                 return;
             }
         };
-        let language = if open.document.format == Format::Json {
-            "json"
-        } else {
-            "yaml"
-        };
         let provider = Rc::new(SourceCompletions {
             catalog,
-            kind: open.entry.kind,
-            format: open.document.format,
+            kind,
+            format,
             workspace: self.session.workspace.clone(),
         });
-        self.source.update(cx, |state, cx| {
-            if state.language_name().as_ref() != language {
-                state.set_highlighter(language, cx);
-            }
-            clear_source_popovers(state, cx);
+        self.source.update(cx, |state, _| {
             state.lsp_mut().completion_provider = Some(provider.clone());
             state.lsp_mut().hover_provider = Some(provider);
             state.lsp_mut().completion_menu.max_width = px(440.);
@@ -1138,13 +1153,18 @@ impl Workbench {
             }))
             .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
                 if this.source.read(cx).focus_handle(cx).is_focused(window) {
-                    this.source_line_command(
-                        &SourceLineCommand {
-                            operation: LineOperation::Outdent,
-                        },
-                        window,
-                        cx,
-                    );
+                    if this.source.read(cx).completion_menu_state().open {
+                        this.source
+                            .update(cx, |state, cx| state.dismiss_completion_overlay(cx));
+                    } else {
+                        this.source_line_command(
+                            &SourceLineCommand {
+                                operation: LineOperation::Outdent,
+                            },
+                            window,
+                            cx,
+                        );
+                    }
                     cx.stop_propagation();
                 }
             }))
@@ -1188,6 +1208,7 @@ impl Workbench {
                                     .icon(IconName::Search)
                                     .accessibility_label("Find in source")
                                     .tooltip("Find in source")
+                                    .disabled(self.busy || self.session.open.is_none())
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.source
                                             .update(cx, |state, cx| state.open_search(false, cx))
@@ -1199,7 +1220,7 @@ impl Workbench {
                                     .icon(gpui_kit::assets::IconName::Replace)
                                     .accessibility_label("Replace in source")
                                     .tooltip("Find and replace")
-                                    .disabled(self.busy)
+                                    .disabled(self.busy || self.session.open.is_none())
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.source
                                             .update(cx, |state, cx| state.open_search(true, cx))
@@ -1211,7 +1232,16 @@ impl Workbench {
                                     .icon(gpui_kit::assets::IconName::ListFilter)
                                     .accessibility_label("Suggest")
                                     .tooltip("Suggest (Ctrl+Space)")
-                                    .disabled(self.busy)
+                                    .disabled(
+                                        self.busy
+                                            || self.session.open.is_none()
+                                            || self
+                                                .source
+                                                .read(cx)
+                                                .lsp()
+                                                .completion_provider
+                                                .is_none(),
+                                    )
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.request_completion(&CompleteSource, window, cx)
                                     })),
@@ -1366,6 +1396,29 @@ mod tests {
         completion::CompletionCatalog,
         document::{DocumentKind, Format},
     };
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    fn source_assistance_viewport_punctuation_keeps_completion_triggered(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::component::input::CompletionProvider;
+
+        let provider = SourceCompletions {
+            catalog: Arc::new(CompletionCatalog::new().unwrap()),
+            kind: DocumentKind::Suite,
+            format: Format::Yaml,
+            workspace: None,
+        };
+        cx.update(|cx| {
+            for text in ["'", "-", "phone-wide"] {
+                assert!(provider.is_completion_trigger(0, text, cx), "{text}");
+            }
+            for text in ["", "\n", "\t"] {
+                assert!(!provider.is_completion_trigger(0, text, cx), "{text:?}");
+            }
+        });
+    }
 
     #[test]
     fn source_validation_semantic_issues_keep_locations_alongside_schema_errors() {

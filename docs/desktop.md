@@ -1506,8 +1506,10 @@ are excluded. Suggestions include the expected type, descriptions, units, and
 safe examples. Structured examples insert valid YAML flow notation or JSON.
 Accepting a suggestion replaces only the partial token, preserving surrounding source,
 including text after emoji on the same line.
-Without suggestions, Tab indents and Shift+Tab outdents as usual. Returning from
-another window restores lost Source focus for the same visible document, so you can
+With suggestions open, Shift+Tab dismisses the menu without editing. Without
+suggestions, Tab indents and Shift+Tab outdents as usual. Quoted viewport names and
+hyphenated labels keep their suggestions while typing. Returning from
+another window restores lost Source focus for the same visible document in the same workspace, so you can
 accept or dismiss suggestions without clicking the editor. Focus in another control
 is preserved.
 
@@ -1516,6 +1518,9 @@ expected type, and examples. These hints contain schema metadata, not entered
 credential values. Arbitrary data files, JavaScript, and live-page CSS selectors
 are not completed. JSON files and Effective use JSON highlighting; YAML uses YAML.
 Other text files use plain-text editing without schema diagnostics or hover help.
+Suggest is disabled for arbitrary data and plain-text files. Switching away from
+a schema document closes its suggestions and clears the old providers; YAML/JSON
+data files retain their syntax highlighting.
 
 Schemas are generated automatically from the Rust types with `schemars`.
 Field documentation, examples, and constraints live beside those types and feed

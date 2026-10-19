@@ -28,6 +28,11 @@ are historical evidence, not open implementation tasks.
   Semantic diagnostics retain field pointers alongside schema errors, including
   scenario-level replacement rules. Missing-field underlines stop at the enclosing
   header, and multiline diagnostic Markdown no longer adds visible backslashes.
+- Resolved: Source completion triggers omitted apostrophes and hyphens; native
+  quoted viewport entry/acceptance is now covered. Shift+Tab dismisses an open menu
+  without changing text, Find respects busy state, and non-schema/no-document
+  transitions clear providers and overlays. Focus restoration includes workspace
+  identity, preventing a same-relative-path switch from restoring stale focus.
 
 ## Run Retention and Verification (2026-10-17)
 

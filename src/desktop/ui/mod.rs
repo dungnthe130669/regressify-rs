@@ -129,7 +129,7 @@ pub struct Workbench {
     #[cfg(target_os = "windows")]
     taskbar: Option<super::jump_list::WindowTaskbar>,
     source: Entity<EditorState>,
-    source_focus_restore: Option<PathBuf>,
+    source_focus_restore: Option<(PathBuf, PathBuf)>,
     resolved: Entity<EditorState>,
     search: Entity<InputState>,
     bindings: Vec<Binding>,

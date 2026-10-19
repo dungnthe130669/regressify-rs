@@ -1247,6 +1247,29 @@ mod tests {
     }
 
     #[test]
+    fn source_assistance_does_not_insert_examples_inside_existing_scalars() {
+        for (format, source) in [
+            (Format::Yaml, "scenarios: []\nbasicAuth:\n  origin: https:|"),
+            (Format::Yaml, "scenarios:\n- url: /\n  label: Home |"),
+            (Format::Yaml, "scenarios:\n- url: /\n  label: 'Home |'"),
+            (
+                Format::Json,
+                r#"{"scenarios":[{"url":"/","label":"Home |"}]}"#,
+            ),
+            (
+                Format::Json,
+                r#"{"scenarios":[],"basicAuth":{"origin":"https:|"} }"#,
+            ),
+        ] {
+            let items = suggestions(source, format);
+            assert!(
+                items.is_empty(),
+                "Unexpected mid-scalar examples: {items:?}"
+            );
+        }
+    }
+
+    #[test]
     fn comments_free_text_and_non_schema_objects_do_not_offer_properties() {
         for source in [
             "# del|",
