@@ -39,6 +39,8 @@ cargo test --features gui-tests --lib source_feedback_ -- --test-threads=1
 
 Cover YAML and JSON, incomplete/unknown keys, ambiguous actions, numeric limits, Unicode replacement ranges, secret-free help, and preservation of adjacent text. Keyboard/focus changes also require the [native UI checks](../desktop-native-ui/SKILL.md), including `-SchemaFlows` on an isolated unlocked Windows desktop.
 
+Use `-SourceFlows` for focused native completion/line editing/save/reload diagnosis, retaining the same assertions and cleanup. Full `-SchemaFlows` still verifies Fields and diagnostic selection/layout. The owned focus window must keep its dedicated STA message loop running through Alt release; do not compensate by changing application key handling without evidence.
+
 For action viewport authoring run `cargo test --features desktop --lib action_viewport`, the native `action_viewport_picker_filters_choices_and_preserves_invalid_source` test with `gui-tests`, and Windows `-SchemaFlows`. Preserve invalid drafts, save rejection, and stale-diagnostic clearing; do not weaken the smoke's single syntax-issue assertion.
 
 ## Maintain

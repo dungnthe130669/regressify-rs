@@ -34,13 +34,78 @@ public static class RegressifyWindowCapture {
 }
 
 if (-not ('RegressifySmokeFocus' -as [type])) {
+$focusReferences = @([System.Windows.Forms.Form].Assembly.Location, [System.Drawing.Size].Assembly.Location, [System.ComponentModel.Component].Assembly.Location, 'System.Runtime', 'System.Threading', 'System.Threading.Thread')
+foreach ($reference in [System.Windows.Forms.Form].Assembly.GetReferencedAssemblies()) {
+    if ($reference.Name -like 'System.Windows.Forms*' -or $reference.Name -eq 'System.Private.Windows.Core') {
+        $focusReferences += [System.Reflection.Assembly]::Load($reference).Location
+    }
+}
 Add-Type -TypeDefinition @'
 using System;
+using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Runtime.ExceptionServices;
+using System.Threading;
+using System.Windows.Forms;
 public static class RegressifySmokeFocus {
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern short GetKeyState(int key);
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    public static bool AltReleased() {
+        return GetAsyncKeyState(0x12) >= 0 && GetKeyState(0x12) >= 0;
+    }
 }
-'@
+public sealed class RegressifySmokeFocusWindow : IDisposable {
+    readonly ManualResetEventSlim ready = new ManualResetEventSlim(false);
+    readonly Thread thread;
+    Form form;
+    ExceptionDispatchInfo failure;
+    int closing;
+    public IntPtr Handle { get; private set; }
+    public RegressifySmokeFocusWindow() {
+        thread = new Thread(Run) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        if (!ready.Wait(TimeSpan.FromSeconds(10))) {
+            Dispose();
+            throw new TimeoutException("Focus fixture did not initialize.");
+        }
+        if (failure != null) {
+            Dispose();
+            failure.Throw();
+        }
+    }
+    void Run() {
+        try {
+            using (var window = new Form { Text = "Regressify focus fixture", Size = new Size(320, 180) }) {
+                form = window;
+                window.Shown += (sender, args) => {
+                    if (Volatile.Read(ref closing) != 0) { window.Close(); return; }
+                    Handle = window.Handle;
+                    ready.Set();
+                };
+                if (Volatile.Read(ref closing) == 0) Application.Run(window);
+            }
+        } catch (Exception error) {
+            failure = ExceptionDispatchInfo.Capture(error);
+            ready.Set();
+        }
+    }
+    public void Activate() {
+        form.BeginInvoke((Action)(() => form.Activate()));
+    }
+    public bool AltReleased() {
+        return (bool)form.Invoke((Func<bool>)(() => RegressifySmokeFocus.AltReleased()));
+    }
+    public void Dispose() {
+        Interlocked.Exchange(ref closing, 1);
+        if (form != null && !form.IsDisposed && form.IsHandleCreated) form.BeginInvoke((Action)(() => form.Close()));
+        if (!thread.Join(TimeSpan.FromSeconds(10))) throw new TimeoutException("Focus fixture did not close.");
+        ready.Dispose();
+        if (failure != null) failure.Throw();
+    }
+}
+'@ -ReferencedAssemblies ($focusReferences | Select-Object -Unique)
 }
 
 if (-not ('RegressifySmokePointer' -as [type])) {

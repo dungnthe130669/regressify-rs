@@ -40,6 +40,17 @@ are historical evidence, not open implementation tasks.
   guards, indexed/memoized positions, retained catalog/diagnostic text, and plain
   text without configuration-value copies. Base/contextual checks share parsing
   and indexing; viewport completion reuses its original CST.
+- Final automated verification passed all 1302 non-ignored GUI library tests
+  (39 opt-in tests ignored), the GUI build, strict GUI/default CLI Clippy,
+  formatting, and maintained-guidance checks.
+- Native verification exposed two smoke-driver defects: its manually pumped
+  temporary focus window could leave Alt latched, and diagnostic text dragging
+  omitted compositor settlement before press/after release. An owned STA message
+  loop and settled drag/clipboard-sequence checks fix those paths without changing
+  application key handling or weakening assertions. Focused `-SourceFlows` passed
+  twice and full `-SchemaFlows` passed, including exact diagnostic copying,
+  Enter/Tab/Escape after Alt+Tab, line commands, saves, reload/conflict guards, and
+  compact/large light/dark layouts. Preferences and clipboard were restored.
 
 ## Run Retention and Verification (2026-10-17)
 
@@ -83,11 +94,10 @@ are historical evidence, not open implementation tasks.
   Chromium loopback test was also enabled explicitly and passed without downloads.
   Native capture/cancel/rerun and scenario-only smoke passed after the review fixes,
   preserving sibling references, saved source, clipboard data, and preferences.
-- Remaining native coverage gap: Schema smoke cannot open the nested Basic Auth
-  completion with synthetic Ctrl+Space on this desktop. The Suggest toolbar
-  command and the exact paste/Ctrl+Space/Enter GPUI regression work. An alternate
-  shortcut experiment did not help and was removed; the native assertion remains
-  unchanged. No OS keyboard settings or toolkit source were changed.
+- Resolved in the 2026-10-19 Source review: native Basic Auth Ctrl+Space and the
+  existing Enter/Tab/Escape assertions now pass in both focused Source and full
+  Schema smoke. The current editor and repaired smoke-driver lifecycle were
+  verified without changing OS keyboard settings or toolkit source.
 
 ## Snapshot Frontend Contract, Performance, and Viewer Hardening (2026-10-15)
 

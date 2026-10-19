@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-17
+Verified: 2026-10-19
 
 - Run/download bars use Kit 0.7.3 Progress with percentages and accessible names
   (`Scenario job progress` verified as a 0..100 ProgressBar in default smoke).
@@ -60,13 +60,13 @@ Verified: 2026-10-17
   Retry only `CLIPBRD_E_CANT_OPEN`. An owned user snapshot is restored in outer
   `finally`; copy mutable data/streams, reject unreadable user formats, and drop
   missing private formats only in fixture-owned scopes. Lifetime regressions pass.
-- Exact-HWND activation preserves focused child input. Native Cleanup, Default,
-  Comparison, Git, Deployment and Artifact pass. Schema's Ctrl+Space gap is
-  native-only; toolbar Suggest and the paste-path GPUI regression pass.
-- [Schema smoke](../../ci/desktop-smoke/flows/schema.ps1) verifies Enter/Tab/Escape
-  after Alt+Tab to an owned temporary window and native return activation without
-  clicking the editor. Compare `AutomationElement.FocusedElement` across the switch;
-  the source wrapper's `HasKeyboardFocus` stays false even while its input works.
+- Exact-HWND activation preserves focused child input. Native Cleanup, Default, Comparison, Git, Deployment and Artifact pass.
+  Current Source smoke passed twice and full Schema passed, including native Basic Auth Ctrl+Space.
+- [Schema smoke](../../ci/desktop-smoke/flows/schema.ps1) verifies Enter/Tab/Escape after Alt+Tab and native return activation without clicking the editor.
+  Compare the actual focused accessibility element, not the source wrapper's `HasKeyboardFocus`.
+- The focus fixture owns an STA `Application.Run` loop and bounded close/join. Manual pumping let plain Tab arrive with Alt set; no application/OS workaround was needed.
+  `-SourceFlows` reuses source assertions/setup; full Schema retains Fields/panel coverage. Headless tests cover both dispatch paths.
+- Diagnostic drags settle initial movement/release and gate copies on clipboard sequence changes. The event-order regression failed before the fix; native partial/exact copying now passes.
 - Schema smoke also verifies external-save reload, draft preservation, and native
   Cancel/Discard choices in compact/large light/dark windows. The painted unsaved
   dialog title did not expose the expected standalone UIA name; wait for its

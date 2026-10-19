@@ -19,7 +19,7 @@ function Assert-SmokeEqual($Actual, $Expected, [string]$Message) {
 }
 
 $entry = Read-SmokeScript (Join-Path $PSScriptRoot 'desktop-smoke.ps1')
-$parameters = @('SkipBuild', 'KeepOpen', 'Capture', 'ScenarioFlows', 'ArtifactFlows', 'CleanupFlows', 'InstanceFlows', 'UpdateFlows', 'DeploymentFlows', 'PublishingFlows', 'TitlebarFlows', 'GitFlows', 'ComparisonFlows', 'ErrorImageFlows', 'IconFlows', 'SchemaFlows')
+$parameters = @('SkipBuild', 'KeepOpen', 'Capture', 'ScenarioFlows', 'ArtifactFlows', 'CleanupFlows', 'InstanceFlows', 'UpdateFlows', 'DeploymentFlows', 'PublishingFlows', 'TitlebarFlows', 'GitFlows', 'ComparisonFlows', 'ErrorImageFlows', 'IconFlows', 'SchemaFlows', 'SourceFlows')
 Assert-SmokeEqual @($entry.ParamBlock.Parameters.Name.VariablePath.UserPath) $parameters 'Public switches changed'
 foreach ($parameter in $entry.ParamBlock.Parameters) {
     Assert-SmokeEqual $parameter.StaticType.Name 'SwitchParameter' "Parameter $($parameter.Name) is not a switch"
@@ -299,6 +299,7 @@ public static class $pointerTypeName {
     public static uint ClipboardSequence;
     public static uint GetClipboardSequenceNumber() { return ClipboardSequence; }
     public static IntPtr ForegroundWindow;
+    public static uint GetDpiForWindow(IntPtr window) { return 96; }
     public static IntPtr GetForegroundWindow() { return ForegroundWindow; }
     public static bool SetForegroundWindow(IntPtr window) { ForegroundWindow = window; Events.Add("foreground"); return true; }
     private static bool pressed;
@@ -350,6 +351,46 @@ function Test-SmokePointerClick([bool]$FailPressedFrame) {
 }
 Test-SmokePointerClick $false
 Test-SmokePointerClick $true
+
+$schemaCopy = @($definitions['Test-SchemaFlows'].FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-SchemaIssueCopy'
+}, $true))
+Assert-SmokeEqual $schemaCopy.Count 1 'Schema issue-copy helper is missing or ambiguous'
+$schemaDragProbe = $schemaCopy[0].Extent.Text.
+    Replace('[RegressifySmokeNative]', "[$pointerTypeName]").
+    Replace('[RegressifySmokePointer]', "[$pointerTypeName]").
+    Replace('[RegressifySmokeClipboard]', "[$pointerTypeName]").
+    Replace('[RegressifySmokeWindowState]', "[$pointerTypeName]")
+foreach ($failPressed in @($false, $true)) {
+    & {
+        . ([scriptblock]::Create($schemaDragProbe))
+        function Get-SchemaIssueDescription {
+            [pscustomobject]@{ Current = [pscustomobject]@{
+                Name = 'Synthetic issue description'
+                BoundingRectangle = [pscustomobject]@{ Left = 10; Top = 20 }
+            } }
+        }
+        function Invoke-SchemaClipboard { }
+        function Focus-Fixture { $pointerType::Events.Add('focus') }
+        function Capture-Window { $pointerType::Events.Add('capture') }
+        function Send-FixtureKeys([ConsoleKey]$Key, [switch]$Control) { $pointerType::Events.Add("key:$Key") }
+        function Wait-WindowState { $pointerType::Events.Add('wait') }
+        $pointerType::Reset($failPressed)
+        $failure = $null
+        $previousWindow = $script:window
+        $script:window = [IntPtr]::Zero
+        try { Test-SchemaIssueCopy 4 } catch {
+            $failure = $_.Exception.GetBaseException().Message
+        } finally { $script:window = $previousWindow }
+        $expected = @('focus', 'move:11:30', 'frame', 'down', 'frame')
+        if (-not $failPressed) { $expected += @('move:160:30', 'frame') }
+        $expected += @('up', 'frame')
+        if (-not $failPressed) { $expected += @('capture', 'key:C', 'wait', 'key:A', 'key:C', 'wait') }
+        Assert-SmokeEqual @($pointerType::Events) $expected 'Schema drag must settle its initial hit target and release even after failure'
+        Assert-SmokeEqual $failure $(if ($failPressed) { 'Synthetic compositor failure' } else { $null }) 'Schema drag failures must propagate after release'
+    }
+}
 
 $focusProbe = $definitions['Focus-Fixture'].Extent.Text.Replace('[RegressifySmokeNative]', "[$pointerTypeName]").Replace('[RegressifySmokeFocus]', "[$pointerTypeName]")
 & {
@@ -637,6 +678,55 @@ foreach ($mode in @('success', 'delayed-text', 'wrong-text', 'no-write', 'read-e
     }
 }
 
+& {
+    if ($IsWindows) {
+        Add-Type -AssemblyName System.Windows.Forms
+        $nativeScript = Read-SmokeScript (Join-Path $PSScriptRoot 'desktop-smoke/native.ps1')
+        $focusHost = @($nativeScript.EndBlock.Statements | Where-Object {
+            $_ -is [System.Management.Automation.Language.IfStatementAst] -and
+            $_.Clauses[0].Item1.Extent.Text.Contains("'RegressifySmokeFocus'")
+        })
+        Assert-SmokeEqual $focusHost.Count 1 'The native focus host must have one initializer'
+        & ([scriptblock]::Create($focusHost[0].Extent.Text))
+        Assert-SmokeEqual ([IDisposable].IsAssignableFrom([RegressifySmokeFocusWindow])) $true 'The focus host must own deterministic cleanup'
+    }
+    $sourceInvocations = [System.Collections.Generic.List[bool]]::new()
+    function Test-SchemaFlows {
+        param([switch]$SourceOnly)
+        $sourceInvocations.Add($SourceOnly.IsPresent)
+    }
+    & $definitions['Test-SourceFlows'].Body.GetScriptBlock()
+    Assert-SmokeEqual @($sourceInvocations) @($true) 'Source-only smoke must reuse the schema flow with its explicit scope'
+}
+
+& {
+    $fixtureScript = Read-SmokeScript (Join-Path $PSScriptRoot 'desktop-smoke/fixture.ps1')
+    $schemaFixture = @($fixtureScript.EndBlock.Statements | Where-Object {
+        $_ -is [System.Management.Automation.Language.IfStatementAst] -and
+        $_.Extent.Text.Contains("'visual_tests/schema.tests.yaml'")
+    })
+    Assert-SmokeEqual $schemaFixture.Count 1 'Schema fixture initialization must have one owner'
+    $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ('regressify-source-fixture-check-' + [guid]::NewGuid().ToString('N'))
+    $suites = Join-Path $workspace 'visual_tests'
+    $path = Join-Path $suites 'schema.tests.yaml'
+    [System.IO.Directory]::CreateDirectory($suites) | Out-Null
+    try {
+        foreach ($flags in @(@($false, $false), @($true, $false), @($false, $true), @($true, $true))) {
+            $SchemaFlows, $SourceFlows = $flags
+            & ([scriptblock]::Create($schemaFixture[0].Extent.Text))
+            Assert-SmokeEqual (Test-Path -LiteralPath $path) ($SchemaFlows -or $SourceFlows) 'Both schema and source flows require their suite fixture'
+            if (Test-Path -LiteralPath $path) {
+                Assert-SmokeEqual ([System.IO.File]::ReadAllText($path)) "scenarios: []`n" 'Source fixture bytes changed'
+                Remove-Item -LiteralPath $path
+            }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
+        [System.IO.Directory]::Delete($suites)
+        [System.IO.Directory]::Delete($workspace)
+    }
+}
+
 $lifecycle = @($entry.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
 Assert-SmokeEqual $lifecycle.Count 1 'The entry point must own the run/cleanup boundary'
 $runnerTokens = $null
@@ -647,6 +737,7 @@ $flows = [ordered]@{
     IconFlows = @('Test-WindowIcons', 'Test-BrandingIcons')
     ErrorImageFlows = @('Test-ErrorImageFlows')
     SchemaFlows = @('Test-SchemaFlows')
+    SourceFlows = @('Test-SourceFlows')
     GitFlows = @('Test-GitFlows')
     ComparisonFlows = @('Test-ComparisonFlows')
     TitlebarFlows = @('Test-TitlebarFlows')

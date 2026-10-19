@@ -75,7 +75,7 @@ Write-JsonFixture (Join-Path $workspace 'common/_viewports.yaml') @(
     @{ label = 'desktop'; width = 1280; height = 720 }
 )
 [System.IO.File]::WriteAllText((Join-Path $workspace 'regressify.yaml'), "bypassCsp: true`npostInteractionWait: 1000`nviewportNames: [desktop]`n")
-if ($SchemaFlows) {
+if ($SchemaFlows -or $SourceFlows) {
     [System.IO.File]::WriteAllText((Join-Path $workspace 'visual_tests/schema.tests.yaml'), "scenarios: []`n")
 }
 if ($Capture) {

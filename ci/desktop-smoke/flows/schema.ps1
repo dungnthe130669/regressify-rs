@@ -1,4 +1,5 @@
 function Test-SchemaFlows {
+    param([switch]$SourceOnly)
     function Invoke-SchemaClipboard([scriptblock]$Operation) {
         $deadline = [System.Diagnostics.Stopwatch]::StartNew()
         do {
@@ -123,14 +124,10 @@ function Test-SchemaFlows {
         Capture-Window 'schema-completion-typing'
     }
     function Test-SchemaCompletionKeys {
-        $switchWindow = [System.Windows.Forms.Form]::new()
-        $switchWindow.Text = 'Regressify focus fixture'
-        $switchWindow.Size = [System.Drawing.Size]::new(320, 180)
+        $switchWindow = [RegressifySmokeFocusWindow]::new()
         try {
-            $switchWindow.Show()
             $switchWindow.Activate()
             Wait-WindowState {
-                [System.Windows.Forms.Application]::DoEvents()
                 [RegressifySmokeFocus]::GetForegroundWindow() -eq $switchWindow.Handle
             } 'Cannot activate the temporary focus fixture.'
             foreach ($key in @('Enter', 'Tab', 'Escape')) {
@@ -144,9 +141,10 @@ function Test-SchemaFlows {
                 }
                 Send-FixtureKeys Tab -Alt
                 Wait-WindowState {
-                    [System.Windows.Forms.Application]::DoEvents()
-                    [RegressifySmokeFocus]::GetForegroundWindow() -eq $switchWindow.Handle
-                } 'Alt+Tab did not switch to the temporary focus fixture.'
+                    # The owned UI thread must consume Alt-up before focus returns.
+                    [RegressifySmokeFocus]::GetForegroundWindow() -eq $switchWindow.Handle -and
+                        $switchWindow.AltReleased()
+                } 'Alt+Tab did not finish switching to the temporary focus fixture with Alt released.'
                 Focus-Fixture
                 try {
                     Wait-WindowState {
@@ -161,7 +159,17 @@ function Test-SchemaFlows {
                 }
                 Capture-Window ('schema-completion-reactivated-' + $key.ToLowerInvariant())
                 Send-FixtureKeys $key
-                Wait-WindowState { $null -eq (Find-Control '1 suggestion') } "$key did not close the suggestion menu after Alt+Tab."
+                try {
+                    Wait-WindowState { $null -eq (Find-Control '1 suggestion') } "$key did not close the suggestion menu after Alt+Tab."
+                } catch {
+                    $actual = (Read-ControlText 'Configuration source').Replace("`r`n", "`n")
+                    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+                    $fixtureFocus = $focused.Current.ProcessId -eq $process.Id
+                    $focusName = if ($fixtureFocus) { $focused.Current.Name } else { 'Outside fixture' }
+                    Write-Output ("Completion key result: key={0}, unchanged={1}, insertedOrigin={2}, length={3}, fixtureFocus={4}, focus='{5}'" -f $key, ($actual -ceq $draft), ($actual -ceq "scenarios: []`nbasicAuth:`n  origin: "), $actual.Length, $fixtureFocus, $focusName)
+                    Capture-Window ('schema-completion-key-failure-' + $key.ToLowerInvariant())
+                    throw
+                }
                 if ($key -eq 'Escape') {
                     if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $draft) {
                         throw 'Escape changed the source instead of cancelling the suggestion.'
@@ -175,7 +183,6 @@ function Test-SchemaFlows {
                 }
             }
         } finally {
-            $switchWindow.Close()
             $switchWindow.Dispose()
         }
     }
@@ -253,27 +260,35 @@ function Test-SchemaFlows {
         $bounds = $description.Current.BoundingRectangle
         $scale = [RegressifySmokeWindowState]::GetDpiForWindow($script:window) / 96.0
         Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetText('No diagnostic selection copied') }
+        $sequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()
         Focus-Fixture
         try {
             if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + 1 * $scale), [int]($bounds.Top + 10 * $scale))) {
                 throw 'Cannot position the mouse at the issue description.'
             }
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
             [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
             [RegressifySmokeNative]::DwmFlush() | Out-Null
             if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + 150 * $scale), [int]($bounds.Top + 10 * $scale))) {
                 throw 'Cannot select the issue description.'
             }
             [RegressifySmokeNative]::DwmFlush() | Out-Null
-        } finally { [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+        } finally {
+            [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+        }
         Capture-Window 'schema-issue-selection'
         Send-FixtureKeys C -Control
         Wait-WindowState {
+            if ([RegressifySmokeClipboard]::GetClipboardSequenceNumber() -eq $sequence) { return $false }
             $copied = Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::GetText() }
             $copied.Length -gt 0 -and $copied.Length -lt $expected.Length -and $expected.Contains($copied)
         } 'Dragging across an issue did not select copyable text.'
         Send-FixtureKeys A -Control
+        $sequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()
         Send-FixtureKeys C -Control
         Wait-WindowState {
+            if ([RegressifySmokeClipboard]::GetClipboardSequenceNumber() -eq $sequence) { return $false }
             (Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::GetText() }).Replace("`r`n", "`n") -ceq $expected
         } 'Copying an entire issue lost text, punctuation, or line breaks.'
     }
@@ -322,6 +337,7 @@ function Test-SchemaFlows {
     Invoke-Control 'schema.tests.yaml'
     Wait-Control 'Configuration source' | Out-Null
     Test-SchemaCompletionTyping
+    if (-not $SourceOnly) {
     Test-ControlledFieldGroups
     $incomplete = "scenarios:`n  - url: https://example.com`n    actions:`n      - click:`n      - hover:`n"
     Write-SchemaSource $incomplete
@@ -377,6 +393,7 @@ function Test-SchemaFlows {
     Send-FixtureKeys Enter
     Wait-SourceText 'origin:'
     Send-FixtureKeys Escape
+    }
     Test-SchemaCompletionKeys
     Test-SchemaLineCommands
     $valid = "scenarios:`n  - url: https://example.com`n    label: Schema example`nbasicAuth:`n  origin: https://example.com`n  username: qa-user`n  password: synthetic-password`n"
@@ -437,7 +454,11 @@ function Test-SchemaFlows {
     } 'Confirmed external reload did not load the saved file and clear its warning.'
     if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -cne $external) { throw 'Reloading changed the external file on disk.' }
     Capture-Window 'schema-external-reload-confirmed'
-    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, uninterrupted typing through suggestions, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, automatic external reload, conflict cancellation/confirmation, and compact light/dark layouts passed.'
+    if ($SourceOnly) {
+        Write-Output 'Native Source typing, Enter/Tab/Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, external reload, and conflict guards passed.'
+    } else {
+        Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, uninterrupted typing through suggestions, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, automatic external reload, conflict cancellation/confirmation, and compact light/dark layouts passed.'
+    }
     } finally {
         if ($null -ne $clipboard) {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) }
@@ -445,4 +466,8 @@ function Test-SchemaFlows {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::Clear() }
         }
     }
+}
+
+function Test-SourceFlows {
+    Test-SchemaFlows -SourceOnly
 }

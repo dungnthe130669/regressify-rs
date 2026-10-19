@@ -1615,6 +1615,13 @@ Edit menu focus, undo/redo, save guards, automatic external reload, conflict
 cancellation/confirmation, and compact/large light/dark layouts in a synthetic
 workspace on an unlocked Windows desktop.
 
+Use `./ci/desktop-smoke.ps1 -SourceFlows` for the narrower Source keyboard/editing,
+save, external-reload, and conflict checks. It reuses those assertions and cleanup
+from Schema smoke without running the Fields/diagnostic-panel checks.
+`-SchemaFlows` remains the complete authoring flow and takes precedence if both
+switches are supplied. Run either from a fresh STA PowerShell host, with no other
+Regressify windows and no concurrent mouse/keyboard input.
+
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.
 - JSON edits are pretty-printed. Save As format conversion preserves data, not YAML comments or formatting.

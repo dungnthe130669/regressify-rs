@@ -22,7 +22,8 @@ param(
     [switch]$ComparisonFlows,
     [switch]$ErrorImageFlows,
     [switch]$IconFlows,
-    [switch]$SchemaFlows
+    [switch]$SchemaFlows,
+    [switch]$SourceFlows
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +87,10 @@ try {
     Test-ApplicationMenus
     if ($SchemaFlows) {
         Test-SchemaFlows
+        return
+    }
+    if ($SourceFlows) {
+        Test-SourceFlows
         return
     }
     if ($GitFlows) {
