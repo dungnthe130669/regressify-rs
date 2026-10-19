@@ -245,12 +245,12 @@ impl Session {
     }
 
     pub fn reconcile_selection(&mut self) {
-        if self
-            .value()
-            .ok()
-            .and_then(|value| value.pointer(&self.selection.path()).cloned())
-            .is_none()
-        {
+        let value = self.value().unwrap_or(Value::Null);
+        self.reconcile_selection_in(&value);
+    }
+
+    pub(crate) fn reconcile_selection_in(&mut self, value: &Value) {
+        if value.pointer(&self.selection.path()).is_none() {
             self.selection = Selection::Root;
         }
     }

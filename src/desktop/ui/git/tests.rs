@@ -1421,7 +1421,7 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
         super::super::tests::settle_dialog(cx, handle).await;
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("guard-cancel", cx);
-            assert!(view.read(cx).unsaved());
+            assert!(view.read(cx).unsaved(cx));
             assert!(!view.read(cx).git.read(cx).active());
         })
         .unwrap();

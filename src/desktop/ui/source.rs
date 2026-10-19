@@ -617,6 +617,17 @@ impl Workbench {
         {
             return;
         }
+        if let Err(error) = self.capture_source_draft(cx) {
+            self.status = format!("{error:#}");
+            cx.notify();
+            return;
+        }
+        self.session
+            .open
+            .as_mut()
+            .unwrap()
+            .document
+            .break_source_history();
         let Some(edit) = line_edit(&text, selection, action.operation) else {
             return;
         };
@@ -635,6 +646,20 @@ impl Workbench {
             // Kit 0.7.3 collapses reversed ranges; keep the edited selection forward.
             state.set_selected_range(edit.selection, cx);
         });
+        if let Err(error) = self.capture_source_draft(cx) {
+            self.status = format!("{error:#}");
+        }
+        self.session
+            .open
+            .as_mut()
+            .unwrap()
+            .document
+            .break_source_history();
+        self.refresh_value();
+        self.session.reconcile_selection_in(&self.value);
+        self.update_source_diagnostics(cx);
+        self.load_action_viewport_diagnostics(window, cx);
+        cx.notify();
     }
 
     pub(super) fn source_window_activation_changed(
@@ -1030,7 +1055,7 @@ impl Workbench {
 
     pub(super) fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
         use gpui_kit::component::input::{
-            Enter, Escape, IndentInline, MoveDown, MoveUp, OutdentInline,
+            Enter, Escape, IndentInline, MoveDown, MoveUp, OutdentInline, Redo, Undo,
         };
         let cursor = self.source.read(cx).cursor_position();
         let location = format!("Ln {}, Col {}", cursor.line + 1, cursor.character + 1);
@@ -1050,6 +1075,24 @@ impl Workbench {
         div()
             .id("source-editor")
             .key_context("RegressifySource")
+            .capture_action(cx.listener(|this, _: &Undo, window, cx| {
+                let state = this.source.read(cx);
+                if state.focus_handle(cx).is_focused(window) {
+                    if state.is_editable() {
+                        this.undo_document(&UndoDocument, window, cx);
+                    }
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &Redo, window, cx| {
+                let state = this.source.read(cx);
+                if state.focus_handle(cx).is_focused(window) {
+                    if state.is_editable() {
+                        this.redo_document(&RedoDocument, window, cx);
+                    }
+                    cx.stop_propagation();
+                }
+            }))
             .capture_action(cx.listener(|this, action: &Enter, window, cx| {
                 this.route_completion(action, window, cx)
             }))

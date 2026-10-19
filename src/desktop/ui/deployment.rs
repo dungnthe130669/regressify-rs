@@ -2229,7 +2229,7 @@ mod tests {
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("guard-cancel", cx);
-            assert!(view.read(cx).unsaved());
+            assert!(view.read(cx).unsaved(cx));
             assert!(!view.read(cx).runs.read(cx).running());
             let state = view.read(cx).deployment.read(cx);
             let mut settings = state.settings.clone();

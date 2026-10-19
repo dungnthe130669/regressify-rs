@@ -1554,7 +1554,7 @@ A selection ending at the start of the next line leaves that line untouched.
 Commands preserve indentation, Unicode, line endings, and selected text; non-ASCII
 whitespace and form feeds are content, not indentation to remove. After
 a line command, the selection is forward-oriented with the caret at its end.
-Each command is one native undo step. They also work on invalid drafts without
+Each command is one document undo step. They also work on invalid drafts without
 bypassing save validation. Comment toggling uses YAML `#` comments and is disabled
 for strict JSON. Effective, logs, and Git diffs remain read-only.
 
@@ -1572,6 +1572,13 @@ On macOS, use Cmd instead of Ctrl and Option instead of Alt for these shortcuts.
 Ctrl+Y also redoes source edits on Windows and Linux. Clipboard, text selection,
 navigation, and Find/Replace retain the editor's native behavior. Line shortcuts
 do not act on the source while a search box or another input has focus.
+
+Source shortcuts, toolbar Undo/Redo, and document commands share one history,
+including accepted Fields edits. Adjacent typing or deletion is grouped; moving
+the caret, pasting, line commands, structural edits, and saving end a group.
+Undo restores the Source selection as well as the exact text. A focused Fields
+text box retains local text undo, including invalid input not yet applied to the
+document.
 
 The status strip shows the language, cursor position, and issue count. Syntax
 errors underline their source line; schema errors identify the
@@ -1594,7 +1601,7 @@ workspace on an unlocked Windows desktop.
 - Invalid drafts cannot save. Invalid field text blocks structural commands until corrected, reset, or undone. Problem links reveal and focus invalid controls; resetting one field preserves other drafts and errors.
 - Saves detect external conflicts and use same-directory atomic replacement. Save As never replaces existing files. Paths reject workspace and symlink escapes.
 - Immediate saves, breadcrumbs, and structural commands read retained native input, including text whose change event has not run. Save completion acknowledges only the source written; newer edits stay dirty. This is conflict detection, not an OS-wide lock.
-- Documents are limited to 4 MiB. Undo retains at most 100 exact-source snapshots with a 16 MiB budget.
+- Documents opened or saved are limited to 4 MiB. An oversized Source draft stays visible and unsaved; Save and Fields remain blocked until it is shortened or undone. Pending native edits participate in close, reload, and workspace-switch guards even before their change notification runs. Undo/redo together retain at most 100 exact-source snapshots with a 16 MiB budget.
 
 Valid plain YAML strings such as `.item[aria-label='10 midpoints']` retain their
 original spelling during guided edits. Adding suite fields does not require

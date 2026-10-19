@@ -132,15 +132,7 @@ impl Workbench {
     }
 
     pub(super) fn external_reload_has_draft(&self, cx: &App) -> bool {
-        if self.unsaved() {
-            return true;
-        }
-        if self
-            .session
-            .open
-            .as_ref()
-            .is_some_and(|open| self.source.read(cx).value().as_ref() != open.document.source())
-        {
+        if self.unsaved(cx) {
             return true;
         }
         if self.tab != 0 {
@@ -379,7 +371,7 @@ impl Workbench {
             && match operation {
                 Operation::Duplicate => suite,
                 Operation::Rename => suite && !self.runs.read(cx).running(),
-                Operation::Delete => suite && !self.unsaved() && !self.runs.read(cx).running(),
+                Operation::Delete => suite && !self.unsaved(cx) && !self.runs.read(cx).running(),
                 Operation::SaveAs => {
                     open.is_some() && self.diagnostic.is_none() && self.field_errors.is_empty()
                 }
@@ -551,7 +543,7 @@ impl Workbench {
         if self.busy {
             return;
         }
-        if !self.unsaved() {
+        if !self.unsaved(cx) {
             self.perform_pending(pending, window, cx);
             return;
         }
@@ -1030,7 +1022,7 @@ impl Workbench {
         if self.busy || self.session.open.is_none() || (file && self.runs.read(cx).running()) {
             return;
         }
-        if file && self.unsaved() {
+        if file && self.unsaved(cx) {
             self.status = "Save or reload changes before deleting a suite".into();
             cx.notify();
             return;
@@ -1140,7 +1132,7 @@ impl Workbench {
     }
 
     fn create_config(&mut self, viewports: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.unsaved() {
+        if self.unsaved(cx) {
             self.status = "Save the current document first".into();
             cx.notify();
             return;

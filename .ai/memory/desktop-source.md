@@ -71,14 +71,12 @@ Verified: 2026-10-19
 - [Viewport completion](../../src/desktop/completion.rs) uses parsed full value
   spans for spaces/hyphens and forces YAML block-list probes into value mode.
   The `action_viewport` desktop tests cover source preservation and these cases.
-- [Source commands](../../src/desktop/ui/source.rs) bind inside `RegressifySource > Input`, check the source focus handle and busy/editable state, and apply line edits via `apply_lsp_edits` (never history-resetting `set_value`); the Edit menu uses `action_context` and JSON disables comment toggling.
-- Kit 0.7.3 LSP-shaped positions use scalar columns, not UTF-16. `source_ranges_`
-  covers Rope round-trips, completion/navigation after emoji, whitespace-safe line
-  commands, and quoted viewport completion preservation.
+- [Source commands](../../src/desktop/ui/source.rs) bind inside `RegressifySource > Input`, check focus/busy/editable state, and apply atomic line edits via `apply_lsp_edits`; the Edit menu uses `action_context` and JSON disables comment toggling. Document owns grouped Source/Fields history; native Source Undo/Redo is captured before Kit, while Fields inputs keep local undo. `source_history_` covers mixed controls, selection, bounds, oversized paste and recovery.
+- Kit 0.7.3 LSP-shaped positions use scalar columns, not UTF-16. `source_ranges_` covers
+  Rope round-trips, completion/navigation after emoji, whitespace-safe commands, and quoted viewport preservation.
 - Kit 0.7.3 normalizes `set_selected_range(end..start)` to an empty range; Source restores an ascending range after line edits, covered by the reverse CRLF/Unicode regression.
-- Block indentation uses shared line bounds (excluding column-zero selection ends) for indentation, comments, moves, duplication, and deletion; plain Tab and completion acceptance remain native, and Ctrl+Shift+Z binds to native redo alongside Ctrl+Y.
-- Native input-change notifications are deferred. [GUI tests](../../src/desktop/ui/tests.rs)
-  settle the executor before asserting that Source edits reached the session.
+- Block indentation uses shared line bounds (excluding column-zero selection ends) for indentation, comments, moves, duplication, and deletion; plain Tab and completion acceptance remain native, while Ctrl+Shift+Z and Ctrl+Y share document redo.
+- Native input-change notifications are deferred. [GUI tests](../../src/desktop/ui/tests.rs) settle the executor before asserting that Source edits reached the session.
 - [YAML field removal](../../src/desktop/document.rs) removes an orphaned preceding
   `INDENT` token when deleting the last mapping entry. yaml-edit 0.3.1 otherwise
   indents the following parent key into the scenario in the starter suite.
@@ -103,7 +101,8 @@ Verified: 2026-10-19
   covers YAML/JSON repairs, conflicts, and the native Save interaction.
 - Non-YAML/JSON UTF-8 files use `Format::Text`, not YAML parsing. Workspace
   discovery checks content within the 4 MiB limit, and open rechecks the bytes;
-  binary controls, invalid UTF-8, and oversized files remain non-editable.
+  binary controls, invalid UTF-8, and oversized files remain non-editable. Oversized
+  Source drafts stay dirty/undoable; `unsaved(cx)` also guards pending native edits.
 - Plain text uses Source only, including breadcrumb and Save As transitions.
   The toolkit's `text` highlighter disables configuration highlighting; schema
   completion and hover providers are cleared. The `common_text_files_` model and

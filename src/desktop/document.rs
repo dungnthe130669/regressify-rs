@@ -108,13 +108,46 @@ pub enum Edit {
 }
 
 #[derive(Debug)]
+struct HistoryEntry {
+    source: String,
+    selection: Option<Range<usize>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceEditKind {
+    Insert,
+    Backspace,
+    Delete,
+}
+
+#[derive(Debug)]
 pub struct Document {
     pub kind: DocumentKind,
     pub format: Format,
     source: String,
     saved: String,
-    undo: VecDeque<String>,
-    redo: Vec<String>,
+    undo: VecDeque<HistoryEntry>,
+    redo: VecDeque<HistoryEntry>,
+    undo_bytes: usize,
+    redo_bytes: usize,
+    source_selection: Option<Range<usize>>,
+    source_edit_kind: Option<SourceEditKind>,
+}
+
+fn trim_history(
+    history: &mut VecDeque<HistoryEntry>,
+    bytes: &mut usize,
+    other_entries: usize,
+    other_bytes: usize,
+) {
+    while history.len() + other_entries > MAX_HISTORY_ENTRIES
+        || *bytes + other_bytes > MAX_HISTORY_BYTES
+    {
+        let Some(entry) = history.pop_front() else {
+            break;
+        };
+        *bytes -= entry.source.len();
+    }
 }
 
 impl Document {
@@ -129,7 +162,11 @@ impl Document {
             saved: source.clone(),
             source,
             undo: VecDeque::new(),
-            redo: Vec::new(),
+            redo: VecDeque::new(),
+            undo_bytes: 0,
+            redo_bytes: 0,
+            source_selection: None,
+            source_edit_kind: None,
         })
     }
 
@@ -184,40 +221,150 @@ impl Document {
             source.len() <= MAX_DOCUMENT_BYTES,
             "Document exceeds the 4 MiB editing limit"
         );
-        if source == self.source {
-            return Ok(());
-        }
-        self.undo
-            .push_back(std::mem::replace(&mut self.source, source));
-        self.redo.clear();
-        while self.undo.len() > MAX_HISTORY_ENTRIES
-            || self.undo.iter().map(String::len).sum::<usize>() > MAX_HISTORY_BYTES
-        {
-            self.undo.pop_front();
-        }
+        self.break_source_history();
+        self.replace_source(source, None, None);
         Ok(())
     }
 
+    /// Native drafts may exceed the save limit; keep them dirty and undoable.
+    pub(crate) fn set_source_draft(
+        &mut self,
+        source: String,
+        selection: Range<usize>,
+    ) -> Result<()> {
+        ensure!(
+            selection.start <= selection.end
+                && source.is_char_boundary(selection.start)
+                && source.is_char_boundary(selection.end),
+            "Invalid source selection"
+        );
+        if source == self.source {
+            self.set_source_selection(selection);
+            return Ok(());
+        }
+        let kind = self.source_edit_kind(&source, &selection);
+        self.replace_source(source, Some(selection), kind);
+        Ok(())
+    }
+
+    pub(crate) fn source_selection(&self) -> Option<Range<usize>> {
+        self.source_selection.clone()
+    }
+
+    pub(crate) fn set_source_selection(&mut self, selection: Range<usize>) {
+        if self.source_selection.as_ref() != Some(&selection) {
+            self.break_source_history();
+            self.source_selection = Some(selection);
+        }
+    }
+
+    pub(crate) fn break_source_history(&mut self) {
+        self.source_edit_kind = None;
+    }
+
+    fn source_edit_kind(&self, source: &str, selection: &Range<usize>) -> Option<SourceEditKind> {
+        let previous = self.source_selection.as_ref()?;
+        if !previous.is_empty() || !selection.is_empty() {
+            return None;
+        }
+        let before = previous.end;
+        let after = selection.end;
+        let single_character =
+            |text: &str| !text.contains(['\r', '\n']) && text.chars().count() == 1;
+        if source.len() > self.source.len()
+            && after > before
+            && source.get(..before) == self.source.get(..before)
+            && source.get(after..) == self.source.get(before..)
+            && source.get(before..after).is_some_and(single_character)
+        {
+            Some(SourceEditKind::Insert)
+        } else if source.len() < self.source.len()
+            && before > after
+            && source.get(..after) == self.source.get(..after)
+            && source.get(after..) == self.source.get(before..)
+            && self.source.get(after..before).is_some_and(single_character)
+        {
+            Some(SourceEditKind::Backspace)
+        } else if source.len() < self.source.len() && before == after {
+            let end = before + self.source.len() - source.len();
+            (source.get(..before) == self.source.get(..before)
+                && source.get(after..) == self.source.get(end..)
+                && self.source.get(before..end).is_some_and(single_character))
+            .then_some(SourceEditKind::Delete)
+        } else {
+            None
+        }
+    }
+
+    fn replace_source(
+        &mut self,
+        source: String,
+        selection: Option<Range<usize>>,
+        kind: Option<SourceEditKind>,
+    ) {
+        if source == self.source {
+            return;
+        }
+        let previous = HistoryEntry {
+            source: std::mem::replace(&mut self.source, source),
+            selection: std::mem::replace(&mut self.source_selection, selection),
+        };
+        if kind.is_none() || kind != self.source_edit_kind || self.undo.is_empty() {
+            self.undo_bytes += previous.source.len();
+            self.undo.push_back(previous);
+        }
+        self.redo.clear();
+        self.redo_bytes = 0;
+        self.source_edit_kind = kind;
+        trim_history(&mut self.undo, &mut self.undo_bytes, 0, 0);
+    }
+
     pub fn undo(&mut self) {
+        self.break_source_history();
         if let Some(previous) = self.undo.pop_back() {
-            self.redo
-                .push(std::mem::replace(&mut self.source, previous));
+            self.undo_bytes -= previous.source.len();
+            let next = HistoryEntry {
+                source: std::mem::replace(&mut self.source, previous.source),
+                selection: std::mem::replace(&mut self.source_selection, previous.selection),
+            };
+            self.redo_bytes += next.source.len();
+            self.redo.push_back(next);
+            trim_history(
+                &mut self.redo,
+                &mut self.redo_bytes,
+                self.undo.len(),
+                self.undo_bytes,
+            );
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some(next) = self.redo.pop() {
-            self.undo
-                .push_back(std::mem::replace(&mut self.source, next));
+        self.break_source_history();
+        if let Some(next) = self.redo.pop_back() {
+            self.redo_bytes -= next.source.len();
+            let previous = HistoryEntry {
+                source: std::mem::replace(&mut self.source, next.source),
+                selection: std::mem::replace(&mut self.source_selection, next.selection),
+            };
+            self.undo_bytes += previous.source.len();
+            self.undo.push_back(previous);
+            trim_history(
+                &mut self.undo,
+                &mut self.undo_bytes,
+                self.redo.len(),
+                self.redo_bytes,
+            );
         }
     }
 
     pub fn mark_saved(&mut self) {
+        self.break_source_history();
         self.saved.clone_from(&self.source);
     }
 
     /// An asynchronous write may finish after a newer source edit was queued.
     pub fn acknowledge_saved(&mut self, source: String) {
+        self.break_source_history();
         self.saved = source;
     }
 
@@ -1276,6 +1423,118 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn source_history_groups_adjacent_typing_and_deletion_with_cursor_restore() {
+        let mut document = Document::new(DocumentKind::Data, Format::Text, "ab".into()).unwrap();
+        document.set_source_selection(2..2);
+        document.set_source_draft("abc".into(), 3..3).unwrap();
+        document
+            .set_source_draft("abc\u{1f680}".into(), 7..7)
+            .unwrap();
+        document.undo();
+        assert_eq!(document.source(), "ab");
+        assert_eq!(document.source_selection(), Some(2..2));
+        assert!(!document.can_undo());
+        document.redo();
+        assert_eq!(document.source(), "abc\u{1f680}");
+        assert_eq!(document.source_selection(), Some(7..7));
+
+        document.set_source_draft("abc".into(), 3..3).unwrap();
+        document.set_source_draft("ab".into(), 2..2).unwrap();
+        document.undo();
+        assert_eq!(document.source(), "abc\u{1f680}");
+        assert_eq!(document.source_selection(), Some(7..7));
+
+        document.set_source_selection(0..0);
+        document
+            .set_source_draft("bc\u{1f680}".into(), 0..0)
+            .unwrap();
+        document
+            .set_source_draft("c\u{1f680}".into(), 0..0)
+            .unwrap();
+        document.undo();
+        assert_eq!(document.source(), "abc\u{1f680}");
+        assert_eq!(document.source_selection(), Some(0..0));
+    }
+
+    #[test]
+    fn source_history_keeps_navigation_paste_commands_and_saves_as_boundaries() {
+        let mut document = Document::new(DocumentKind::Data, Format::Text, "".into()).unwrap();
+        document.set_source_selection(0..0);
+        document.set_source_draft("a".into(), 1..1).unwrap();
+        document.set_source_selection(0..0);
+        document.set_source_selection(1..1);
+        document.set_source_draft("ab".into(), 2..2).unwrap();
+        document.undo();
+        assert_eq!(document.source(), "a");
+        document.redo();
+        document.set_source_draft("ab pasted".into(), 9..9).unwrap();
+        document
+            .set_source_draft("ab pasted!".into(), 10..10)
+            .unwrap();
+        document.undo();
+        assert_eq!(document.source(), "ab pasted");
+        document.undo();
+        assert_eq!(document.source(), "ab");
+        document.set_source("command".into()).unwrap();
+        assert!(!document.can_redo());
+        document.undo();
+        assert_eq!(document.source(), "ab");
+        document.set_source_draft("abc".into(), 3..3).unwrap();
+        document.acknowledge_saved("ab".into());
+        document.set_source_draft("abcd".into(), 4..4).unwrap();
+        document.undo();
+        assert_eq!(document.source(), "abc");
+        assert!(document.dirty());
+    }
+
+    #[test]
+    fn source_history_preserves_oversized_drafts_and_bounds_both_stacks() {
+        let mut document = Document::new(DocumentKind::Data, Format::Text, "saved".into()).unwrap();
+        let oversized = "x".repeat(MAX_DOCUMENT_BYTES + 1);
+        document
+            .set_source_draft(oversized.clone(), oversized.len()..oversized.len())
+            .unwrap();
+        assert!(document.dirty());
+        assert!(document.validate().is_err());
+        document.undo();
+        assert_eq!(document.source(), "saved");
+        document.redo();
+        assert_eq!(document.source(), oversized);
+        for index in 0..12 {
+            let text = format!("{index}{}", "x".repeat(MAX_DOCUMENT_BYTES - 2));
+            document.set_source(text).unwrap();
+        }
+        for undo in [true, true, true, false, false] {
+            if undo {
+                document.undo();
+            } else {
+                document.redo();
+            }
+            assert_eq!(
+                document.undo_bytes,
+                document
+                    .undo
+                    .iter()
+                    .map(|entry| entry.source.len())
+                    .sum::<usize>()
+            );
+            assert_eq!(
+                document.redo_bytes,
+                document
+                    .redo
+                    .iter()
+                    .map(|entry| entry.source.len())
+                    .sum::<usize>()
+            );
+            assert!(document.undo_bytes + document.redo_bytes <= MAX_HISTORY_BYTES);
+            assert!(document.undo.len() + document.redo.len() <= MAX_HISTORY_ENTRIES);
+        }
+        let previous = document.source().to_string();
+        assert!(document.set_source_draft("\u{1f680}".into(), 1..1).is_err());
+        assert_eq!(document.source(), previous);
     }
 
     #[test]

@@ -134,7 +134,7 @@ impl Workbench {
                 group: "File",
                 icon: Icon::Save,
                 action: Box::new(SaveDocument),
-                enabled: open.is_some() && editable && self.unsaved(),
+                enabled: open.is_some() && editable && self.unsaved(cx),
             },
             Command {
                 title: "Undo document edit",

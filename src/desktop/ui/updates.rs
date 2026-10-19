@@ -603,7 +603,7 @@ impl Workbench {
 
     pub(super) fn finish_update(&mut self, cx: &mut Context<Self>) {
         if self.busy
-            || self.unsaved()
+            || self.unsaved(cx)
             || self.runs.read(cx).running()
             || self.updates.read(cx).prepared.is_none()
         {
@@ -709,7 +709,7 @@ mod tests {
             cx.update_window(handle.into(), |_, window, cx| {
                 assert_eq!(view.read(cx).session.workspace.is_some(), workspace_open);
                 assert!(view.read(cx).session.open.is_none());
-                assert!(!view.read(cx).unsaved());
+                assert!(!view.read(cx).unsaved(cx));
                 assert!(window.find("update-install").visible());
                 window.click("update-install", cx);
                 let state = view.read(cx).updates.read(cx);
@@ -753,7 +753,7 @@ mod tests {
             assert!(window.find("guard-save").visible());
             assert!(window.find("guard-discard").visible());
             window.click("guard-cancel", cx);
-            assert!(view.read(cx).unsaved());
+            assert!(view.read(cx).unsaved(cx));
             let state = view.read(cx).updates.read(cx);
             assert!(state.prepared.is_some());
             assert!(!state.install_on_close);
@@ -785,7 +785,7 @@ mod tests {
         cx.update_window(handle.into(), |_, window, cx| {
             assert!(window.find("update-install").visible());
             assert!(window.try_find("update-download").is_none());
-            assert!(view.read(cx).unsaved());
+            assert!(view.read(cx).unsaved(cx));
             assert!(!view.read(cx).updates.read(cx).working);
             assert!(!view.read(cx).updates.read(cx).install_on_close);
             window.click("update-close", cx);
@@ -1355,7 +1355,7 @@ mod tests {
             window.click("update-close", cx);
             window.render_frame(cx);
             assert!(window.try_find("update-banner").is_none());
-            assert!(view.read(cx).unsaved());
+            assert!(view.read(cx).unsaved(cx));
             assert!(!view.read(cx).updates.read(cx).install_on_close);
         })
         .unwrap();

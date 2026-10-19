@@ -200,35 +200,38 @@ impl Workbench {
         });
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search suites and scenarios"));
-        let source_subscription =
-            cx.subscribe_in(&source, window, |this, state, event, window, cx| {
-                if matches!(event, InputEvent::Change) {
-                    let text = state.read(cx).value().to_string();
-                    if let Some(open) = &mut this.session.open
-                        && open.document.source() != text
-                    {
-                        match open.document.set_source(text) {
-                            Ok(()) => {
-                                this.field_errors.clear();
-                                this.refresh_value();
-                                this.update_source_diagnostics(cx);
-                                this.load_action_viewport_diagnostics(window, cx);
-                            }
-                            Err(error) => {
-                                this.source.update(cx, source::clear_source_popovers);
-                                this.status = format!("{error:#}");
-                            }
-                        }
-                        cx.notify();
+        let source_subscription = cx.subscribe_in(&source, window, |this, _, event, window, cx| {
+            if matches!(event, InputEvent::Change) {
+                match this.capture_source_draft(cx) {
+                    Ok(true) => {
+                        this.refresh_value();
+                        this.session.reconcile_selection_in(&this.value);
+                        this.update_source_diagnostics(cx);
+                        this.load_action_viewport_diagnostics(window, cx);
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        this.source.update(cx, source::clear_source_popovers);
+                        this.status = format!("{error:#}");
                     }
                 }
-            });
+                cx.notify();
+            }
+        });
         let search_subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
         let scenario_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Find a scenario"));
         let scenario_search_subscription =
             cx.subscribe(&scenario_search, |_, _, _: &InputEvent, cx| cx.notify());
-        let source_observer = cx.observe(&source, |_, _, cx| cx.notify());
+        let source_observer = cx.observe(&source, |this, state, cx| {
+            if this.source_matches_document(cx)
+                && let Some(open) = &mut this.session.open
+            {
+                open.document
+                    .set_source_selection(state.read(cx).selected_range());
+            }
+            cx.notify();
+        });
         let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.system_appearance_changed(window.appearance(), window, cx);
         });
@@ -609,7 +612,7 @@ impl Workbench {
                         if this.runs.read(cx).running() {
                             this.status =
                                 "Cancel the active command before switching workspaces".into();
-                        } else if this.unsaved() {
+                        } else if this.unsaved(cx) {
                             let path = instance.root().to_path_buf();
                             drop(instance);
                             this.guard(files::Pending::Workspace(path), window, cx);
@@ -794,7 +797,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.unsaved() {
+        if self.unsaved(cx) {
             self.guard(files::Pending::Location(entry, selection), window, cx);
             return;
         }
@@ -831,8 +834,34 @@ impl Workbench {
         );
     }
 
-    fn unsaved(&self) -> bool {
-        self.session.dirty() || !self.field_errors.is_empty()
+    fn source_matches_document(&self, cx: &App) -> bool {
+        let text = self.source.read(cx).text();
+        match &self.session.open {
+            Some(open) => text.slice(..) == open.document.source(),
+            None => text.len() == 0,
+        }
+    }
+
+    fn unsaved(&self, cx: &App) -> bool {
+        self.session.dirty()
+            || !self.field_errors.is_empty()
+            || (self.session.open.is_some() && !self.source_matches_document(cx))
+    }
+
+    fn capture_source_draft(&mut self, cx: &App) -> Result<bool> {
+        let state = self.source.read(cx);
+        let Some(open) = &mut self.session.open else {
+            return Ok(false);
+        };
+        let selection = state.selected_range();
+        if state.text().slice(..) == open.document.source() {
+            open.document.set_source_selection(selection);
+            return Ok(false);
+        }
+        open.document
+            .set_source_draft(state.text().to_string(), selection)?;
+        self.field_errors.clear();
+        Ok(true)
     }
 
     fn open_latest_html_report(
@@ -1299,14 +1328,14 @@ impl Workbench {
                         }
                     }
                     this.sync_suites(cx);
-                    this.status = if this.unsaved() {
+                    this.status = if this.unsaved(cx) {
                         "Saved snapshot; newer edits are still unsaved"
                     } else {
                         "Saved"
                     }
                     .into();
                     if let Some(pending) = pending
-                        && !this.unsaved()
+                        && !this.unsaved(cx)
                     {
                         window.close_dialog(cx);
                         this.perform_pending(pending, window, cx);
@@ -1326,6 +1355,13 @@ impl Workbench {
         if self.busy {
             return;
         }
+        if self.tab == 1
+            && let Err(error) = self.capture_source_draft(cx)
+        {
+            self.status = format!("{error:#}");
+            cx.notify();
+            return;
+        }
         if let Some(open) = &mut self.session.open {
             open.document.undo();
         }
@@ -1335,6 +1371,13 @@ impl Workbench {
 
     fn redo_document(&mut self, _: &RedoDocument, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
+            return;
+        }
+        if self.tab == 1
+            && let Err(error) = self.capture_source_draft(cx)
+        {
+            self.status = format!("{error:#}");
+            cx.notify();
             return;
         }
         if let Some(open) = &mut self.session.open {
@@ -1371,15 +1414,16 @@ impl Workbench {
     }
 
     fn flush_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<()> {
+        if self.tab == 1 {
+            self.capture_source_draft(cx)?;
+        }
         let open = self
             .session
             .open
             .as_mut()
             .ok_or_else(|| anyhow!("Open a document first"))?;
-        if self.tab == 1 {
-            open.document
-                .set_source(self.source.read(cx).value().to_string())?;
-        } else if self.tab == 0 {
+        open.document.break_source_history();
+        if self.tab == 0 {
             let parent = self.session.selection.path();
             let current = open.document.value()?;
             let mut edits = Vec::new();
@@ -1466,9 +1510,20 @@ impl Workbench {
             .as_ref()
             .map(|open| open.document.source().to_string())
             .unwrap_or_default();
-        if self.source.read(cx).value().as_ref() != source {
-            self.source
-                .update(cx, |state, cx| state.set_value(source, window, cx));
+        if !self.source_matches_document(cx) {
+            let selection = self
+                .session
+                .open
+                .as_ref()
+                .and_then(|open| open.document.source_selection());
+            self.source.update(cx, |state, cx| {
+                let scroll = state.scroll_offset();
+                state.set_value(source, window, cx);
+                if let Some(selection) = selection {
+                    state.set_selected_range(selection, cx);
+                    state.set_scroll_offset(scroll, cx);
+                }
+            });
         }
         self.rebuild_fields(window, cx);
         cx.notify();
@@ -1823,7 +1878,7 @@ impl Workbench {
                     .tooltip("Save document")
                     .disabled(
                         self.busy
-                            || !self.unsaved()
+                            || !self.unsaved(cx)
                             || self.diagnostic.is_some()
                             || !self.field_errors.is_empty(),
                     )
@@ -2663,7 +2718,7 @@ impl Workbench {
                 format!(
                     "{}{}",
                     open.entry.label(),
-                    if self.unsaved() { " *" } else { "" }
+                    if self.unsaved(cx) { " *" } else { "" }
                 )
             })
             .unwrap_or_else(|| "Workspace".into());
@@ -3066,7 +3121,8 @@ impl Workbench {
                     }
                     if this.close_after_preferences {
                         this.close_after_preferences = false;
-                        if saved && !this.busy && !this.unsaved() && !this.runs.read(cx).running() {
+                        if saved && !this.busy && !this.unsaved(cx) && !this.runs.read(cx).running()
+                        {
                             this.quit_or_install(cx);
                         } else {
                             this.updates
@@ -3331,7 +3387,7 @@ pub fn launch(instance: Option<DesktopInstance>) {
                                         false
                                     } else if this.guard_landing_close(window, cx) {
                                         false
-                                    } else if this.unsaved() {
+                                    } else if this.unsaved(cx) {
                                         this.guard(files::Pending::Close, window, cx);
                                         false
                                     } else {

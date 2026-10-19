@@ -822,7 +822,7 @@ impl Workbench {
                                         self.status,
                                         if self.busy {
                                             "Working"
-                                        } else if self.unsaved() {
+                                        } else if self.unsaved(cx) {
                                             "Modified"
                                         } else {
                                             "Ready"

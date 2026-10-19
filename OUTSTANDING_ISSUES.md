@@ -13,6 +13,15 @@ are historical evidence, not open implementation tasks.
   completions and preventing issue navigation after emoji. Position conversion now
   matches `RopeExt`; new pure and native regressions failed before the fixes and
   pass afterward, including exact adjacent text and issue-navigation wraparound.
+- Resolved: Source and document controls used independent undo histories. Accepted
+  edits now share bounded document history with grouped typing/deletion and active
+  selection restoration; native Source shortcuts, toolbar, and Fields edits agree.
+  Focused Fields inputs retain local undo for unapplied drafts.
+- Resolved: Source drafts above 4 MiB could evade unsaved guards, and deleting a
+  scenario in Source left stale selection. Oversized drafts now remain dirty and
+  undoable with explicit save/Fields rejection. Guards inspect pending native text;
+  Source inspection reconciles selection. Native paste/cancel/undo/redo/recovery and
+  mixed-history regressions pass.
 
 ## Run Retention and Verification (2026-10-17)
 

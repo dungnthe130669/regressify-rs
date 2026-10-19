@@ -878,7 +878,7 @@ async fn update_dialog_preserves_the_draft_and_shows_build_status(cx: &mut TestA
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.find("update-status").visible());
         assert!(window.find("update-check").visible());
-        assert!(view.read(cx).unsaved());
+        assert!(view.read(cx).unsaved(cx));
         assert!(!view.read(cx).updates.read(cx).install_on_close);
         window.click("update-close", cx);
     })
@@ -901,7 +901,7 @@ async fn update_install_reuses_the_unsaved_cancel_guard(cx: &mut TestAppContext)
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.find("guard-save").visible());
         window.click("guard-cancel", cx);
-        assert!(view.read(cx).unsaved());
+        assert!(view.read(cx).unsaved(cx));
         assert!(!view.read(cx).updates.read(cx).install_on_close);
     })
     .unwrap();
@@ -2798,7 +2798,7 @@ fn schema_issue_descriptions_support_pointer_selection_and_plain_text_copy(
         assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), message);
         window.input("must not edit the issue", cx);
         assert_eq!(view.read(cx).source_issues[0].message, message);
-        assert!(!view.read(cx).unsaved());
+        assert!(!view.read(cx).unsaved(cx));
     })
     .unwrap();
 }
@@ -8979,7 +8979,183 @@ fn source_line_commands_toggle_selected_yaml_comments(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn source_line_commands_use_native_undo_and_redo(cx: &mut TestAppContext) {
+fn source_history_native_undo_keeps_document_controls_in_sync(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = cx.update(|cx| view.read(cx).source.read(cx).value().to_string());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.source.update(cx, |state, cx| {
+                state.set_selected_range(original.len()..original.len(), cx);
+                state.focus(window, cx);
+            });
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    for character in ["#", " ", "a", "\u{1f680}"] {
+        cx.update_window(handle.into(), |_, window, cx| window.input(character, cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+    let edited = format!("{original}# a\u{1f680}");
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), edited);
+        window.press("ctrl-z", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        let document = &view.read(cx).session.open.as_ref().unwrap().document;
+        assert_eq!(document.source(), original);
+        assert!(!document.can_undo());
+        assert!(document.can_redo());
+        assert!(!document.dirty());
+        window.render_frame(cx);
+        window.click("redo", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), edited);
+        window.render_frame(cx);
+        window.click("undo", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.focus(&view.read(cx).source.read(cx).focus_handle(cx), cx);
+        window.render_frame(cx);
+        window.press("ctrl-y", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), edited);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn source_history_fields_edits_can_be_undone_from_source(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = cx.update(|cx| view.read(cx).source.read(cx).value().to_string());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.edit(
+                |session| session.set_field("delay", Some(serde_json::json!(123))),
+                window,
+                cx,
+            );
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press("ctrl-z", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        assert!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_redo()
+        );
+        window.press("ctrl-shift-z", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["delay"],
+            123
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn source_history_oversized_draft_keeps_dirty_guards_and_can_recover(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let oversized = format!(
+        "{original}{}",
+        format!("#{}\n", "x".repeat(126))
+            .repeat(crate::desktop::document::MAX_DOCUMENT_BYTES / 128 + 1)
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(oversized.clone()));
+        window.press("ctrl-v", cx);
+        assert!(
+            view.read(cx).unsaved(cx),
+            "Pending native text must be guarded"
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.session.dirty());
+            assert!(this.diagnostic.as_ref().unwrap().contains("4 MiB"));
+            assert!(!this.select_editor_tab(0, window, cx));
+            this.save_document(&super::SaveDocument, window, cx);
+            assert!(!this.busy);
+            assert_eq!(this.source.read(cx).value().as_ref(), oversized);
+            this.guard(super::files::Pending::Reload, window, cx);
+        });
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("guard-cancel", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), oversized);
+        window.focus(&view.read(cx).source.read(cx).focus_handle(cx), cx);
+        window.render_frame(cx);
+        window.press("ctrl-z", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.press("ctrl-shift-z", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), oversized);
+        window.press("ctrl-a", cx);
+        window.input(&original, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(!view.read(cx).unsaved(cx));
+        assert!(view.read(cx).diagnostic.is_none());
+    });
+    assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+}
+
+#[gpui_kit::test]
+fn source_history_source_edits_reconcile_deleted_selection(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert_eq!(this.session.selection, Selection::Scenario(0));
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        window.input("scenarios: []\n", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).session.selection, Selection::Root);
+    });
+}
+
+#[gpui_kit::test]
+fn source_line_commands_use_document_undo_and_redo(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
     let modifier = if cfg!(target_os = "macos") {
@@ -9299,7 +9475,7 @@ async fn external_reload_detects_disk_changes_without_a_refresh_command(cx: &mut
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         let this = view.read(cx);
-        assert!(!this.unsaved());
+        assert!(!this.unsaved(cx));
         assert_eq!(this.tab, 1);
         assert_eq!(this.session.selection, Selection::Scenario(0));
         assert_eq!(this.session.suites[0].scenarios[0].label, "Updated");
@@ -9332,7 +9508,7 @@ async fn external_reload_detects_disk_changes_without_a_refresh_command(cx: &mut
     .await;
     cx.update(|cx| {
         let this = view.read(cx);
-        assert!(!this.unsaved());
+        assert!(!this.unsaved(cx));
         assert!(this.diagnostic.is_some());
         assert_eq!(this.session.selection, Selection::Root);
         assert!(this.session.suites[0].error.is_some());
@@ -9394,7 +9570,7 @@ async fn external_reload_after_source_save_ignores_hidden_fields(cx: &mut TestAp
         view.read(cx).source.read(cx).value().as_ref() == external
     })
     .await;
-    cx.update(|cx| assert!(!view.read(cx).unsaved()));
+    cx.update(|cx| assert!(!view.read(cx).unsaved(cx)));
 }
 
 #[gpui_kit::test]
@@ -9438,7 +9614,7 @@ async fn external_reload_keeps_source_drafts_until_confirmed(cx: &mut TestAppCon
         let this = view.read(cx);
         assert_eq!(this.source.read(cx).value().as_ref(), draft);
         assert_eq!(this.session.open.as_ref().unwrap().document.source(), draft);
-        assert!(this.unsaved());
+        assert!(this.unsaved(cx));
         window.click("external-file-reload", cx);
     })
     .unwrap();
@@ -9469,7 +9645,7 @@ async fn external_reload_keeps_source_drafts_until_confirmed(cx: &mut TestAppCon
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(!view.read(cx).unsaved());
+        assert!(!view.read(cx).unsaved(cx));
         assert!(window.try_find("external-file-notice").is_none());
     })
     .unwrap();
@@ -9583,7 +9759,7 @@ async fn external_reload_handles_text_json_deletion_and_unreadable_recovery(
         let missing_message = cx
             .update_window(handle.into(), |_, window, cx| {
                 assert_eq!(view.read(cx).source.read(cx).value().as_ref(), external);
-                assert!(!view.read(cx).unsaved());
+                assert!(!view.read(cx).unsaved(cx));
                 window
                     .find("external-file-notice")
                     .label()
@@ -9609,7 +9785,7 @@ async fn external_reload_handles_text_json_deletion_and_unreadable_recovery(
         .await;
         cx.update(|cx| {
             assert_eq!(view.read(cx).tab, 1);
-            assert!(!view.read(cx).unsaved());
+            assert!(!view.read(cx).unsaved(cx));
         });
     }
 }
@@ -10009,7 +10185,7 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("duplicate-item", cx);
-        assert!(view.read(cx).unsaved());
+        assert!(view.read(cx).unsaved(cx));
         assert!(window.try_find("application-version").is_none());
         if cfg!(target_os = "macos") {
             window.click("file-menu", cx);
@@ -10101,7 +10277,7 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
             Some("https://tuyen.blog/")
         );
         window.click("about-close", cx);
-        assert!(view.read(cx).unsaved());
+        assert!(view.read(cx).unsaved(cx));
         view.update(cx, |this, _| this.session.workspace = None);
         assert!(
             !view
@@ -10168,7 +10344,7 @@ async fn about_dialog_public_close_preserves_keyboard_focus_and_drafts(cx: &mut 
         })
         .await;
         cx.update(|cx| {
-            assert!(view.read(cx).unsaved());
+            assert!(view.read(cx).unsaved(cx));
             assert_eq!(view.read(cx).session.value().unwrap(), draft);
         });
         assert_eq!(std::fs::read(&path).unwrap(), saved);
@@ -10227,9 +10403,9 @@ fn toolbar_editor_controls_fit_supported_window_sizes(cx: &mut TestAppContext) {
             window.click("save", cx);
             window.click("undo", cx);
             assert!(!view.read(cx).busy);
-            assert!(!view.read(cx).unsaved());
+            assert!(!view.read(cx).unsaved(cx));
             window.click("duplicate-item", cx);
-            assert!(view.read(cx).unsaved());
+            assert!(view.read(cx).unsaved(cx));
             assert_eq!(
                 view.read(cx).session.value().unwrap()["scenarios"]
                     .as_array()
@@ -10604,7 +10780,7 @@ async fn toolbar_dropdown_preserves_popup_and_modified_arrow_keys(cx: &mut TestA
             );
         }
         window.press("escape", cx);
-        assert!(!view.read(cx).unsaved());
+        assert!(!view.read(cx).unsaved(cx));
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
@@ -11733,7 +11909,7 @@ async fn suite_panel_context_rename_fields_and_delete_keep_artifacts_aligned(
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
-        view.read(cx).unsaved()
+        view.read(cx).unsaved(cx)
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| window.click("save", cx))
@@ -11742,7 +11918,7 @@ async fn suite_panel_context_rename_fields_and_delete_keep_artifacts_aligned(
         !view.read(cx).busy
     })
     .await;
-    cx.update(|cx| assert!(!view.read(cx).unsaved(), "{}", view.read(cx).status));
+    cx.update(|cx| assert!(!view.read(cx).unsaved(cx), "{}", view.read(cx).status));
     let path = directory.path().join("visual_tests/checkout.tests.yaml");
     let suite: crate::types::TestSuite =
         serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -11895,7 +12071,7 @@ async fn suite_panel_context_delete_preserves_unsaved_draft_on_cancel(cx: &mut T
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.find("guard-cancel").visible());
         window.click("guard-cancel", cx);
-        assert!(view.read(cx).unsaved());
+        assert!(view.read(cx).unsaved(cx));
         assert_eq!(
             view.read(cx).session.value().unwrap()["scenarios"]
                 .as_array()

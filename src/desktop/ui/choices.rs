@@ -356,7 +356,9 @@ impl Workbench {
             self.viewport_choices.validation_issues.clear();
             return;
         };
-        if open.entry.kind != DocumentKind::Suite {
+        if open.entry.kind != DocumentKind::Suite
+            || open.document.source().len() > super::super::document::MAX_DOCUMENT_BYTES
+        {
             self.viewport_choices.validation_key = None;
             self.viewport_choices.validation_generation += 1;
             self.viewport_choices.validation_issues.clear();
