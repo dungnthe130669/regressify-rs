@@ -3,6 +3,17 @@
 Current verification gaps and dated resolution history. Entries marked resolved
 are historical evidence, not open implementation tasks.
 
+## Source Editor Review (2026-10-19)
+
+- Resolved: [Source line commands](src/desktop/ui/source.rs) classified Unicode
+  whitespace inconsistently, so uncommenting could slice a UTF-8 character or
+  delete a form feed. Commenting and indentation now share ASCII-only indentation
+  rules, and uncommenting removes only an actual comment prefix.
+- Resolved: Source used UTF-16 columns with Kit 0.7.3's scalar-column API, corrupting
+  completions and preventing issue navigation after emoji. Position conversion now
+  matches `RopeExt`; new pure and native regressions failed before the fixes and
+  pass afterward, including exact adjacent text and issue-navigation wraparound.
+
 ## Run Retention and Verification (2026-10-17)
 
 - Resolved in source: [run tracking](src/run_history.rs) excludes interrupted and

@@ -1,6 +1,6 @@
 # Desktop Source Editing
 
-Verified: 2026-10-18
+Verified: 2026-10-19
 
 - [Source font size](../../src/desktop/ui/source.rs) uses a separate unmasked integer 10..24 NumberInput: invalid text never saves; Blur restores the last valid size.
   `source_font_size_` covers input/saved bytes, steps, Reset, reload and unchanged drafts. Activate GPUI fixtures for Blur; inactive windows suppress focus events.
@@ -72,6 +72,9 @@ Verified: 2026-10-18
   spans for spaces/hyphens and forces YAML block-list probes into value mode.
   The `action_viewport` desktop tests cover source preservation and these cases.
 - [Source commands](../../src/desktop/ui/source.rs) bind inside `RegressifySource > Input`, check the source focus handle and busy/editable state, and apply line edits via `apply_lsp_edits` (never history-resetting `set_value`); the Edit menu uses `action_context` and JSON disables comment toggling.
+- Kit 0.7.3 LSP-shaped positions use scalar columns, not UTF-16. `source_ranges_`
+  covers Rope round-trips, completion/navigation after emoji, whitespace-safe line
+  commands, and quoted viewport completion preservation.
 - Kit 0.7.3 normalizes `set_selected_range(end..start)` to an empty range; Source restores an ascending range after line edits, covered by the reverse CRLF/Unicode regression.
 - Block indentation uses shared line bounds (excluding column-zero selection ends) for indentation, comments, moves, duplication, and deletion; plain Tab and completion acceptance remain native, and Ctrl+Shift+Z binds to native redo alongside Ctrl+Y.
 - Native input-change notifications are deferred. [GUI tests](../../src/desktop/ui/tests.rs)

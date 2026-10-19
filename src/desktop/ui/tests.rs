@@ -2223,6 +2223,96 @@ fn source_editor_registers_schema_completion(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn source_ranges_completion_after_emoji_preserves_adjacent_text(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "{\"scenarios\":[{\"url\":\"/\",\"label\":\"\u{1f680}\",\"del\":12}]}";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let mut open = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("unicode.tests.json")
+                .unwrap();
+            open.document.set_source(original.into()).unwrap();
+            this.session.install_document(open).unwrap();
+            this.tab = 1;
+            this.sync_editor_content(window, cx);
+            this.source.update(cx, |state, cx| {
+                let cursor = original.find("\"del\"").unwrap() + 4;
+                state.set_selected_range(cursor..cursor, cx);
+                window.focus(&state.focus_handle(cx), cx);
+            });
+            this.request_completion(&super::CompleteSource, window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        let menu = view.read(cx).source.read(cx).completion_menu_state();
+        menu.open && menu.items.iter().any(|item| item.label == "delay")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let expected = original.replace("\"del\"", "\"delay\"");
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), expected);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            expected
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn source_ranges_issue_navigation_after_emoji_wraps_without_clamping(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = format!(
+        "scenarios: [{{url: /, label: '{}', unknownA: 1, unknownB: 2}}]\r\n",
+        "\u{1f680}".repeat(50)
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .open
+                .as_mut()
+                .unwrap()
+                .document
+                .set_source(original)
+                .unwrap();
+            this.tab = 1;
+            this.sync_editor_content(window, cx);
+            assert_eq!(this.source_issues.len(), 2);
+            this.source.update(cx, |state, cx| {
+                state.set_cursor_position(lsp_types::Position::new(0, 0), window, cx);
+            });
+        });
+        for index in [0, 1, 0] {
+            window.render_frame(cx);
+            window.click("source-issue", cx);
+            assert_eq!(
+                view.read(cx).source.read(cx).cursor_position(),
+                view.read(cx).source_issues[index].range.start
+            );
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
     cx: &mut TestAppContext,
 ) {

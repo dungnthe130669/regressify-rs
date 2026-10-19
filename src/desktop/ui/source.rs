@@ -86,6 +86,12 @@ fn selected_lines(text: &str, selection: &Range<usize>) -> Range<usize> {
     start..end
 }
 
+fn line_content(line: &str) -> &str {
+    // Non-ASCII whitespace and form feed are content, not YAML indentation.
+    line.trim_end_matches(['\r', '\n'])
+        .trim_start_matches([' ', '\t'])
+}
+
 fn toggle_line_comments(text: &str, selection: Range<usize>) -> Option<LineEdit> {
     let range = selected_lines(text, &selection);
     let block = &text[range.clone()];
@@ -94,20 +100,23 @@ fn toggle_line_comments(text: &str, selection: Range<usize>) -> Option<LineEdit>
     } else {
         block.split_inclusive('\n').collect::<Vec<_>>()
     };
-    let uncomment = lines.iter().any(|line| !line.trim().is_empty())
+    let uncomment = lines.iter().any(|line| !line_content(line).is_empty())
         && lines
             .iter()
-            .filter(|line| !line.trim().is_empty())
-            .all(|line| line.trim_start_matches([' ', '\t']).starts_with('#'));
+            .map(|line| line_content(line))
+            .filter(|line| !line.is_empty())
+            .all(|line| line.starts_with('#'));
     let mut edits = Vec::new();
     let mut offset = 0;
     for line in lines {
         let content = line.trim_end_matches(['\r', '\n']);
-        let trimmed = content.trim_start_matches([' ', '\t']);
+        let trimmed = line_content(line);
         if !trimmed.is_empty() || selection.is_empty() {
             let prefix = offset + content.len() - trimmed.len();
             let removed = if uncomment {
-                if trimmed.starts_with("# ") { 2 } else { 1 }
+                trimmed
+                    .strip_prefix('#')
+                    .map_or(0, |rest| 1 + usize::from(rest.starts_with(' ')))
             } else {
                 0
             };
@@ -169,7 +178,7 @@ fn indent_lines(text: &str, selection: Range<usize>, outdent: bool) -> Option<Li
             if removed > 0 {
                 edits.push((offset..offset + removed, ""));
             }
-        } else if !line.trim().is_empty() || selection.is_empty() {
+        } else if !line_content(line).is_empty() || selection.is_empty() {
             edits.push((offset..offset, indent.as_str()));
         }
         offset += line.len();
@@ -423,7 +432,7 @@ pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Di
                 .lines()
                 .nth(line as usize)
                 .unwrap_or_default()
-                .encode_utf16()
+                .chars()
                 .count()
                 .max(1) as u32;
             let hint = if syntax_error.is_some() {
@@ -496,7 +505,8 @@ fn position(text: &str, offset: usize) -> Position {
         .rsplit('\n')
         .next()
         .unwrap_or_default()
-        .encode_utf16()
+        // Kit 0.7.3 uses scalar columns even though its API takes LSP Position.
+        .chars()
         .count();
     Position::new(line as u32, column as u32)
 }
@@ -1335,6 +1345,46 @@ mod tests {
         assert!(result.is_char_boundary(edit.selection.start));
         assert!(result.is_char_boundary(edit.selection.end));
         (result, edit.selection)
+    }
+
+    #[test]
+    fn source_ranges_preserve_non_ascii_whitespace_in_line_commands() {
+        for whitespace in ["\u{00a0}", "\u{000c}", "\u{2003}", "\u{3000}"] {
+            for ending in ["\n", "\r\n"] {
+                let original = format!("# a{ending}{whitespace}{ending}");
+                let (commented, selected) =
+                    edited_lines(&original, 0..original.len(), LineOperation::ToggleComment);
+                assert_eq!(commented, format!("# # a{ending}# {whitespace}{ending}"));
+                assert_eq!(
+                    edited_lines(&commented, selected, LineOperation::ToggleComment).0,
+                    original
+                );
+                let (indented, selected) =
+                    edited_lines(&original, 0..original.len(), LineOperation::Indent);
+                assert_eq!(indented, format!("  # a{ending}  {whitespace}{ending}"));
+                assert_eq!(
+                    edited_lines(&indented, selected, LineOperation::Outdent).0,
+                    original
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn source_ranges_positions_match_editor_unicode_columns() {
+        use gpui_kit::component::input::{Rope, RopeExt};
+
+        let text = "label: '\u{1f680}\u{1f30d} caf\u{e9}'\r\ndelay: 12\n";
+        let rope = Rope::from(text);
+        for offset in text
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(text.len()))
+        {
+            let position = super::position(text, offset);
+            assert_eq!(position, rope.offset_to_position(offset), "byte {offset}");
+            assert_eq!(rope.position_to_offset(&position), offset, "byte {offset}");
+        }
     }
 
     #[test]

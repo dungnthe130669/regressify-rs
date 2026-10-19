@@ -896,6 +896,99 @@ mod tests {
     }
 
     #[test]
+    fn source_ranges_unclosed_viewport_quotes_preserve_following_lines() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("common")).unwrap();
+        std::fs::write(
+            directory.path().join("common/_viewports.yaml"),
+            "- label: mobile\n  width: 375\n  height: 667\n",
+        )
+        .unwrap();
+        let workspace = super::super::workspace::Workspace::open(directory.path()).unwrap();
+        let catalog = CompletionCatalog::new().unwrap();
+        for (format, source, token) in [
+            (
+                Format::Yaml,
+                "scenarios:\n- url: /\n  viewportNames: [mobile]\n  actions:\n  - click: '#toggle'\n    viewportNames: 'mo|\n  - click: '#next'\n",
+                "'mo",
+            ),
+            (
+                Format::Yaml,
+                "scenarios:\r\n- url: /\r\n  viewportNames: [mobile]\r\n  actions:\r\n  - click: \"#toggle\"\r\n    viewportNames: \"mo|\r\n  - click: \"#next\"\r\n",
+                "\"mo",
+            ),
+            (
+                Format::Json,
+                "{\n\"scenarios\":[{\"url\":\"/\",\"viewportNames\":[\"mobile\"],\"actions\":[\n{\"viewportNames\":\"mo|\n,\"click\":\"#next\"}]}]}\n",
+                "\"mo",
+            ),
+        ] {
+            let cursor = source.find('|').unwrap();
+            let source = source.replacen('|', "", 1);
+            let items = catalog.complete_with_workspace(
+                DocumentKind::Suite,
+                format,
+                &source,
+                cursor,
+                Some(&workspace),
+            );
+            let item = items
+                .iter()
+                .find(|item| item.label == "mobile")
+                .unwrap_or_else(|| panic!("Missing viewport completion for {format:?}: {items:?}"));
+            assert_eq!(&source[item.replacement.clone()], token, "{format:?}");
+            let mut edited = source.clone();
+            edited.replace_range(item.replacement.clone(), &item.text);
+            assert_eq!(
+                edited,
+                format!(
+                    "{}\"mobile\"{}",
+                    &source[..cursor - token.len()],
+                    &source[cursor..]
+                )
+            );
+            let value = format.parse(&edited).unwrap();
+            assert_eq!(
+                value["scenarios"][0]["actions"][0]["viewportNames"],
+                "mobile"
+            );
+            assert!(edited.contains("#next"));
+        }
+    }
+
+    #[test]
+    fn source_ranges_multiline_viewport_quotes_never_consume_following_content() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("common")).unwrap();
+        std::fs::write(
+            directory.path().join("common/_viewports.yaml"),
+            "- label: mobile\n  width: 375\n  height: 667\n",
+        )
+        .unwrap();
+        let workspace = super::super::workspace::Workspace::open(directory.path()).unwrap();
+        let catalog = CompletionCatalog::new().unwrap();
+        for quote in ['\'', '"'] {
+            for indent in ["    ", "      ", "        "] {
+                let source = format!(
+                    "scenarios:\n- url: /\n  viewportNames: [mobile]\n  actions:\n  - click: '#toggle'\n    viewportNames: {quote}mo\n{indent}label: {quote}next{quote}\n"
+                );
+                let cursor = source.find(&format!("{quote}mo\n")).unwrap() + 3;
+                let items = catalog.complete_with_workspace(
+                    DocumentKind::Suite,
+                    Format::Yaml,
+                    &source,
+                    cursor,
+                    Some(&workspace),
+                );
+                assert!(
+                    items.iter().all(|item| item.replacement.end <= cursor),
+                    "Completion consumed a following line: {items:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn generated_schema_completes_nested_objects_lists_and_navigation_choices() {
         for source in [
             "scenarios: []\nbasicAuth:\n  ori|",

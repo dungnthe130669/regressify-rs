@@ -1504,7 +1504,8 @@ including Basic Auth, URL replacements, iframe settings, and navigation options.
 Required fields appear first; existing sibling keys and unrelated action fields
 are excluded. Suggestions include the expected type, descriptions, units, and
 safe examples. Structured examples insert valid YAML flow notation or JSON.
-Accepting a suggestion replaces only the partial token, preserving surrounding source.
+Accepting a suggestion replaces only the partial token, preserving surrounding source,
+including text after emoji on the same line.
 Without suggestions, Tab indents and Shift+Tab outdents as usual. Returning from
 another window restores lost Source focus for the same visible document, so you can
 accept or dismiss suggestions without clicking the editor. Focus in another control
@@ -1550,7 +1551,8 @@ and text-size changes preserve source and undo history.
 
 Line commands operate on the current line or all lines touched by the selection.
 A selection ending at the start of the next line leaves that line untouched.
-Commands preserve indentation, Unicode, line endings, and selected text; after
+Commands preserve indentation, Unicode, line endings, and selected text; non-ASCII
+whitespace and form feeds are content, not indentation to remove. After
 a line command, the selection is forward-oriented with the caret at its end.
 Each command is one native undo step. They also work on invalid drafts without
 bypassing save validation. Comment toggling uses YAML `#` comments and is disabled
