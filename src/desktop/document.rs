@@ -269,15 +269,22 @@ impl Document {
     }
 
     pub fn validate(&self) -> Result<()> {
-        let value = self.value()?;
         if self.format == Format::Text {
             ensure!(
                 self.kind == DocumentKind::Data,
                 "Configuration documents must use YAML or JSON"
             );
+            ensure!(
+                self.source.len() <= MAX_DOCUMENT_BYTES,
+                "Document exceeds the 4 MiB editing limit"
+            );
+            ensure!(
+                is_text(&self.source),
+                "Binary content cannot be edited as text"
+            );
             Ok(())
         } else {
-            validate_value(self.kind, &value)
+            validate_value(self.kind, &self.value()?)
         }
     }
 

@@ -1537,6 +1537,14 @@ viewport filters; dependency errors do not hide independent viewport errors.
 Semantic errors such as blank URLs, invalid replacement regexes, and duplicate
 viewport labels point to their source fields alongside schema errors.
 
+Live Source checks start after a roughly 200 ms typing pause and run in the
+background, with at most one check in progress per window. New edits replace
+pending work, and stale results cannot overwrite current feedback. The status
+strip shows **Checking source...** rather than a green check while feedback is
+pending. Scenario/action selection commands wait for current feedback; text
+editing and undo remain available. Save and tab changes still read the latest
+buffer instead of trusting a delayed result.
+
 For example, a Basic Auth entry without `origin` reports
 `basicAuth[0].origin: Missing required field`, followed by an origin example and
 an explanation. A complete entry is:

@@ -79,6 +79,7 @@ Re-check these Regressify surfaces and active toolkit workarounds on every bump:
 - **Headless domain authority stays in [`src/desktop`](../../../src/desktop)**: never let widget blur, step, or confirm coerce invalid YAML/JSON drafts, strip comments, or replace `apply_lsp_edits` with history-resetting `set_value`.
 - **Observation and accessibility wrappers**: `.test_support()` is inert without `gui-tests`. Keep outer observed wrappers (`DialogClose`, scrollbars) and explicit UIA names/roles unless verified in both `gui-tests` and Windows smoke (`Progress`, `TitleBar`, and `CompletionMenu` register `.test_support()` directly in 0.7.3).
 - **Deferred settlement and window activation**: input notifications, menu dismissals, and `MotionReveal` bounds settle across frames; activate fixture windows before testing `Blur`.
+- **Source contracts**: 0.7.3's LSP-shaped positions use scalar columns, not UTF-16. Document owns accepted Source/Fields history; Source captures native Undo/Redo while ordinary Fields inputs retain local undo. Preserve single-flight feedback and native/model acknowledgement. Re-run `source_ranges_`, `source_history_`, `source_assistance_`, and `source_feedback_` before replacing these adapters.
 
 ### 6. Verify
 

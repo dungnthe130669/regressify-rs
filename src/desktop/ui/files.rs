@@ -1022,6 +1022,9 @@ impl Workbench {
         if self.busy || self.session.open.is_none() || (file && self.runs.read(cx).running()) {
             return;
         }
+        if !file && !self.source_selection_ready(cx) {
+            return;
+        }
         if file && self.unsaved(cx) {
             self.status = "Save or reload changes before deleting a suite".into();
             cx.notify();
@@ -1245,6 +1248,7 @@ impl Workbench {
                     }
                 }
                 this.viewport_choices.invalidate();
+                this.source_feedback.invalidate();
                 this.sync_suites(cx);
                 this.workspace_value = this
                     .session

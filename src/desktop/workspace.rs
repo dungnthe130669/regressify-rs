@@ -489,12 +489,21 @@ impl Workspace {
         if !super::validation::diagnostics(document.kind, &value)?.is_empty() {
             return Ok(Vec::new());
         }
-        let mut suite: crate::types::TestSuite = serde_json::from_value(value)?;
+        let suite: crate::types::TestSuite = serde_json::from_value(value)?;
+        self.action_viewport_diagnostics_for_suite(document.format, suite, suite_name)
+    }
+
+    pub(crate) fn action_viewport_diagnostics_for_suite(
+        &self,
+        format: Format,
+        mut suite: crate::types::TestSuite,
+        suite_name: &str,
+    ) -> Result<Vec<super::validation::Diagnostic>> {
         crate::test::assign_scenario_ids(&mut suite.scenarios);
         let input = crate::types::TestSuiteInput {
             name: suite_name.into(),
             path: PathBuf::from(suite_name),
-            format: match document.format {
+            format: match format {
                 Format::Json => crate::types::TestSuiteFormat::Json,
                 _ => crate::types::TestSuiteFormat::Yaml,
             },

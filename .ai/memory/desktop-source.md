@@ -63,11 +63,8 @@ Verified: 2026-10-19
   list picker and effective consumer labels. Workspace diagnostics call the
   shared CLI validator, point to own/inherited action fields, and retain invalid
   drafts. Background results are keyed to workspace, file, and exact source.
-- Source typing must schedule contextual validation as well as schema inspection;
-  the native `action_viewport_picker_filters_choices_and_preserves_invalid_source`
-  regression caught the missing callback. Syntax errors remain owned by Source:
-  duplicating them in contextual validation broke the Windows smoke's `1 issue`
-  assertion. The repaired `-SchemaFlows` smoke passed with preferences restored.
+- [Source feedback](../../src/desktop/ui/source.rs) debounces 200 ms with one worker, waits for native/model acknowledgement, and rejects stale generations/scopes/bytes.
+  `source_feedback_` checks 20-edit coalescing, single-flight/ABA freshness, immediate Save guards, plain-text inspection and catalog/text/position reuse. Base/contextual checks share parsing/indexing; syntax errors stay Source-owned to preserve the smoke's `1 issue` assertion.
 - [Viewport completion](../../src/desktop/completion.rs) uses parsed full value
   spans for spaces/hyphens and forces YAML block-list probes into value mode.
   `source_assistance_` covers native quoted/hyphenated acceptance, dismiss-only Shift+Tab, provider/overlay guards, and workspace-scoped focus restoration; acceptance callbacks are deferred.
@@ -106,7 +103,7 @@ Verified: 2026-10-19
   The toolkit's `text` highlighter disables configuration highlighting; schema
   completion and hover providers are cleared. The `common_text_files_` model and
   `workspace_files_text_documents_support_source_editing_and_save` native tests
-  cover saves, conflicts, binary guards, and native undo/redo.
+  cover saves, conflicts, binary guards, and keyboard undo/redo.
 - [External reload](../../src/desktop/ui/files.rs) reads the open file off-thread
   once per second and validates workspace/path/saved-byte identity on completion.
   Clean content reloads; pending/invalid drafts and read failures retain the editor.

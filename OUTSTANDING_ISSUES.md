@@ -33,6 +33,13 @@ are historical evidence, not open implementation tasks.
   without changing text, Find respects busy state, and non-schema/no-document
   transitions clear providers and overlays. Focus restoration includes workspace
   identity, preventing a same-relative-path switch from restoring stale focus.
+- Resolved: per-keystroke Source inspection and redundant contextual re-inspection
+  ran on the UI thread. Feedback now debounces 200 ms, permits one worker, waits
+  for native/model acknowledgement, and rejects stale generation/scope/byte results.
+  Tests verify 20-edit coalescing, single-flight and ABA freshness, immediate Save
+  guards, indexed/memoized positions, retained catalog/diagnostic text, and plain
+  text without configuration-value copies. Base/contextual checks share parsing
+  and indexing; viewport completion reuses its original CST.
 
 ## Run Retention and Verification (2026-10-17)
 

@@ -48,15 +48,19 @@ pub struct SourceIndex {
 
 impl SourceIndex {
     pub fn new(format: Format, source: &str) -> Self {
+        Self::parse(format, source).0
+    }
+
+    fn parse(format: Format, source: &str) -> (Self, Option<tree_sitter::Tree>) {
         let mut index = Self::default();
         if source.len() > MAX_DOCUMENT_BYTES {
-            return index;
+            return (index, None);
         }
         let mut parser = Parser::new();
         let language = match format {
             Format::Yaml => tree_sitter_yaml::LANGUAGE.into(),
             Format::Json => tree_sitter_json::LANGUAGE.into(),
-            Format::Text => return index,
+            Format::Text => return (index, None),
         };
         let mut offset = 0;
         index.line_ends = source
@@ -71,8 +75,9 @@ impl SourceIndex {
             && let Some(tree) = parser.parse(source, None)
         {
             index.visit(tree.root_node(), source, "", &[], 0);
+            return (index, Some(tree));
         }
-        index
+        (index, None)
     }
 
     pub fn range(&self, pointer: &str) -> Range<usize> {
@@ -355,7 +360,7 @@ impl CompletionCatalog {
             start..end
         };
         if kind == DocumentKind::Suite && workspace.is_some() {
-            let index = SourceIndex::new(format, source);
+            let (index, tree) = SourceIndex::parse(format, source);
             let range = index.ranges.iter().find(|(pointer, range)| {
                 let path = pointer.split('/').collect::<Vec<_>>();
                 matches!(
@@ -374,39 +379,32 @@ impl CompletionCatalog {
                     field.value_range.as_ref().filter(|range| range.start <= cursor && cursor <= range.end)
                 })
             });
-            if let Some(range) = range {
-                let mut value_parser = Parser::new();
-                let language = match format {
-                    Format::Yaml => tree_sitter_yaml::LANGUAGE.into(),
-                    Format::Json => tree_sitter_json::LANGUAGE.into(),
-                    Format::Text => return Vec::new(),
-                };
-                if value_parser.set_language(&language).is_ok()
-                    && let Some(tree) = value_parser.parse(source, None)
-                    && let Some(mut node) = tree
-                        .root_node()
-                        .descendant_for_byte_range(range.start, range.end)
+            if let Some(range) = range
+                && let Some(tree) = tree
+                && let Some(mut node) = tree
+                    .root_node()
+                    .descendant_for_byte_range(range.start, range.end)
+            {
+                if node.kind() == "block_sequence_item"
+                    && let Some(value) = node.named_child(0)
                 {
-                    if node.kind() == "block_sequence_item"
-                        && let Some(value) = node.named_child(0)
-                    {
-                        node = value;
-                    }
-                    let range = node.byte_range();
-                    if range.start <= cursor && cursor <= range.end {
-                        let fragment = &source[range.start..cursor];
-                        let value = format.parse(fragment).or_else(|error| {
-                            match fragment.as_bytes().first() {
+                    node = value;
+                }
+                let range = node.byte_range();
+                if range.start <= cursor && cursor <= range.end {
+                    let fragment = &source[range.start..cursor];
+                    let value =
+                        format
+                            .parse(fragment)
+                            .or_else(|error| match fragment.as_bytes().first() {
                                 Some(quote @ (b'\'' | b'"')) => {
                                     format.parse(&format!("{fragment}{}", *quote as char))
                                 }
                                 _ => Err(error),
-                            }
-                        });
-                        if let Ok(Value::String(value)) = value {
-                            prefix = value.to_ascii_lowercase();
-                            replacement = range;
-                        }
+                            });
+                    if let Ok(Value::String(value)) = value {
+                        prefix = value.to_ascii_lowercase();
+                        replacement = range;
                     }
                 }
             }
@@ -986,21 +984,27 @@ mod tests {
         let catalog = CompletionCatalog::new().unwrap();
         for quote in ['\'', '"'] {
             for indent in ["    ", "      ", "        "] {
-                let source = format!(
-                    "scenarios:\n- url: /\n  viewportNames: [mobile]\n  actions:\n  - click: '#toggle'\n    viewportNames: {quote}mo\n{indent}label: {quote}next{quote}\n"
-                );
-                let cursor = source.find(&format!("{quote}mo\n")).unwrap() + 3;
-                let items = catalog.complete_with_workspace(
-                    DocumentKind::Suite,
-                    Format::Yaml,
-                    &source,
-                    cursor,
-                    Some(&workspace),
-                );
-                assert!(
-                    items.iter().all(|item| item.replacement.end <= cursor),
-                    "Completion consumed a following line: {items:?}"
-                );
+                for following in [
+                    format!("label: {quote}next{quote}"),
+                    format!("- click: {quote}#next{quote}"),
+                    format!("click: {quote}#next{quote}"),
+                ] {
+                    let source = format!(
+                        "scenarios:\n- url: /\n  viewportNames: [mobile]\n  actions:\n  - click: '#toggle'\n    viewportNames: {quote}mo\n{indent}{following}\n"
+                    );
+                    let cursor = source.find(&format!("{quote}mo\n")).unwrap() + 3;
+                    let items = catalog.complete_with_workspace(
+                        DocumentKind::Suite,
+                        Format::Yaml,
+                        &source,
+                        cursor,
+                        Some(&workspace),
+                    );
+                    assert!(
+                        items.iter().all(|item| item.replacement.end <= cursor),
+                        "Completion consumed a following line: {items:?}"
+                    );
+                }
             }
         }
     }

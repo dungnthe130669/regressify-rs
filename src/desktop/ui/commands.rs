@@ -28,8 +28,14 @@ impl Workbench {
         let workspace = self.session.workspace.is_some();
         let open = self.session.open.as_ref();
         let suite = open.is_some_and(|open| open.entry.kind == DocumentKind::Suite);
-        let scenario = self.session.selection.scenario();
-        let editable = self.field_errors.is_empty() && self.diagnostic.is_none();
+        let scenario = self
+            .session
+            .selection
+            .scenario()
+            .filter(|_| !self.source_feedback.stale());
+        let editable = self.field_errors.is_empty()
+            && self.diagnostic.is_none()
+            && !self.source_feedback.stale();
         let mut commands = vec![
             Command {
                 title: "Landing apps",

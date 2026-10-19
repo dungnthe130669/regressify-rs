@@ -1,6 +1,6 @@
 //! Source editing commands, schema assistance, and diagnostics.
 
-use std::{ops::Range, rc::Rc, sync::Arc};
+use std::{ops::Range, rc::Rc, sync::Arc, time::Duration};
 
 use gpui_kit::component::{
     input::{CompletionProvider, HoverProvider, Rope},
@@ -11,6 +11,7 @@ use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
     Documentation, Position, TextEdit,
 };
+use serde::Deserialize;
 
 use super::*;
 use crate::desktop::{
@@ -295,14 +296,18 @@ struct SourceCompletions {
 
 impl SourceCompletions {
     fn items(&self, text: &str, cursor: usize) -> Vec<CompletionItem> {
-        self.catalog
-            .complete_with_workspace(
-                self.kind,
-                self.format,
-                text,
-                cursor,
-                self.workspace.as_ref(),
-            )
+        let items = self.catalog.complete_with_workspace(
+            self.kind,
+            self.format,
+            text,
+            cursor,
+            self.workspace.as_ref(),
+        );
+        if items.is_empty() {
+            return Vec::new();
+        }
+        let mut positions = SourcePositions::new(text);
+        items
             .into_iter()
             .map(|item| CompletionItem {
                 label: item.label,
@@ -323,10 +328,7 @@ impl SourceCompletions {
                     CompletionItemKind::VALUE
                 }),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: lsp_types::Range {
-                        start: position(text, item.replacement.start),
-                        end: position(text, item.replacement.end),
-                    },
+                    range: positions.range(item.replacement),
                     new_text: item.text,
                 })),
                 ..Default::default()
@@ -378,10 +380,7 @@ impl HoverProvider for SourceCompletions {
                 .catalog
                 .hint(provider.kind, provider.format, &text, offset)
                 .map(|hint| lsp_types::Hover {
-                    range: Some(lsp_types::Range::new(
-                        position(&text, hint.range.start),
-                        position(&text, hint.range.end),
-                    )),
+                    range: Some(SourcePositions::new(&text).range(hint.range)),
                     contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
                         kind: lsp_types::MarkupKind::PlainText,
                         value: hint.text,
@@ -391,18 +390,53 @@ impl HoverProvider for SourceCompletions {
     }
 }
 
+#[derive(Default)]
+pub(super) struct SourceInspection {
+    pub(super) value: Value,
+    pub(super) issues: Vec<lsp_types::Diagnostic>,
+    contextual: Vec<validation::Diagnostic>,
+}
+
+#[cfg(test)]
 pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Diagnostic>) {
+    let inspection = inspect_source_document(document, &[], None);
+    (inspection.value, inspection.issues)
+}
+
+pub(super) fn inspect_source_document(
+    document: &Document,
+    existing_context: &[validation::Diagnostic],
+    workspace: Option<(&crate::desktop::workspace::Workspace, &str)>,
+) -> SourceInspection {
     let text = document.source();
-    let value = document.value();
+    let value = if document.format == Format::Text {
+        document.validate().map(|()| Value::Null)
+    } else {
+        document.value()
+    };
+    let mut contextual = existing_context.to_vec();
     let result = value
         .as_ref()
         .map_err(|error| anyhow!("{error:#}"))
         .and_then(|value| {
             if document.format == Format::Text {
-                document.validate()?;
                 return Ok(Vec::new());
             }
             let mut issues = validation::diagnostics(document.kind, value)?;
+            if issues.is_empty()
+                && document.kind == DocumentKind::Suite
+                && let Some((workspace, suite_name)) = workspace
+            {
+                let suite = crate::types::TestSuite::deserialize(value)?;
+                contextual = workspace
+                    .action_viewport_diagnostics_for_suite(document.format, suite, suite_name)
+                    .unwrap_or_else(|error| {
+                        vec![validation::Diagnostic {
+                            pointer: String::new(),
+                            message: format!("{error:#}"),
+                        }]
+                    });
+            }
             for issue in semantic_diagnostics(document.kind, value) {
                 if issues.len() >= validation::MAX_DIAGNOSTICS {
                     break;
@@ -414,21 +448,18 @@ pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Di
                     issues.push(issue);
                 }
             }
+            let remaining = validation::MAX_DIAGNOSTICS.saturating_sub(issues.len());
+            issues.extend(contextual.iter().take(remaining).cloned());
             if issues.is_empty() {
                 return Ok(Vec::new());
             }
             let index = SourceIndex::new(document.format, text);
+            let mut positions = SourcePositions::new(text);
             let mut diagnostics = issues
                 .into_iter()
                 .map(|issue| {
                     let range = index.range(&issue.pointer);
-                    source_diagnostic(
-                        lsp_types::Range::new(
-                            position(text, range.start),
-                            position(text, range.end),
-                        ),
-                        issue.message,
-                    )
+                    source_diagnostic(positions.range(range), issue.message)
                 })
                 .collect::<Vec<_>>();
             diagnostics.sort_by_key(|issue| (issue.range.start, issue.range.end));
@@ -465,28 +496,11 @@ pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Di
             )]
         }
     };
-    (value.unwrap_or(Value::Null), issues)
-}
-
-pub(super) fn append_action_viewport_diagnostics(
-    document: &Document,
-    issues: &[crate::desktop::validation::Diagnostic],
-    diagnostics: &mut Vec<lsp_types::Diagnostic>,
-) {
-    if issues.is_empty() {
-        return;
+    SourceInspection {
+        value: value.unwrap_or(Value::Null),
+        issues,
+        contextual,
     }
-    let text = document.source();
-    let index = SourceIndex::new(document.format, text);
-    let remaining = validation::MAX_DIAGNOSTICS.saturating_sub(diagnostics.len());
-    for issue in issues.iter().take(remaining) {
-        let range = index.range(&issue.pointer);
-        diagnostics.push(source_diagnostic(
-            lsp_types::Range::new(position(text, range.start), position(text, range.end)),
-            issue.message.clone(),
-        ));
-    }
-    diagnostics.sort_by_key(|issue| (issue.range.start, issue.range.end));
 }
 
 // Kit 0.7.3 tracks hover help and diagnostic popovers separately on EditorState;
@@ -524,20 +538,278 @@ fn diagnostic_markdown(message: &str) -> String {
     description
 }
 
-fn position(text: &str, offset: usize) -> Position {
-    let before = &text[..offset];
-    let line = before.bytes().filter(|byte| *byte == b'\n').count();
-    let column = before
-        .rsplit('\n')
-        .next()
-        .unwrap_or_default()
-        // Kit 0.7.3 uses scalar columns even though its API takes LSP Position.
-        .chars()
-        .count();
-    Position::new(line as u32, column as u32)
+struct SourcePositions<'a> {
+    text: &'a str,
+    line_starts: Vec<usize>,
+    positions: BTreeMap<usize, Position>,
+}
+
+impl<'a> SourcePositions<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            line_starts: std::iter::once(0)
+                .chain(text.match_indices('\n').map(|(offset, _)| offset + 1))
+                .collect(),
+            positions: BTreeMap::new(),
+        }
+    }
+
+    fn position(&mut self, offset: usize) -> Position {
+        if let Some(position) = self.positions.get(&offset) {
+            return *position;
+        }
+        let line = self.line_starts.partition_point(|start| *start <= offset) - 1;
+        // Kit's LSP-shaped API uses scalar columns, not UTF-16 code units.
+        let column = self.text[self.line_starts[line]..offset].chars().count();
+        let position = Position::new(line as u32, column as u32);
+        self.positions.insert(offset, position);
+        position
+    }
+
+    fn range(&mut self, range: Range<usize>) -> lsp_types::Range {
+        lsp_types::Range::new(self.position(range.start), self.position(range.end))
+    }
+}
+
+struct SourceKey {
+    root: PathBuf,
+    path: PathBuf,
+    kind: DocumentKind,
+    format: Format,
+    text: String,
+}
+
+impl SourceKey {
+    fn matches(&self, session: &Session) -> bool {
+        session
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.root == self.root)
+            && session.open.as_ref().is_some_and(|open| {
+                open.entry.path == self.path
+                    && open.document.kind == self.kind
+                    && open.document.format == self.format
+                    && open.document.source() == self.text
+            })
+    }
+}
+
+#[derive(Default)]
+pub(super) struct SourceFeedback {
+    generation: u64,
+    pending: bool,
+    stale: bool,
+    ready: bool,
+    debounce: Option<Task<()>>,
+    worker: Option<Task<()>>,
+    key: Option<SourceKey>,
+    contextual: Vec<validation::Diagnostic>,
+    #[cfg(all(test, feature = "gui-tests"))]
+    started: usize,
+}
+
+impl SourceFeedback {
+    pub(super) fn stale(&self) -> bool {
+        self.stale
+    }
+
+    fn cancel(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.pending = false;
+        self.stale = false;
+        self.ready = false;
+        self.debounce = None;
+    }
+
+    pub(super) fn invalidate(&mut self) {
+        self.cancel();
+        self.key = None;
+        self.contextual.clear();
+    }
+
+    pub(super) fn contextual_issues(&self, session: &Session) -> &[validation::Diagnostic] {
+        if self.key.as_ref().is_some_and(|key| key.matches(session)) {
+            &self.contextual
+        } else {
+            &[]
+        }
+    }
 }
 
 impl Workbench {
+    pub(super) fn cancel_source_feedback(&mut self) {
+        self.source_feedback.cancel();
+    }
+
+    pub(super) fn source_selection_ready(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.source_feedback.stale {
+            self.status =
+                "Wait for Source checking to finish before using the selected item".into();
+            cx.notify();
+            return false;
+        }
+        true
+    }
+
+    pub(super) fn set_source_issues(&mut self, issues: Vec<lsp_types::Diagnostic>) -> bool {
+        if self.source_issues == issues {
+            return false;
+        }
+        self.source_issue_markdown = issues
+            .iter()
+            .map(|issue| SharedString::from(diagnostic_markdown(&issue.message)))
+            .collect();
+        self.diagnostic = (!issues.is_empty()).then(|| {
+            issues
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        });
+        self.source_issues = issues;
+        true
+    }
+
+    pub(super) fn defer_source_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.open.as_ref().is_some_and(|open| {
+            open.document.source().len() > crate::desktop::document::MAX_DOCUMENT_BYTES
+        }) {
+            self.refresh_value();
+            self.session.reconcile_selection_in(&self.value);
+            self.update_source_diagnostics(cx);
+            return;
+        }
+        self.source_feedback.stale = true;
+        if self.set_source_issues(Vec::new()) {
+            self.update_source_diagnostics(cx);
+        }
+        self.schedule_source_feedback(window, cx);
+    }
+
+    pub(super) fn schedule_source_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.workspace.is_none() || self.session.open.is_none() {
+            self.source_feedback.invalidate();
+            return;
+        }
+        if self.session.open.as_ref().is_some_and(|open| {
+            open.document.source().len() > crate::desktop::document::MAX_DOCUMENT_BYTES
+        }) {
+            self.source_feedback.cancel();
+            return;
+        }
+        if !self.source_feedback.stale
+            && self
+                .source_feedback
+                .key
+                .as_ref()
+                .is_some_and(|key| key.matches(&self.session))
+        {
+            return;
+        }
+        self.source_feedback.generation = self.source_feedback.generation.wrapping_add(1);
+        self.source_feedback.pending = true;
+        self.source_feedback.ready = false;
+        let generation = self.source_feedback.generation;
+        self.source_feedback.debounce = Some(cx.spawn_in(window, async move |view, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let _ = view.update_in(cx, |this, window, cx| {
+                if generation != this.source_feedback.generation {
+                    return;
+                }
+                this.source_feedback.debounce = None;
+                this.source_feedback.ready = true;
+                this.start_source_feedback(window, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    fn start_source_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.source_feedback.pending
+            || !self.source_feedback.ready
+            || self.source_feedback.worker.is_some()
+        {
+            return;
+        }
+        // A native change can precede its model notification. That notification
+        // will reschedule inspection; do not repeatedly parse an unacknowledged buffer.
+        if !self.source_matches_document(cx) {
+            self.source_feedback.stale = true;
+            cx.notify();
+            return;
+        }
+        let (Some(workspace), Some(open)) =
+            (self.session.workspace.clone(), self.session.open.as_ref())
+        else {
+            self.source_feedback.invalidate();
+            return;
+        };
+        let generation = self.source_feedback.generation;
+        let entry = open.entry.clone();
+        let kind = open.document.kind;
+        let format = open.document.format;
+        let text = self.source.read(cx).text().clone();
+        self.source_feedback.ready = false;
+        #[cfg(all(test, feature = "gui-tests"))]
+        {
+            self.source_feedback.started += 1;
+        }
+        let task = cx.background_executor().spawn(async move {
+            let text = text.to_string();
+            let suite_name = entry.suite_name().unwrap_or_else(|| entry.label());
+            let key = SourceKey {
+                root: workspace.root.clone(),
+                path: entry.path,
+                kind,
+                format,
+                text: text.clone(),
+            };
+            let inspection = Document::new(kind, format, text).map(|document| {
+                inspect_source_document(&document, &[], Some((&workspace, &suite_name)))
+            });
+            (key, inspection)
+        });
+        // Keep one worker alive until completion; cancelling a waiter cannot stop
+        // synchronous parsing or disk I/O that already started on the executor.
+        self.source_feedback.worker = Some(cx.spawn_in(window, async move |view, cx| {
+            let (key, inspection) = task.await;
+            let _ = view.update_in(cx, |this, window, cx| {
+                this.source_feedback.worker = None;
+                if generation == this.source_feedback.generation
+                    && key.matches(&this.session)
+                    && this.source.read(cx).text().slice(..) == key.text.as_str()
+                {
+                    let inspection = inspection.unwrap_or_else(|error| SourceInspection {
+                        issues: vec![source_diagnostic(
+                            lsp_types::Range::default(),
+                            format!("{error:#}"),
+                        )],
+                        ..Default::default()
+                    });
+                    this.source_feedback.pending = false;
+                    this.source_feedback.stale = false;
+                    this.source_feedback.key = Some(key);
+                    this.source_feedback.contextual = inspection.contextual;
+                    this.value = inspection.value;
+                    this.session.reconcile_selection_in(&this.value);
+                    if this.set_source_issues(inspection.issues) {
+                        this.update_source_diagnostics(cx);
+                    }
+                    cx.notify();
+                } else if generation == this.source_feedback.generation
+                    && this.source_feedback.pending
+                {
+                    this.source_feedback.stale = true;
+                    this.schedule_source_feedback(window, cx);
+                }
+                this.start_source_feedback(window, cx);
+            });
+        }));
+    }
+
     fn source_edit_menu(&self, cx: &App) -> impl IntoElement {
         let source = self.source.clone();
         let focus = source.read(cx).focus_handle(cx);
@@ -657,13 +929,11 @@ impl Workbench {
         let Some(edit) = line_edit(&text, selection, action.operation) else {
             return;
         };
+        let range = SourcePositions::new(&text).range(edit.range);
         self.source.update(cx, |state, cx| {
             state.apply_lsp_edits(
                 &vec![TextEdit {
-                    range: lsp_types::Range::new(
-                        position(&text, edit.range.start),
-                        position(&text, edit.range.end),
-                    ),
+                    range,
                     new_text: edit.text,
                 }],
                 window,
@@ -681,10 +951,7 @@ impl Workbench {
             .unwrap()
             .document
             .break_source_history();
-        self.refresh_value();
-        self.session.reconcile_selection_in(&self.value);
-        self.update_source_diagnostics(cx);
-        self.load_action_viewport_diagnostics(window, cx);
+        self.defer_source_feedback(window, cx);
         cx.notify();
     }
 
@@ -849,12 +1116,19 @@ impl Workbench {
         else {
             return;
         };
-        let catalog = match CompletionCatalog::new() {
-            Ok(catalog) => Arc::new(catalog),
-            Err(error) => {
-                self.status = format!("Completion unavailable: {error:#}");
-                return;
-            }
+        let catalog = match &self.source_catalog {
+            Some(catalog) => catalog.clone(),
+            None => match CompletionCatalog::new() {
+                Ok(catalog) => {
+                    let catalog = Arc::new(catalog);
+                    self.source_catalog = Some(catalog.clone());
+                    catalog
+                }
+                Err(error) => {
+                    self.status = format!("Completion unavailable: {error:#}");
+                    return;
+                }
+            },
         };
         let provider = Rc::new(SourceCompletions {
             catalog,
@@ -920,7 +1194,7 @@ impl Workbench {
             .enumerate()
             .map(|(index, issue)| {
                 let position = issue.range.start;
-                let description = diagnostic_markdown(&issue.message);
+                let description = self.source_issue_markdown[index].clone();
                 let (severity, color) =
                     if issue.severity == Some(lsp_types::DiagnosticSeverity::WARNING) {
                         ("Warning", cx.theme().warning)
@@ -1361,13 +1635,27 @@ impl Workbench {
                                 })),
                         )
                     })
-                    .when(self.diagnostic.is_none(), |bar| {
+                    .when(self.source_feedback.pending, |bar| {
                         bar.right(
-                            Icon::new(gpui_kit::assets::IconName::CircleCheck)
-                                .xsmall()
-                                .text_color(cx.theme().success),
+                            div()
+                                .id("source-validation-pending")
+                                .role(Role::Status)
+                                .aria_label("Checking source")
+                                .test_support()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Checking source..."),
                         )
-                    }),
+                    })
+                    .when(
+                        self.diagnostic.is_none() && !self.source_feedback.pending,
+                        |bar| {
+                            bar.right(
+                                Icon::new(gpui_kit::assets::IconName::CircleCheck)
+                                    .xsmall()
+                                    .text_color(cx.theme().success),
+                            )
+                        },
+                    ),
             )
             .into_any_element()
     }
@@ -1390,6 +1678,9 @@ pub(super) fn error_line(error: &anyhow::Error) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    #[cfg(feature = "gui-tests")]
+    use gpui_kit::AppContext;
 
     use super::{LineOperation, SourceCompletions, line_edit};
     use crate::desktop::{
@@ -1418,6 +1709,227 @@ mod tests {
                 assert!(!provider.is_completion_trigger(0, text, cx), "{text:?}");
             }
         });
+    }
+
+    #[test]
+    fn source_feedback_indexes_lines_and_reuses_identical_positions() {
+        let text = format!("{}label: '\u{1f680}'\r\n", "line\n".repeat(5000));
+        let start = text.find("label").unwrap();
+        let mut positions = super::SourcePositions::new(&text);
+        for _ in 0..1000 {
+            assert_eq!(
+                positions.range(start..start + "label".len()),
+                lsp_types::Range::new(
+                    lsp_types::Position::new(5000, 0),
+                    lsp_types::Position::new(5000, 5),
+                )
+            );
+        }
+        assert_eq!(positions.positions.len(), 2);
+        assert_eq!(positions.line_starts.len(), 5002);
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn source_feedback_coalesces_bursts_and_runs_only_one_worker(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::TestAppContextExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                assert!(this.select_editor_tab(1, window, cx));
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), super::Duration::from_secs(3), |_, cx| {
+            let feedback = &view.read(cx).source_feedback;
+            !feedback.pending && feedback.worker.is_none()
+        })
+        .await;
+        let mut started = cx.update(|cx| view.read(cx).source_feedback.started);
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                for index in 0..20 {
+                    this.source.update(cx, |state, cx| {
+                        state.replace_all(format!("scenarios: []\n# {index}\n"), window, cx);
+                    });
+                    assert!(this.capture_source_draft(cx).unwrap());
+                    this.defer_source_feedback(window, cx);
+                    assert_eq!(this.source_feedback.started, started);
+                    assert!(this.source_feedback.worker.is_none());
+                }
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), super::Duration::from_secs(3), |_, cx| {
+            !view.read(cx).source_feedback.pending
+        })
+        .await;
+        started += 1;
+        cx.update(|cx| {
+            assert_eq!(view.read(cx).source_feedback.started, started);
+            assert_eq!(
+                view.read(cx).source_feedback.key.as_ref().unwrap().text,
+                "scenarios: []\n# 19\n"
+            );
+        });
+
+        for revisit in [false, true] {
+            let latest = "scenarios: []\n# latest\n";
+            let old = if revisit {
+                latest
+            } else {
+                "scenarios: []\noldUnknown: true\n"
+            };
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.source
+                        .update(cx, |state, cx| state.replace_all(old, window, cx));
+                    this.capture_source_draft(cx).unwrap();
+                    this.defer_source_feedback(window, cx);
+                    this.source_feedback.debounce = None;
+                    this.source_feedback.ready = true;
+                    this.start_source_feedback(window, cx);
+                    assert!(this.source_feedback.worker.is_some());
+                    assert_eq!(this.source_feedback.started, started + 1);
+
+                    for draft in ["scenarios: []\n# intermediate\n", latest] {
+                        this.source
+                            .update(cx, |state, cx| state.replace_all(draft, window, cx));
+                        this.capture_source_draft(cx).unwrap();
+                        this.defer_source_feedback(window, cx);
+                    }
+                    this.source_feedback.debounce = None;
+                    this.source_feedback.ready = true;
+                    this.start_source_feedback(window, cx);
+                    assert_eq!(this.source_feedback.started, started + 1);
+                });
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), super::Duration::from_secs(3), |_, cx| {
+                let feedback = &view.read(cx).source_feedback;
+                !feedback.pending && feedback.worker.is_none()
+            })
+            .await;
+            started += 2;
+            cx.update(|cx| {
+                let this = view.read(cx);
+                assert_eq!(this.source_feedback.started, started);
+                assert_eq!(this.source_feedback.key.as_ref().unwrap().text, latest);
+                assert!(this.source_issues.is_empty());
+                assert_eq!(
+                    this.session.selection,
+                    crate::desktop::session::Selection::Root
+                );
+            });
+        }
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn source_feedback_waits_for_native_change_acknowledgement(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::TestAppContextExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                assert!(this.select_editor_tab(1, window, cx));
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), super::Duration::from_secs(3), |_, cx| {
+            !view.read(cx).source_feedback.pending && view.read(cx).source_feedback.worker.is_none()
+        })
+        .await;
+        let started = cx.update(|cx| view.read(cx).source_feedback.started);
+        let draft = "scenarios: []\n# native change awaiting acknowledgement\n";
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.source_feedback.invalidate();
+                this.schedule_source_feedback(window, cx);
+                this.source
+                    .update(cx, |state, cx| state.replace_all(draft, window, cx));
+                assert!(!this.source_matches_document(cx));
+                this.source_feedback.debounce = None;
+                this.source_feedback.ready = true;
+                this.start_source_feedback(window, cx);
+                assert_eq!(this.source_feedback.started, started);
+                assert!(this.source_feedback.worker.is_none());
+                assert!(this.unsaved(cx));
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), super::Duration::from_secs(3), |_, cx| {
+            !view.read(cx).source_feedback.pending
+        })
+        .await;
+        cx.update(|cx| {
+            assert_eq!(view.read(cx).source_feedback.started, started + 1);
+            assert_eq!(
+                view.read(cx).source_feedback.key.as_ref().unwrap().text,
+                draft
+            );
+        });
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    fn source_feedback_reuses_catalog_and_rendered_diagnostic_text(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            let text = view.update(cx, |this, cx| {
+                this.cancel_source_feedback();
+                this.tab = 1;
+                let catalog = this.source_catalog.as_ref().unwrap().clone();
+                this.configure_source(cx);
+                assert!(Arc::ptr_eq(&catalog, this.source_catalog.as_ref().unwrap()));
+                let issues = vec![super::source_diagnostic(
+                    lsp_types::Range::default(),
+                    "Literal <field>\n\nKeep \\ and * unchanged.\n".into(),
+                )];
+                assert!(this.set_source_issues(issues.clone()));
+                let text = this.source_issue_markdown[0].clone();
+                assert!(!this.set_source_issues(issues));
+                assert_eq!(text.as_ptr(), this.source_issue_markdown[0].as_ptr());
+                text
+            });
+            for _ in 0..5 {
+                window.render_frame(cx);
+                assert_eq!(
+                    text.as_ptr(),
+                    view.read(cx).source_issue_markdown[0].as_ptr()
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn source_feedback_plain_text_does_not_materialize_a_structured_value() {
+        for text in ["", "hello\n", "\u{1f680}\r\n"] {
+            let document =
+                super::Document::new(DocumentKind::Data, Format::Text, text.into()).unwrap();
+            let (value, issues) = super::inspect_document(&document);
+            assert!(value.is_null());
+            assert!(issues.is_empty());
+            assert_eq!(document.source(), text);
+        }
+        let document =
+            super::Document::new(DocumentKind::Data, Format::Text, "binary\0".into()).unwrap();
+        let (_, issues) = super::inspect_document(&document);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].message.contains("Binary content"));
     }
 
     #[test]
@@ -1500,7 +2012,7 @@ mod tests {
             serde_json::json!({"scenarios": [{"url": ""}]}).to_string(),
         )
         .unwrap();
-        let (_, mut diagnostics) = super::inspect_document(&document);
+        let (_, diagnostics) = super::inspect_document(&document);
         assert_eq!(diagnostics.len(), 1);
         let original = diagnostics[0].message.clone();
         let limit = crate::desktop::validation::MAX_DIAGNOSTICS;
@@ -1510,10 +2022,12 @@ mod tests {
                 message: "Invalid viewportNames".into(),
             })
             .collect::<Vec<_>>();
-        super::append_action_viewport_diagnostics(&document, &contextual, &mut diagnostics);
+        let diagnostics = super::inspect_source_document(&document, &contextual, None).issues;
         assert_eq!(diagnostics.len(), limit);
         assert!(diagnostics.iter().any(|issue| issue.message == original));
-        super::append_action_viewport_diagnostics(&document, &contextual, &mut diagnostics);
+        let mut contextual = contextual;
+        contextual.extend_from_within(..);
+        let diagnostics = super::inspect_source_document(&document, &contextual, None).issues;
         assert_eq!(diagnostics.len(), limit);
     }
 
@@ -1559,12 +2073,13 @@ mod tests {
 
         let text = "label: '\u{1f680}\u{1f30d} caf\u{e9}'\r\ndelay: 12\n";
         let rope = Rope::from(text);
+        let mut positions = super::SourcePositions::new(text);
         for offset in text
             .char_indices()
             .map(|(offset, _)| offset)
             .chain(std::iter::once(text.len()))
         {
-            let position = super::position(text, offset);
+            let position = positions.position(offset);
             assert_eq!(position, rope.offset_to_position(offset), "byte {offset}");
             assert_eq!(rope.position_to_offset(&position), offset, "byte {offset}");
         }

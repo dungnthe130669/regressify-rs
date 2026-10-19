@@ -130,6 +130,8 @@ pub struct Workbench {
     taskbar: Option<super::jump_list::WindowTaskbar>,
     source: Entity<EditorState>,
     source_focus_restore: Option<(PathBuf, PathBuf)>,
+    source_feedback: source::SourceFeedback,
+    source_catalog: Option<std::sync::Arc<crate::desktop::completion::CompletionCatalog>>,
     resolved: Entity<EditorState>,
     search: Entity<InputState>,
     bindings: Vec<Binding>,
@@ -148,6 +150,7 @@ pub struct Workbench {
     status: String,
     diagnostic: Option<String>,
     source_issues: Vec<lsp_types::Diagnostic>,
+    source_issue_markdown: Vec<SharedString>,
     source_wrap: bool,
     source_line_numbers: bool,
     source_font_size: f32,
@@ -204,10 +207,7 @@ impl Workbench {
             if matches!(event, InputEvent::Change) {
                 match this.capture_source_draft(cx) {
                     Ok(true) => {
-                        this.refresh_value();
-                        this.session.reconcile_selection_in(&this.value);
-                        this.update_source_diagnostics(cx);
-                        this.load_action_viewport_diagnostics(window, cx);
+                        this.defer_source_feedback(window, cx);
                     }
                     Ok(false) => {}
                     Err(error) => {
@@ -223,15 +223,18 @@ impl Workbench {
             cx.new(|cx| InputState::new(window, cx).placeholder("Find a scenario"));
         let scenario_search_subscription =
             cx.subscribe(&scenario_search, |_, _, _: &InputEvent, cx| cx.notify());
-        let source_observer = cx.observe(&source, |this, state, cx| {
-            if this.source_matches_document(cx)
-                && let Some(open) = &mut this.session.open
-            {
-                open.document
-                    .set_source_selection(state.read(cx).selected_range());
-            }
-            cx.notify();
-        });
+        let source_observer =
+            cx.observe(&source, |this, state, cx| {
+                let selection = state.read(cx).selected_range();
+                if this.session.open.as_ref().is_some_and(|open| {
+                    open.document.source_selection().as_ref() != Some(&selection)
+                }) && this.source_matches_document(cx)
+                    && let Some(open) = &mut this.session.open
+                {
+                    open.document.set_source_selection(selection);
+                }
+                cx.notify();
+            });
         let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.system_appearance_changed(window.appearance(), window, cx);
         });
@@ -465,6 +468,8 @@ impl Workbench {
             taskbar: None,
             source,
             source_focus_restore: None,
+            source_feedback: Default::default(),
+            source_catalog: None,
             resolved,
             search,
             bindings: Vec::new(),
@@ -499,6 +504,7 @@ impl Workbench {
             status,
             diagnostic: None,
             source_issues: Vec::new(),
+            source_issue_markdown: Vec::new(),
             source_wrap: preferences.source_wrap,
             source_line_numbers: preferences.source_line_numbers,
             source_font_size: f32::from(preferences.source_font_size),
@@ -1065,6 +1071,7 @@ impl Workbench {
 
     fn can_test_open_suite(&self, cx: &App) -> bool {
         !self.busy
+            && !self.source_feedback.stale()
             && !self.runs.read(cx).running()
             && self
                 .session
@@ -1090,6 +1097,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.source_selection_ready(cx) {
+            return;
+        }
         self.run_open_scope(command, Some(scenario), window, cx);
     }
 
@@ -1396,6 +1406,9 @@ impl Workbench {
         if self.busy {
             return;
         }
+        if !self.source_selection_ready(cx) {
+            return;
+        }
         if let Err(error) = self.flush_drafts(window, cx) {
             self.status = format!("{error:#}");
             cx.notify();
@@ -1466,32 +1479,28 @@ impl Workbench {
                 .update(cx, |state, cx| state.set_value(source, window, cx));
         }
         self.refresh_value();
+        self.session.reconcile_selection_in(&self.value);
         self.update_source_diagnostics(cx);
         self.refresh_effective(window, cx);
         Ok(())
     }
 
     fn refresh_value(&mut self) {
-        (self.value, self.source_issues) = self
+        self.cancel_source_feedback();
+        let inspection = self
             .session
             .open
             .as_ref()
-            .map(|open| source::inspect_document(&open.document))
+            .map(|open| {
+                source::inspect_source_document(
+                    &open.document,
+                    self.source_feedback.contextual_issues(&self.session),
+                    None,
+                )
+            })
             .unwrap_or_default();
-        if let (Some(workspace), Some(open)) = (&self.session.workspace, &self.session.open) {
-            source::append_action_viewport_diagnostics(
-                &open.document,
-                self.viewport_choices.action_issues(&workspace.root, open),
-                &mut self.source_issues,
-            );
-        }
-        self.diagnostic = (!self.source_issues.is_empty()).then(|| {
-            self.source_issues
-                .iter()
-                .map(|issue| issue.message.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        });
+        self.value = inspection.value;
+        self.set_source_issues(inspection.issues);
     }
 
     #[cfg(all(test, feature = "gui-tests"))]
@@ -1502,6 +1511,7 @@ impl Workbench {
     }
 
     fn sync_editor_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_feedback.invalidate();
         self.viewport_choices.invalidate();
         self.sync_suites(cx);
         let source = self
@@ -1868,6 +1878,7 @@ impl Workbench {
         let add_scenario = open.is_some_and(|open| open.entry.kind == DocumentKind::Suite);
         let add_viewport = open.is_some_and(|open| open.entry.kind == DocumentKind::Viewports);
         let add_action = self.session.selection.scenario().is_some();
+        let selection_busy = self.busy || self.source_feedback.stale();
         let history = gpui_kit::component::toolbar::ToolbarGroup::new("editor-history-group")
             .label("Document commands")
             .gap_2()
@@ -1913,7 +1924,7 @@ impl Workbench {
                 Button::new("add-item")
                     .icon(IconName::Plus)
                     .label("Add")
-                    .disabled(self.busy || open.is_none())
+                    .disabled(selection_busy || open.is_none())
                     .prepare_for_toolbar()
                     .with_size(gpui_kit::component::Size::Medium)
                     .dropdown_menu(move |menu, window, cx| {
@@ -1946,7 +1957,7 @@ impl Workbench {
                     .icon(IconName::Copy)
                     .tooltip("Duplicate selected item")
                     .accessibility_label("Duplicate selected item")
-                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .disabled(selection_busy || self.session.selection == Selection::Root)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.edit(Session::duplicate_selected, window, cx)
                     })),
@@ -1956,7 +1967,7 @@ impl Workbench {
                     .ghost()
                     .icon(gpui_kit::assets::IconName::Trash)
                     .tooltip("Remove selected item")
-                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .disabled(selection_busy || self.session.selection == Selection::Root)
                     .on_click(
                         cx.listener(|this, _, window, cx| this.confirm_remove(false, window, cx)),
                     ),
@@ -1966,7 +1977,7 @@ impl Workbench {
                     .ghost()
                     .icon(IconName::ArrowUp)
                     .tooltip("Move selected item up")
-                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .disabled(selection_busy || self.session.selection == Selection::Root)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.edit(|session| session.move_selected(-1), window, cx)
                     })),
@@ -1976,7 +1987,7 @@ impl Workbench {
                     .ghost()
                     .icon(IconName::ArrowDown)
                     .tooltip("Move selected item down")
-                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .disabled(selection_busy || self.session.selection == Selection::Root)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.edit(|session| session.move_selected(1), window, cx)
                     })),
@@ -2091,7 +2102,7 @@ impl Workbench {
         self.resolved
             .update(cx, |state, cx| state.set_value(text, window, cx));
         self.load_viewport_choices(window, cx);
-        self.load_action_viewport_diagnostics(window, cx);
+        self.schedule_source_feedback(window, cx);
     }
 
     fn field_hint(&self, field: &Field, explicit: bool) -> String {
@@ -2889,7 +2900,11 @@ impl Workbench {
                                     Button::new("scenario-run-reference")
                                         .icon(gpui_kit::assets::IconName::Camera)
                                         .label("Run Scenario Reference")
-                                        .disabled(self.busy || self.runs.read(cx).running())
+                                        .disabled(
+                                            self.busy
+                                                || self.source_feedback.stale()
+                                                || self.runs.read(cx).running(),
+                                        )
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.run_scenario(
                                                 super::runner::RunCommand::Reference,

@@ -2184,6 +2184,59 @@ fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn source_feedback_typing_is_pending_but_save_checks_latest_bytes(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("source-validation-pending").is_none()
+    })
+    .await;
+    let draft = "scenarios: []\nunknown: true\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("ctrl-a", cx);
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(draft.into()));
+        window.press("ctrl-v", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("source-validation-pending").is_some());
+        assert!(view.read(cx).unsaved(cx));
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            draft
+        );
+        window.press("ctrl-s", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).busy && view.read(cx).diagnostic.is_some()
+    })
+    .await;
+    assert_eq!(std::fs::read_to_string(path).unwrap(), saved);
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), draft);
+        assert!(view.read(cx).unsaved(cx));
+    });
+}
+
+#[gpui_kit::test]
 async fn source_assistance_quoted_hyphenated_viewports_complete_through_native_keys(
     cx: &mut TestAppContext,
 ) {
@@ -2989,12 +3042,12 @@ fn schema_issue_descriptions_support_pointer_selection_and_plain_text_copy(
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.tab = 1;
-            this.source_issues = vec![lsp_types::Diagnostic {
+            this.cancel_source_feedback();
+            this.set_source_issues(vec![lsp_types::Diagnostic {
                 message: message.into(),
                 severity: Some(lsp_types::DiagnosticSeverity::ERROR),
                 ..Default::default()
-            }];
-            this.diagnostic = Some(message.into());
+            }]);
             cx.notify();
         });
         window.render_frame(cx);
@@ -9347,7 +9400,7 @@ async fn source_history_oversized_draft_keeps_dirty_guards_and_can_recover(
 }
 
 #[gpui_kit::test]
-fn source_history_source_edits_reconcile_deleted_selection(cx: &mut TestAppContext) {
+async fn source_history_source_edits_reconcile_deleted_selection(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
@@ -9361,10 +9414,10 @@ fn source_history_source_edits_reconcile_deleted_selection(cx: &mut TestAppConte
         window.input("scenarios: []\n", cx);
     })
     .unwrap();
-    cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(view.read(cx).session.selection, Selection::Root);
-    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.selection == Selection::Root && !view.read(cx).source_feedback.stale()
+    })
+    .await;
 }
 
 #[gpui_kit::test]
