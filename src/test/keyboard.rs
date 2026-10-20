@@ -219,6 +219,24 @@ pub(super) async fn type_text(
     Ok(())
 }
 
+pub(super) async fn insert_text(
+    target: &Target,
+    text: &str,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let command = InsertTextParams::new(text.to_string());
+    cdp_with_timeout(
+        Duration::from_millis(config.actionability_timeout_ms),
+        "inserting pasted text",
+        target.execute(command),
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -200,6 +200,14 @@ pub(super) fn build() -> Result<Value> {
             json!({"swipe": "#carousel", "offset": {"x": -100, "y": 0}}),
         ),
         ("longPress", json!({"longPress": "#item", "duration": 600})),
+        ("blur", json!({"blur": "#email"})),
+        ("pinch", json!({"pinch": "#map-canvas", "scale": 2.0})),
+        (
+            "selectText",
+            json!({"selectText": "#editor", "text": "highlighted phrase"}),
+        ),
+        ("paste", json!({"paste": "#otp-code", "value": "123456"})),
+        ("closeTab", json!({"closeTab": "current"})),
     ];
     let mut action_names = Vec::new();
     for (name, value) in actions {

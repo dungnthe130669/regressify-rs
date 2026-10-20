@@ -763,6 +763,46 @@ actions:
   - longPress: "#item"
     duration: 700
     viewportNames: mobile
+  - pinch: "#map-canvas"
+    scale: 2.0
+    duration: 300
+    viewportNames: mobile
+```
+
+### Focus release, text selection, clipboard paste, and popup closing
+
+`blur` removes focus from a matched element selector (or from the current
+active element when `blur: active` is used). It fails if the target does not
+currently own focus, ensuring scenarios catch unexpected focus shifts.
+
+`selectText` highlights text inside an `<input>`, `<textarea>`,
+`contenteditable`, or DOM element, dispatching `select` (for form controls)
+and `selectionchange`. Optional `text` selects the first matching substring;
+optional `start` and `end` select a zero-based Unicode character range;
+omitting both selects all text in the target.
+
+`paste` focuses the target, dispatches a cancelable `ClipboardEvent('paste')`
+populated with `clipboardData` (`text/plain`), and when not canceled by the
+page (`preventDefault()`), clears existing text (unless `append: true`) and
+inserts `value` via CDP without modifying the host OS clipboard.
+
+`closeTab: current` closes the currently selected popup tab (running any armed
+`beforeunload` dialog expectation) and returns selection to the previously
+active tab. Closing the scenario's original tab fails.
+
+`hover` also accepts optional `position: {x, y}` and `modifiers`. `scroll`
+accepts mutually exclusive `position: {x, y}` (`scrollLeft`/`scrollTop`) or
+`offset: {x, y}` (`scrollBy`), and `input.value` supports native `range`,
+`color`, `date`, `time`, `datetime-local`, `month`, and `week` inputs.
+
+```yaml
+actions:
+  - selectText: "#editor"
+    text: "important phrase"
+  - paste: "#otp-input"
+    value: "123456"
+  - blur: active
+  - closeTab: current
 ```
 
 ### Element-state waits
@@ -796,7 +836,7 @@ actions:
 ## Shared properties
 
 The following properties are applicable to page actions, except `switchTab`,
-`navigate`, and `dialog`, which are tab-scoped.
+`closeTab`, `navigate`, and `dialog`, which are tab-scoped.
 
 {% spoiler() %}
 

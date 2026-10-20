@@ -166,6 +166,17 @@ impl Runtime {
         self.dialogs.ensure_clear()
     }
 
+    pub(super) fn navigation_cancelled(&self) -> bool {
+        self.dialogs.navigation_cancelled()
+    }
+
+    pub(super) async fn close_page(&self, timeout: Duration) -> Result<()> {
+        self.client
+            .call_with_timeout(Some(&self.main_session), "Page.close", json!({}), timeout)
+            .await?;
+        Ok(())
+    }
+
     pub(super) async fn with_dialog(
         &self,
         action: &crate::types::TestAction,

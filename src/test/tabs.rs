@@ -11,7 +11,9 @@ use tokio::sync::Mutex;
 
 use crate::{
     config::{self, ResolvedConfig, viewports::ViewportDef},
-    types::{SwitchTabAction, TabTarget, UrlReplacement},
+    types::{
+        CloseTabAction, CloseTabTarget, SwitchTabAction, TabTarget, TestAction, UrlReplacement,
+    },
 };
 
 use super::{
@@ -96,11 +98,19 @@ impl Tabs {
                     }
                     let prepared = tokio::time::timeout(timeout, async {
                         if touch_frame {
-                            connection.call_all(session, vec![
-                                ("Emulation.setTouchEmulationEnabled", serde_json::to_value(chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::new(true))?),
-                                ("Target.setAutoAttach", touch_frame_auto_attach()),
-                                ("Runtime.runIfWaitingForDebugger", json!({})),
-                            ]).await?;
+                            connection
+                                .call_all(
+                                    session,
+                                    vec![
+                                        (
+                                            "Emulation.setTouchEmulationEnabled",
+                                            touch_emulation_params(true)?,
+                                        ),
+                                        ("Target.setAutoAttach", touch_frame_auto_attach()),
+                                        ("Runtime.runIfWaitingForDebugger", json!({})),
+                                    ],
+                                )
+                                .await?;
                             return Ok(None);
                         }
                         if !owned {
@@ -129,7 +139,8 @@ impl Tabs {
                     .and_then(|result| result);
                     let failed = prepared.is_err();
                     if touch_frame && let Err(error) = &prepared {
-                        shared.lock().await.failure = Some(format!("Cannot initialize touch-enabled frame: {error:#}"));
+                        shared.lock().await.failure =
+                            Some(format!("Cannot initialize touch-enabled frame: {error:#}"));
                     }
                     if owned {
                         let mut state = shared.lock().await;
@@ -186,6 +197,13 @@ impl Tabs {
             // OOPIF emulation is target-scoped, not inherited from the top-level page.
             // Pause child documents so their first scripts see the same touch capability.
             let session = tabs.client.attach(&tabs.original).await?;
+            tabs.client
+                .call(
+                    Some(&session),
+                    "Emulation.setTouchEmulationEnabled",
+                    touch_emulation_params(true)?,
+                )
+                .await?;
             tabs.client
                 .call(
                     Some(&session),
@@ -291,6 +309,103 @@ impl Tabs {
         Ok((page, runtime, first_visit))
     }
 
+    pub async fn close(
+        &mut self,
+        browser: &Browser,
+        runtime: &Runtime,
+        action: &TestAction,
+        close: &CloseTabAction,
+    ) -> Result<Option<(Page, Runtime, bool)>> {
+        let CloseTabTarget::Current = close.close_tab;
+        ensure!(
+            self.active != self.original,
+            "closeTab: current cannot close the scenario's original tab"
+        );
+        let previous = self
+            .history
+            .last()
+            .cloned()
+            .ok_or_else(|| anyhow!("closeTab: current has no previously selected tab"))?;
+        let closing = self.active.clone();
+        let timeout = self.timeout;
+        tokio::time::timeout(timeout, async {
+            let current_targets = self
+                .client
+                .call(None, "Target.getTargets", json!({}))
+                .await?;
+            ensure!(
+                current_targets["targetInfos"]
+                    .as_array()
+                    .is_some_and(|targets| targets
+                        .iter()
+                        .any(|info| info["targetId"].as_str() == Some(closing.as_str()))),
+                "The current tab is already closed or unavailable"
+            );
+            runtime
+                .with_dialog(action, timeout, runtime.close_page(timeout))
+                .await?;
+            if runtime.navigation_cancelled() {
+                self.check().await?;
+                return Ok(None);
+            }
+            loop {
+                let response = self
+                    .client
+                    .call(None, "Target.getTargets", json!({}))
+                    .await?;
+                let still_open = response["targetInfos"].as_array().is_some_and(|targets| {
+                    targets
+                        .iter()
+                        .any(|info| info["targetId"].as_str() == Some(closing.as_str()))
+                });
+                if !still_open {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            let current_targets = self
+                .client
+                .call(None, "Target.getTargets", json!({}))
+                .await?;
+            ensure!(
+                current_targets["targetInfos"]
+                    .as_array()
+                    .is_some_and(|targets| targets
+                        .iter()
+                        .any(|info| info["targetId"].as_str() == Some(previous.as_str()))),
+                "The previous tab is closed or unavailable"
+            );
+            let page = browser
+                .get_page(previous.clone().into())
+                .await
+                .map_err(|_| anyhow!("The previous tab is closed or unavailable"))?;
+            let next_runtime = Runtime::with_client(self.client.clone(), &page)
+                .await
+                .map_err(|error| {
+                    anyhow!("Cannot attach to previous tab; it may have closed: {error}")
+                })?;
+            next_runtime
+                .target(&None, self.timeout)
+                .await?
+                .wait_for_ready(self.timeout)
+                .await?;
+            page.bring_to_front().await?;
+            let first_visit = self.visited.insert(previous.clone());
+            self.history.pop();
+            self.history.retain(|entry| entry != &closing);
+            self.active = previous;
+            self.check().await?;
+            Ok(Some((page, next_runtime, first_visit)))
+        })
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "closeTab timed out after {}ms while closing the current tab",
+                timeout.as_millis()
+            )
+        })?
+    }
+
     async fn wait_for_new(&self, matcher: Option<&UrlMatcher>) -> Result<String> {
         loop {
             self.check().await?;
@@ -354,6 +469,18 @@ fn touch_frame_auto_attach() -> Value {
     })
 }
 
+fn touch_emulation_params(enabled: bool) -> Result<Value> {
+    let mut builder =
+        chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::builder()
+            .enabled(enabled);
+    if enabled {
+        builder = builder.max_touch_points(5);
+    }
+    Ok(serde_json::to_value(builder.build().map_err(|error| {
+        anyhow!("Cannot configure touch emulation: {error}")
+    })?)?)
+}
+
 fn popup_commands(
     viewport: Option<&ViewportDef>,
     bypass_csp: bool,
@@ -364,11 +491,7 @@ fn popup_commands(
     let mut commands = vec![("Page.enable", json!({}))];
     commands.push((
         "Emulation.setTouchEmulationEnabled",
-        serde_json::to_value(
-            chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::new(
-                has_touch,
-            ),
-        )?,
+        touch_emulation_params(has_touch)?,
     ));
     if has_touch {
         commands.push(("Target.setAutoAttach", touch_frame_auto_attach()));
@@ -653,7 +776,7 @@ mod tests {
                 }),
             )
             .await?;
-            let (nested, _, _) = tabs
+            let (nested, nested_runtime, _) = tabs
                 .switch(
                     &browser,
                     &SwitchTabAction {
@@ -668,21 +791,22 @@ mod tests {
                 nested.target_id() != popup.target_id(),
                 "iframe link did not select a nested popup"
             );
-            nested.close().await?;
+            let close_action = CloseTabAction {
+                close_tab: CloseTabTarget::Current,
+                viewport_names: None,
+            };
             let (previous, _, _) = tabs
-                .switch(
+                .close(
                     &browser,
-                    &SwitchTabAction {
-                        switch_tab: TabTarget::Previous,
-                        url: None,
-                        viewport_names: None,
-                    },
-                    &[],
+                    &nested_runtime,
+                    &TestAction::CloseTab(close_action.clone()),
+                    &close_action,
                 )
-                .await?;
+                .await?
+                .expect("closing nested popup should return to opener");
             ensure!(
                 previous.target_id() == popup.target_id(),
-                "nested history did not return to the opener"
+                "nested closeTab did not return to the opener"
             );
             let (original, _, _) = tabs
                 .switch(
@@ -772,6 +896,22 @@ mod tests {
                     "failed tab switch changed the active tab"
                 );
             }
+            let original_runtime = Runtime::new(&browser, &page).await?;
+            let close_original = CloseTabAction {
+                close_tab: CloseTabTarget::Current,
+                viewport_names: None,
+            };
+            ensure!(
+                tabs.close(
+                    &browser,
+                    &original_runtime,
+                    &TestAction::CloseTab(close_original.clone()),
+                    &close_original
+                )
+                .await
+                .is_err(),
+                "closing original tab must fail"
+            );
             page.close().await?;
             let error = tabs
                 .switch(

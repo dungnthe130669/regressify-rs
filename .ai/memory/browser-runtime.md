@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-10-19
+Verified: 2026-10-20
 
 - [Script hooks](../../src/test/hooks.rs) run entirely in Chromium: document-start
   `onBeforeScript`, then CSS/`jsOnReadyPath`/`onReadyScript` after readiness and
@@ -107,9 +107,14 @@ Verified: 2026-10-19
 - [Expanded actions](../../src/test/gestures.rs) use complete CDP gestures with
   owned input cleanup; the pinned bindings need explicit empty touchPoints and
   drag items arrays. Native HTML5 data and confined regular file drops are distinct.
-- [Touch setup](../../src/test/tabs.rs) must pause/configure OOPIF targets before
-  first scripts, recursively, even in jobs without switchTab. Top-level touch
-  emulation alone left cross-origin frames at zero maxTouchPoints in the live fixture.
+  `pinch` releases an extra untracked touch ID before the final `touchEnd`/`touchCancel`
+  because Chromium's `ForwardEmulatedTouchEvent` and `DispatchTouchEvent` both
+  increment `active_touches_` on a second touch point, which otherwise leaves
+  `touch_target_` locked and blocks subsequent OOPIF touch routing.
+- [Touch setup](../../src/test/tabs.rs) sets `maxTouchPoints: 5` and pauses/configures
+  OOPIF targets before first scripts, recursively, even in jobs without `switchTab`
+  or `closeTab`.
 - The ignored `expanded_actions_` [browser fixtures](../../src/test/browser_tests.rs)
-  verify trusted events, actual drop payloads, focus, timing, cancellation, and
-  strict dialogs/history, including intentional beforeunload cancellation.
+  verify trusted events (`click`, `hover`, `drag`, `dropFiles`, `wheel`, `scroll`,
+  `input`, `paste`, `selectText`, `focus`, `blur`, `tap`, `swipe`, `longPress`,
+  `pinch`), cancellation, and strict dialogs/history across nested cross-origin frames.

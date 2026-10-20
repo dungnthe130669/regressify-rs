@@ -427,6 +427,9 @@ pub(crate) fn display_path(pointer: &str) -> String {
 
 pub(crate) fn expected(schema: &Value, root: &Value) -> String {
     let schema = resolve(schema, root);
+    if let Some(constant) = schema.get("const") {
+        return format!("one of {constant}");
+    }
     if let Some(choices) = schema["enum"].as_array() {
         return format!(
             "one of {}",

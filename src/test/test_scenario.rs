@@ -59,6 +59,7 @@ fn legacy_actions(scenario: &TestScenario) -> Vec<TestAction> {
             hover,
             frame: None,
             viewport_names: None,
+            ..Default::default()
         }));
     }
     for click in selectors(&scenario.click_selectors, &scenario.click_selector) {
@@ -74,6 +75,7 @@ fn legacy_actions(scenario: &TestScenario) -> Vec<TestAction> {
             scroll: scroll.clone(),
             frame: None,
             viewport_names: None,
+            ..Default::default()
         }));
     }
     actions
@@ -333,7 +335,7 @@ async fn install_tab_tracker_for_actions<'a>(
     let mut needs_tabs = false;
     let mut has_touch = false;
     for action in actions.filter(|action| action_applies_to_viewport(action, label)) {
-        needs_tabs |= matches!(action, TestAction::SwitchTab(_));
+        needs_tabs |= matches!(action, TestAction::SwitchTab(_) | TestAction::CloseTab(_));
         has_touch |= action.uses_touch();
     }
     if needs_tabs || has_touch {
@@ -392,6 +394,41 @@ impl ScenarioPage {
             if first_visit {
                 prepare_page_for_actions(&self.page, &self.runtime, ctx.resolved, ctx.log_prefix)
                     .await?;
+            }
+            return Ok(());
+        }
+        if let TestAction::CloseTab(close) = action {
+            use crate::diagnostics::{record::Stage, runtime as diagnostics};
+            let fields = super::test_action::action_diagnostic_fields(
+                action,
+                diagnostics::next_action_index(),
+            );
+            let tabs = self
+                .tabs
+                .as_mut()
+                .ok_or_else(|| anyhow!("Tab tracking was not initialized"))?;
+            let switched = diagnostics::action_scope(
+                fields.clone(),
+                diagnostics::stage(
+                    Stage::ActionsFrames,
+                    fields,
+                    tabs.close(browser, &self.runtime, action, close),
+                ),
+            )
+            .await?;
+            if let Some((page, runtime, first_visit)) = switched {
+                self.page = page;
+                self.runtime = runtime;
+                hooks.apply(&self.page).await?;
+                if first_visit {
+                    prepare_page_for_actions(
+                        &self.page,
+                        &self.runtime,
+                        ctx.resolved,
+                        ctx.log_prefix,
+                    )
+                    .await?;
+                }
             }
             return Ok(());
         }
@@ -1890,6 +1927,11 @@ mod tests {
                     json!({ "tap": "#never" }),
                     json!({ "swipe": "#never", "offset": {"x": 100, "y": 0} }),
                     json!({ "longPress": "#never", "duration": 60000 }),
+                    json!({ "blur": "#never" }),
+                    json!({ "pinch": "#never", "scale": 2.0, "duration": 60000 }),
+                    json!({ "selectText": "#never", "text": "missing" }),
+                    json!({ "paste": "#never", "value": "excluded" }),
+                    json!({ "closeTab": "current" }),
                 ] {
                     shape["viewportNames"] = json!([excluded]);
                     skipped.push(serde_json::from_value::<TestAction>(shape)?);

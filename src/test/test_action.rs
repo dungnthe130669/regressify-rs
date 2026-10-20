@@ -1,6 +1,6 @@
 use std::{path::Path, time::Duration};
 
-use super::keyboard::{dispatch_key_stroke, parse_press_key, type_text};
+use super::keyboard::{dispatch_key_stroke, insert_text, parse_press_key, type_text};
 use super::runtime::Target as Page;
 use anyhow::{Result, anyhow};
 use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
@@ -12,9 +12,9 @@ use crate::{
     helpers::write_file_atomically,
     test::{
         actionability::{
-            self, ActionabilityConfig, build_frame_document_js, cdp_click, cdp_hover,
-            ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule, escape_js_string,
-            focus_element, get_frame_selectors, scroll_into_view, wait_for_selector,
+            self, ActionabilityConfig, build_frame_document_js, cdp_click, ensure_actionable,
+            ensure_exists, ensure_focusable, escape_css_rule, escape_js_string, focus_element,
+            get_frame_selectors, scroll_into_view, wait_for_selector,
         },
         capture::{
             artifact_write_error, save_screenshot_with_target, state_path,
@@ -22,11 +22,11 @@ use crate::{
         },
     },
     types::{
-        ActionPoint, CheckAction, DialogKind, DialogResponse, FileInput, FocusAction, GotoAction,
-        HideAction, HoverAction, InputAction, NavigationOperation, PersistAction, PressAction,
-        RemoveAction, SaveAction, ScreenshotType, ScrollAction, SelectAction, SelectValue,
-        TabTarget, TestAction, TestScenario, TestSuite, UncheckAction, UrlReplacement, Wait,
-        WaitAction, WaitState,
+        ActionPoint, BlurAction, CheckAction, DialogKind, DialogResponse, FileInput, FocusAction,
+        GotoAction, HideAction, InputAction, NavigationOperation, PasteAction, PersistAction,
+        PressAction, RemoveAction, SaveAction, ScreenshotType, ScrollAction, SelectAction,
+        SelectTextAction, SelectValue, TabTarget, TestAction, TestScenario, TestSuite,
+        UncheckAction, UrlReplacement, Wait, WaitAction, WaitState,
     },
 };
 
@@ -133,6 +133,27 @@ pub(crate) fn validate_action_fields(action: &TestAction) -> Result<()> {
             );
             position(action.position)?;
         }
+        TestAction::Hover(action) => {
+            anyhow::ensure!(
+                !action.hover.trim().is_empty(),
+                "hover requires a nonblank selector"
+            );
+            position(action.position)?;
+        }
+        TestAction::Scroll(action) => {
+            anyhow::ensure!(
+                !action.scroll.trim().is_empty(),
+                "scroll requires a nonblank selector"
+            );
+            anyhow::ensure!(
+                action.position.is_none() || action.offset.is_none(),
+                "scroll accepts at most one of position or offset"
+            );
+            position(action.position)?;
+            if let Some(offset) = action.offset {
+                validate_point(offset, true)?;
+            }
+        }
         TestAction::Input(action) => {
             anyhow::ensure!(
                 action.typing_delay.is_none_or(|delay| delay <= 10_000),
@@ -238,6 +259,54 @@ pub(crate) fn validate_action_fields(action: &TestAction) -> Result<()> {
             );
             position(action.position)?;
             duration(action.duration)?;
+        }
+        TestAction::Blur(action) => {
+            anyhow::ensure!(
+                !action.blur.trim().is_empty(),
+                "blur requires a nonblank selector or 'active'"
+            );
+        }
+        TestAction::Pinch(action) => {
+            anyhow::ensure!(
+                !action.pinch.trim().is_empty(),
+                "pinch requires a nonblank selector"
+            );
+            anyhow::ensure!(
+                action.scale.is_finite()
+                    && (0.1..=10.0).contains(&action.scale)
+                    && (action.scale - 1.0).abs() >= f64::EPSILON,
+                "pinch.scale must be between 0.1 and 10.0 and not equal to 1.0"
+            );
+            position(action.position)?;
+            duration(action.duration)?;
+        }
+        TestAction::SelectText(action) => {
+            anyhow::ensure!(
+                !action.select_text.trim().is_empty(),
+                "selectText requires a nonblank selector"
+            );
+            anyhow::ensure!(
+                action.text.is_none() || (action.start.is_none() && action.end.is_none()),
+                "selectText accepts either text or start/end offsets, not both"
+            );
+            anyhow::ensure!(
+                action.text.as_ref().is_none_or(|text| !text.is_empty()),
+                "selectText.text must not be empty"
+            );
+            if let (Some(start), Some(end)) = (action.start, action.end) {
+                anyhow::ensure!(
+                    start < end,
+                    "selectText.end must be greater than selectText.start"
+                );
+            } else if action.end == Some(0) {
+                anyhow::bail!("selectText.end must be greater than 0");
+            }
+        }
+        TestAction::Paste(action) => {
+            anyhow::ensure!(
+                !action.paste.trim().is_empty(),
+                "paste requires a nonblank selector"
+            );
         }
         TestAction::Wait(action) => {
             let condition = action.state.is_some()
@@ -459,12 +528,20 @@ async fn wait_for_checked_state(
 #[derive(Debug, PartialEq, Eq)]
 enum TextInputTarget {
     Native,
+    NativeValue(String),
     ContentEditable,
 }
 
 fn parse_text_input_target(value: &serde_json::Value) -> Result<TextInputTarget> {
     match value.get("kind").and_then(|field| field.as_str()) {
         Some("native") => Ok(TextInputTarget::Native),
+        Some("native_value") => Ok(TextInputTarget::NativeValue(
+            value
+                .get("inputType")
+                .and_then(|field| field.as_str())
+                .unwrap_or("value")
+                .to_lowercase(),
+        )),
         Some("contenteditable") => Ok(TextInputTarget::ContentEditable),
         _ => {
             let error = value
@@ -559,6 +636,11 @@ pub(crate) fn action_diagnostic_identity(
         TestAction::Tap(action) => (SafeValue::Tap, Some(&action.tap)),
         TestAction::Swipe(action) => (SafeValue::Swipe, Some(&action.swipe)),
         TestAction::LongPress(action) => (SafeValue::LongPress, Some(&action.long_press)),
+        TestAction::Blur(action) => (SafeValue::Blur, Some(&action.blur)),
+        TestAction::Pinch(action) => (SafeValue::Pinch, Some(&action.pinch)),
+        TestAction::SelectText(action) => (SafeValue::SelectText, Some(&action.select_text)),
+        TestAction::Paste(action) => (SafeValue::Paste, Some(&action.paste)),
+        TestAction::CloseTab(_) => (SafeValue::CloseTab, None),
         TestAction::Uncheck(action) => (SafeValue::Uncheck, Some(&action.uncheck)),
         TestAction::Wait(action) => (
             SafeValue::Wait,
@@ -615,7 +697,7 @@ async fn exec_test_action_inner(
     } = ctx;
     let ac = actionability_config(config);
     match action {
-        TestAction::SwitchTab(_) | TestAction::Dialog(_) => {
+        TestAction::SwitchTab(_) | TestAction::CloseTab(_) | TestAction::Dialog(_) => {
             anyhow::bail!("Tab selection must run through the scenario page manager");
         }
         TestAction::Persist(PersistAction { persist, frame, .. }) => {
@@ -705,6 +787,10 @@ async fn exec_test_action_inner(
             | TestAction::DropFiles(_)
             | TestAction::Swipe(_)
             | TestAction::Wheel(_)
+            | TestAction::Blur(_)
+            | TestAction::Pinch(_)
+            | TestAction::SelectText(_)
+            | TestAction::Paste(_)
     ) {
         Some(page.navigation_watch().await?)
     } else {
@@ -713,6 +799,7 @@ async fn exec_test_action_inner(
 
     match action {
         TestAction::SwitchTab(_)
+        | TestAction::CloseTab(_)
         | TestAction::Dialog(_)
         | TestAction::Persist(_)
         | TestAction::Save(_) => {
@@ -813,6 +900,19 @@ async fn exec_test_action_inner(
             )
             .await?
         }
+        TestAction::Pinch(action) => super::gestures::pinch(page, action, &ac).await?,
+
+        TestAction::Blur(BlurAction { blur, .. }) => {
+            exec_blur_action(page, blur, frame, &ac).await?;
+        }
+
+        TestAction::SelectText(action) => {
+            exec_select_text_action(page, action, frame, &ac).await?;
+        }
+
+        TestAction::Paste(action) => {
+            exec_paste_action(page, action, frame, &ac).await?;
+        }
 
         TestAction::Focus(FocusAction { focus, .. }) => {
             ensure_focusable(page, focus, frame, &ac).await?;
@@ -860,17 +960,7 @@ async fn exec_test_action_inner(
                 evaluate_action(page, script, &ac, "hiding the requested element").await?;
         }
 
-        TestAction::Hover(HoverAction { hover, .. }) => {
-            let info = ensure_actionable(page, hover, frame, &ac).await?;
-            let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
-            cdp_hover(
-                page,
-                frame_offset.0 + info.center_x,
-                frame_offset.1 + info.center_y,
-                &ac,
-            )
-            .await?;
-        }
+        TestAction::Hover(action) => super::gestures::hover(page, action, &ac).await?,
 
         TestAction::Input(InputAction {
             input,
@@ -901,7 +991,13 @@ async fn exec_test_action_inner(
                         const el = {doc}.querySelector('{sel}');
                         if (!el) return {{ error: 'not_found' }};
                         const tag = el.tagName;
-                        const blockedTypes = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+                        const valueTypes = new Set(['color', 'range', 'date', 'time', 'datetime-local', 'month', 'week']);
+                        const blockedTypes = new Set(['button', 'checkbox', 'file', 'hidden', 'image', 'radio', 'reset', 'submit']);
+                        if (tag === 'INPUT' && valueTypes.has(el.type)) {{
+                            if (el.readOnly === true || el.getAttribute('aria-readonly') === 'true')
+                                return {{ error: 'readonly', tag }};
+                            return {{ kind: 'native_value', inputType: el.type }};
+                        }}
                         const native = tag === 'INPUT' && !blockedTypes.has(el.type)
                             || tag === 'TEXTAREA';
                         if (!native && !el.isContentEditable)
@@ -917,22 +1013,39 @@ async fn exec_test_action_inner(
                     evaluate_action(page, target_script, &ac, "validating text input target")
                         .await?;
                 let target = parse_text_input_target(&target_value)?;
-                focus_element(page, input, frame, &ac).await?;
-
-                if !append_mode {
-                    dispatch_key_stroke(page, &parse_press_key("ControlOrMeta+A")?, &ac).await?;
-                    dispatch_key_stroke(page, &parse_press_key("Backspace")?, &ac).await?;
-                }
-                type_text(page, value, typing_delay.unwrap_or(0), &ac).await?;
-                if matches!(target, TextInputTarget::Native) {
-                    let script = format!(
-                        "(() => {{ const element = {doc}.querySelector('{sel}'); element.dispatchEvent(new Event('change', {{bubbles:true}})); }})()",
-                        doc = doc,
-                        sel = sel_escaped
+                if let TextInputTarget::NativeValue(input_type) = target {
+                    anyhow::ensure!(
+                        !append_mode,
+                        "input.append is not supported for <input type='{}'>",
+                        input_type
                     );
-                    let _: serde_json::Value =
-                        evaluate_action(page, script, &ac, "dispatching input change event")
+                    anyhow::ensure!(
+                        typing_delay.is_none(),
+                        "input.typingDelay is not supported for <input type='{}'>",
+                        input_type
+                    );
+                    focus_element(page, input, frame, &ac).await?;
+                    set_native_input_value(page, &doc, &sel_escaped, &input_type, value, &ac)
+                        .await?;
+                } else {
+                    focus_element(page, input, frame, &ac).await?;
+
+                    if !append_mode {
+                        dispatch_key_stroke(page, &parse_press_key("ControlOrMeta+A")?, &ac)
                             .await?;
+                        dispatch_key_stroke(page, &parse_press_key("Backspace")?, &ac).await?;
+                    }
+                    type_text(page, value, typing_delay.unwrap_or(0), &ac).await?;
+                    if matches!(target, TextInputTarget::Native) {
+                        let script = format!(
+                            "(() => {{ const element = {doc}.querySelector('{sel}'); element.dispatchEvent(new Event('change', {{bubbles:true}})); }})()",
+                            doc = doc,
+                            sel = sel_escaped
+                        );
+                        let _: serde_json::Value =
+                            evaluate_action(page, script, &ac, "dispatching input change event")
+                                .await?;
+                    }
                 }
             } else if let Some(file) = file {
                 let root_dir = ROOT_DIR
@@ -1020,10 +1133,18 @@ async fn exec_test_action_inner(
                 evaluate_action(page, script, &ac, "removing the requested element").await?;
         }
 
-        TestAction::Scroll(ScrollAction { scroll, .. }) => {
+        TestAction::Scroll(ScrollAction {
+            scroll,
+            position,
+            offset,
+            ..
+        }) => {
             // Only wait for existence, no interactability needed for scroll
             ensure_exists(page, scroll, frame, &ac).await?;
             scroll_into_view(page, scroll, frame, &ac).await?;
+            if position.is_some() || offset.is_some() {
+                exec_scroll_container(page, scroll, *position, *offset, frame, &ac).await?;
+            }
         }
 
         TestAction::Select(SelectAction {
@@ -1210,6 +1331,459 @@ fn apply_action_url_replacements(url: &str, replacements: &[UrlReplacement]) -> 
     config::replacements::apply_replacements(url, replacements)
 }
 
+async fn set_native_input_value(
+    page: &Page,
+    doc: &str,
+    sel_escaped: &str,
+    input_type: &str,
+    value: &str,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    let value_json = serde_json::to_string(value)?;
+    let script = format!(
+        r#"(() => {{
+            const el = {doc}.querySelector('{sel}');
+            if (!el) return {{ error: 'not_found' }};
+            const val = {value_json};
+            if (el.type === 'color') {{
+                if (!/^#[0-9a-fA-F]{{6}}$/.test(val)) return {{ error: 'invalid_value', inputType: el.type }};
+            }} else if (el.type === 'range') {{
+                const num = Number(val);
+                if (val.trim() === '' || !Number.isFinite(num)) return {{ error: 'invalid_value', inputType: el.type }};
+                const min = el.min !== '' ? Number(el.min) : 0;
+                const max = el.max !== '' ? Number(el.max) : 100;
+                if ((Number.isFinite(min) && num < min) || (Number.isFinite(max) && num > max)) {{
+                    return {{ error: 'out_of_range', min, max }};
+                }}
+            }}
+            const proto = Object.getPrototypeOf(el);
+            const descriptor = Object.getOwnPropertyDescriptor(proto, 'value')
+                || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+            if (descriptor && descriptor.set) {{
+                descriptor.set.call(el, val);
+            }} else {{
+                el.value = val;
+            }}
+            if (el.type === 'color' && el.value.toLowerCase() !== val.toLowerCase()) {{
+                return {{ error: 'invalid_value', inputType: el.type }};
+            }}
+            if (el.type === 'range' && Number(el.value) !== Number(val)) {{
+                return {{ error: 'invalid_value', inputType: el.type }};
+            }}
+            if (el.type !== 'color' && el.type !== 'range' && val !== '' && el.value === '') {{
+                return {{ error: 'invalid_value', inputType: el.type }};
+            }}
+            el.dispatchEvent(new InputEvent('input', {{ bubbles: true, composed: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return {{ ok: true }};
+        }})()"#,
+        doc = doc,
+        sel = sel_escaped,
+        value_json = value_json,
+    );
+    let result: serde_json::Value =
+        evaluate_action(page, script, config, "setting native input value").await?;
+    if result["ok"] == true {
+        return Ok(());
+    }
+    match result["error"].as_str().unwrap_or("unknown") {
+        "out_of_range" => anyhow::bail!(
+            "input value for <input type='{}'> is outside allowed range [{}..{}]",
+            input_type,
+            result["min"],
+            result["max"]
+        ),
+        "invalid_value" => {
+            anyhow::bail!("input value is not valid for <input type='{}'>", input_type)
+        }
+        error => anyhow::bail!(
+            "input action could not set <input type='{}'> value: {}",
+            input_type,
+            error
+        ),
+    }
+}
+
+async fn exec_blur_action(
+    page: &Page,
+    blur: &str,
+    frame: &Option<crate::types::Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    let trimmed = blur.trim();
+    if page.has_frames() {
+        let focused: bool = evaluate_action(
+            page,
+            "document.hasFocus()",
+            config,
+            "checking frame focus before blur",
+        )
+        .await?;
+        anyhow::ensure!(
+            focused,
+            "The selected frame must already own focus before blur"
+        );
+    }
+    let frame_selectors = get_frame_selectors(frame);
+    let doc = frame_selectors
+        .as_ref()
+        .map(|selectors| build_frame_document_js(selectors))
+        .unwrap_or_else(|| "document".to_string());
+    if trimmed == "active" {
+        let script = format!(
+            r#"(() => {{
+                const d = {doc};
+                const active = d.activeElement;
+                if (!active || active === d.body || active === d.documentElement) {{
+                    return {{ error: 'no_active_element' }};
+                }}
+                if (typeof active.blur !== 'function') {{
+                    return {{ error: 'not_blurable' }};
+                }}
+                active.blur();
+                if (d.activeElement === active) {{
+                    return {{ error: 'still_focused' }};
+                }}
+                return {{ ok: true }};
+            }})()"#
+        );
+        let result: serde_json::Value =
+            evaluate_action(page, script, config, "blurring active element").await?;
+        if result["ok"] == true {
+            return Ok(());
+        }
+        match result["error"].as_str().unwrap_or("unknown") {
+            "no_active_element" => {
+                anyhow::bail!("blur: 'active' requires a focused element in the target document")
+            }
+            "still_focused" | "not_blurable" => {
+                anyhow::bail!("blur: 'active' could not remove focus from the active element")
+            }
+            error => anyhow::bail!("blur: 'active' failed: {}", error),
+        }
+    }
+
+    ensure_exists(page, blur, frame, config).await?;
+    let sel_escaped = escape_js_string(blur);
+    let script = format!(
+        r#"(() => {{
+            const d = {doc};
+            const el = d.querySelector('{sel}');
+            if (!el) return {{ error: 'not_found' }};
+            const root = el.getRootNode ? el.getRootNode() : d;
+            const active = root.activeElement || d.activeElement;
+            if (active !== el && d.activeElement !== el) {{
+                return {{ error: 'not_focused' }};
+            }}
+            if (typeof el.blur !== 'function') {{
+                return {{ error: 'not_blurable' }};
+            }}
+            el.blur();
+            const after = root.activeElement || d.activeElement;
+            if (after === el) {{
+                return {{ error: 'still_focused' }};
+            }}
+            return {{ ok: true }};
+        }})()"#,
+        doc = doc,
+        sel = sel_escaped
+    );
+    let result: serde_json::Value =
+        evaluate_action(page, script, config, "blurring target element").await?;
+    if result["ok"] == true {
+        return Ok(());
+    }
+    match result["error"].as_str().unwrap_or("unknown") {
+        "not_found" => anyhow::bail!("Element '{}' disappeared before blur", blur),
+        "not_focused" => anyhow::bail!(
+            "Element '{}' cannot be blurred because it does not currently own focus",
+            blur
+        ),
+        "still_focused" | "not_blurable" => {
+            anyhow::bail!("Element '{}' remained focused after blur", blur)
+        }
+        error => anyhow::bail!("Failed to blur '{}': {}", blur, error),
+    }
+}
+
+async fn exec_select_text_action(
+    page: &Page,
+    action: &SelectTextAction,
+    frame: &Option<crate::types::Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    ensure_actionable(page, &action.select_text, frame, config).await?;
+    let frame_selectors = get_frame_selectors(frame);
+    let doc = frame_selectors
+        .as_ref()
+        .map(|selectors| build_frame_document_js(selectors))
+        .unwrap_or_else(|| "document".to_string());
+    let sel_escaped = escape_js_string(&action.select_text);
+    let options = serde_json::json!({
+        "text": action.text,
+        "start": action.start,
+        "end": action.end,
+    });
+    let script = format!(
+        r#"(() => {{
+            const d = {doc};
+            const el = d.querySelector('{sel}');
+            if (!el) return {{ error: 'not_found' }};
+            const options = {options};
+            const resolveUnits = (raw) => {{
+                if (options.text !== null) {{
+                    const index = raw.indexOf(options.text);
+                    if (index < 0) return {{ error: 'text_not_found' }};
+                    return {{ startUnit: index, endUnit: index + options.text.length }};
+                }}
+                const chars = Array.from(raw);
+                if (options.start !== null || options.end !== null) {{
+                    const start = options.start ?? 0;
+                    const end = options.end ?? chars.length;
+                    if (start > chars.length || end > chars.length || start >= end) {{
+                        return {{ error: 'range_out_of_bounds', length: chars.length }};
+                    }}
+                    return {{
+                        startUnit: chars.slice(0, start).join('').length,
+                        endUnit: chars.slice(0, end).join('').length,
+                    }};
+                }}
+                if (raw.length === 0) return {{ error: 'empty_text' }};
+                return {{ startUnit: 0, endUnit: raw.length }};
+            }};
+            const tag = el.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') {{
+                const raw = String(el.value ?? '');
+                const resolved = resolveUnits(raw);
+                if (resolved.error) return resolved;
+                el.focus();
+                try {{
+                    el.setSelectionRange(resolved.startUnit, resolved.endUnit);
+                }} catch (_) {{
+                    if (resolved.startUnit === 0 && resolved.endUnit === raw.length && typeof el.select === 'function') {{
+                        el.select();
+                    }} else {{
+                        return {{ error: 'selection_unsupported', tag }};
+                    }}
+                }}
+                el.dispatchEvent(new Event('select', {{ bubbles: true }}));
+                d.dispatchEvent(new Event('selectionchange'));
+                return {{ ok: true }};
+            }}
+            const walker = d.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+            const nodes = [];
+            let fullText = '';
+            let current;
+            while ((current = walker.nextNode())) {{
+                const value = current.nodeValue ?? '';
+                if (value.length > 0) {{
+                    nodes.push({{ node: current, start: fullText.length, end: fullText.length + value.length }});
+                    fullText += value;
+                }}
+            }}
+            const resolved = resolveUnits(fullText);
+            if (resolved.error) return resolved;
+            const locate = (unit, isEnd) => {{
+                for (const entry of nodes) {{
+                    if (isEnd ? (unit >= entry.start && unit <= entry.end) : (unit >= entry.start && unit < entry.end)) {{
+                        return {{ node: entry.node, offset: unit - entry.start }};
+                    }}
+                }}
+                const last = nodes[nodes.length - 1];
+                return {{ node: last.node, offset: last.end - last.start }};
+            }};
+            const startPos = locate(resolved.startUnit, false);
+            const endPos = locate(resolved.endUnit, true);
+            if (el.isContentEditable || el.tabIndex >= 0) {{
+                el.focus();
+            }}
+            const view = d.defaultView || window;
+            const selection = view.getSelection();
+            if (!selection) return {{ error: 'no_selection_api' }};
+            const range = d.createRange();
+            range.setStart(startPos.node, startPos.offset);
+            range.setEnd(endPos.node, endPos.offset);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            d.dispatchEvent(new Event('selectionchange'));
+            return {{ ok: true }};
+        }})()"#,
+        doc = doc,
+        sel = sel_escaped,
+        options = options
+    );
+    let result: serde_json::Value =
+        evaluate_action(page, script, config, "selecting element text").await?;
+    if result["ok"] == true {
+        return Ok(());
+    }
+    match result["error"].as_str().unwrap_or("unknown") {
+        "not_found" => anyhow::bail!(
+            "Element '{}' disappeared before selectText",
+            action.select_text
+        ),
+        "text_not_found" => {
+            anyhow::bail!("Requested text was not found in '{}'", action.select_text)
+        }
+        "range_out_of_bounds" => anyhow::bail!(
+            "Requested character range is out of bounds for '{}' (length: {})",
+            action.select_text,
+            result["length"].as_u64().unwrap_or(0)
+        ),
+        "empty_text" => anyhow::bail!("Element '{}' has no text to select", action.select_text),
+        "selection_unsupported" => anyhow::bail!(
+            "Element '{}' does not support partial text selection",
+            action.select_text
+        ),
+        error => anyhow::bail!("selectText failed on '{}': {}", action.select_text, error),
+    }
+}
+
+async fn exec_paste_action(
+    page: &Page,
+    action: &PasteAction,
+    frame: &Option<crate::types::Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    ensure_focusable(page, &action.paste, frame, config).await?;
+    focus_element(page, &action.paste, frame, config).await?;
+    let frame_selectors = get_frame_selectors(frame);
+    let doc = frame_selectors
+        .as_ref()
+        .map(|selectors| build_frame_document_js(selectors))
+        .unwrap_or_else(|| "document".to_string());
+    let sel_escaped = escape_js_string(&action.paste);
+    let value_json = serde_json::to_string(&action.value)?;
+    let paste_script = format!(
+        r#"(() => {{
+            const d = {doc};
+            const el = d.querySelector('{sel}');
+            if (!el) return {{ error: 'not_found' }};
+            const tag = el.tagName;
+            const blockedTypes = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+            const native = (tag === 'INPUT' && !blockedTypes.has(el.type)) || tag === 'TEXTAREA';
+            const editable = native || el.isContentEditable;
+            const readOnly = el.readOnly === true || el.getAttribute('aria-readonly') === 'true';
+            const data = new DataTransfer();
+            data.setData('text/plain', {value_json});
+            const event = new ClipboardEvent('paste', {{
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                clipboardData: data,
+            }});
+            const notCancelled = el.dispatchEvent(event);
+            if (!notCancelled || event.defaultPrevented) {{
+                return {{ handledByPage: true, kind: native ? 'native' : 'other' }};
+            }}
+            if (!editable) return {{ error: 'not_editable', tag }};
+            if (readOnly) return {{ error: 'readonly', tag }};
+            return {{ handledByPage: false, kind: native ? 'native' : 'contenteditable' }};
+        }})()"#,
+        doc = doc,
+        sel = sel_escaped,
+        value_json = value_json,
+    );
+    let result: serde_json::Value =
+        evaluate_action(page, paste_script, config, "dispatching paste event").await?;
+    if let Some(error) = result.get("error").and_then(|field| field.as_str()) {
+        let tag = result
+            .get("tag")
+            .and_then(|field| field.as_str())
+            .unwrap_or("unknown")
+            .to_lowercase();
+        match error {
+            "readonly" => anyhow::bail!("paste action target <{}> is read-only", tag),
+            "not_editable" => anyhow::bail!(
+                "paste action requires an editable <input>, <textarea>, contenteditable element, or a paste listener calling preventDefault(); got <{}>",
+                tag
+            ),
+            _ => anyhow::bail!(
+                "paste action could not validate target <{}>: {}",
+                tag,
+                error
+            ),
+        }
+    }
+    if result
+        .get("handledByPage")
+        .and_then(|field| field.as_bool())
+        == Some(true)
+    {
+        return Ok(());
+    }
+    if !action.append.unwrap_or(false) {
+        dispatch_key_stroke(page, &parse_press_key("ControlOrMeta+A")?, config).await?;
+        dispatch_key_stroke(page, &parse_press_key("Backspace")?, config).await?;
+    }
+    insert_text(page, &action.value, config).await?;
+    if result.get("kind").and_then(|field| field.as_str()) == Some("native") {
+        let change_script = format!(
+            "(() => {{ const element = {doc}.querySelector('{sel}'); if (element) element.dispatchEvent(new Event('change', {{bubbles:true}})); }})()",
+            doc = doc,
+            sel = sel_escaped
+        );
+        let _: serde_json::Value = evaluate_action(
+            page,
+            change_script,
+            config,
+            "dispatching paste change event",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn exec_scroll_container(
+    page: &Page,
+    selector: &str,
+    position: Option<ActionPoint>,
+    offset: Option<ActionPoint>,
+    frame: &Option<crate::types::Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    let frame_selectors = get_frame_selectors(frame);
+    let doc = frame_selectors
+        .as_ref()
+        .map(|selectors| build_frame_document_js(selectors))
+        .unwrap_or_else(|| "document".to_string());
+    let sel_escaped = escape_js_string(selector);
+    let options = serde_json::json!({
+        "position": position,
+        "offset": offset,
+    });
+    let script = format!(
+        r#"(() => {{
+            const d = {doc};
+            const el = d.querySelector('{sel}');
+            if (!el) return {{ error: 'not_found' }};
+            const options = {options};
+            const isRoot = el === d.body || el === d.documentElement;
+            const target = isRoot ? (d.scrollingElement || d.documentElement) : el;
+            if (options.position) {{
+                target.scrollTo({{ left: options.position.x, top: options.position.y, behavior: 'instant' }});
+                target.scrollLeft = options.position.x;
+                target.scrollTop = options.position.y;
+            }} else if (options.offset) {{
+                target.scrollBy({{ left: options.offset.x, top: options.offset.y, behavior: 'instant' }});
+            }}
+            el.dispatchEvent(new Event('scroll', {{ bubbles: isRoot }}));
+            return {{ ok: true }};
+        }})()"#,
+        doc = doc,
+        sel = sel_escaped,
+        options = options,
+    );
+    let result: serde_json::Value =
+        evaluate_action(page, script, config, "scrolling target container").await?;
+    anyhow::ensure!(
+        result["ok"] == true,
+        "Element '{}' disappeared before scroll position could be updated",
+        selector
+    );
+    Ok(())
+}
+
 pub(super) enum UrlMatcher {
     Exact(String),
     Glob(globset::GlobMatcher),
@@ -1256,6 +1830,20 @@ mod tests {
             json!({"wait":"#x","state":"hidden"}),
             json!({"wait":"#x","state":"enabled","text":"Ready","value":"yes"}),
             json!({"longPress":"#x","duration":60000}),
+            json!({"hover":"#x","position":{"x":5,"y":10},"modifiers":["Shift"]}),
+            json!({"scroll":"#x","position":{"x":0,"y":200}}),
+            json!({"scroll":"#x","offset":{"x":0,"y":-50}}),
+            json!({"blur":"#x"}),
+            json!({"blur":"active"}),
+            json!({"pinch":"#x","scale":2.0,"position":{"x":20,"y":20},"duration":300}),
+            json!({"pinch":"#x","scale":0.5}),
+            json!({"selectText":"#x"}),
+            json!({"selectText":"#x","text":"hello"}),
+            json!({"selectText":"#x","start":0,"end":5}),
+            json!({"selectText":"#x","start":2}),
+            json!({"selectText":"#x","end":4}),
+            json!({"paste":"#x","value":"123456","append":true}),
+            json!({"closeTab":"current"}),
         ] {
             let action = serde_json::from_value::<crate::types::TestAction>(value.clone()).unwrap();
             assert!(super::validate_action_fields(&action).is_ok(), "{value}");
@@ -1264,6 +1852,12 @@ mod tests {
             json!({"click":"#x","clickCount":0}),
             json!({"click":"#x","clickCount":4}),
             json!({"click":"#x","position":{"x":-1,"y":0}}),
+            json!({"hover":" ","position":{"x":0,"y":0}}),
+            json!({"hover":"#x","position":{"x":-1,"y":0}}),
+            json!({"scroll":" "}),
+            json!({"scroll":"#x","position":{"x":-1,"y":0}}),
+            json!({"scroll":"#x","offset":{"x":0,"y":0}}),
+            json!({"scroll":"#x","position":{"x":0,"y":10},"offset":{"x":0,"y":10}}),
             json!({"drag":"#x"}),
             json!({"drag":"#x","to":"#y","offset":{"x":1,"y":0}}),
             json!({"drag":"#x","to":" "}),
@@ -1281,6 +1875,19 @@ mod tests {
             json!({"wait":0,"state":"hidden"}),
             json!({"wait":"#x","text":"a","containsText":"a"}),
             json!({"wait":"#x","state":"detached","value":"a"}),
+            json!({"blur":" "}),
+            json!({"pinch":" ","scale":2.0}),
+            json!({"pinch":"#x","scale":1.0}),
+            json!({"pinch":"#x","scale":0.05}),
+            json!({"pinch":"#x","scale":10.1}),
+            json!({"pinch":"#x","scale":2.0,"duration":0}),
+            json!({"selectText":" "}),
+            json!({"selectText":"#x","text":""}),
+            json!({"selectText":"#x","text":"hi","start":0}),
+            json!({"selectText":"#x","start":5,"end":5}),
+            json!({"selectText":"#x","start":6,"end":2}),
+            json!({"selectText":"#x","end":0}),
+            json!({"paste":" ","value":"123"}),
         ] {
             let action = serde_json::from_value::<crate::types::TestAction>(value.clone()).unwrap();
             assert!(super::validate_action_fields(&action).is_err(), "{value}");
@@ -1357,7 +1964,7 @@ mod tests {
         let parse =
             |source: &str| serde_yaml::from_str::<Vec<crate::types::TestAction>>(source).unwrap();
         let valid = parse(
-            "- dialog: accept\n- click: '#x'\n- dialog: dismiss\n  kind: beforeunload\n- navigate: back\n",
+            "- dialog: accept\n- click: '#x'\n- dialog: dismiss\n  kind: beforeunload\n- navigate: back\n- dialog: accept\n  kind: beforeunload\n- closeTab: current\n- dialog: accept\n- blur: '#x'\n- dialog: accept\n- paste: '#x'\n  value: 'ok'\n",
         );
         super::validate_dialog_sequence(valid.iter()).unwrap();
         for source in [
@@ -1402,6 +2009,8 @@ mod tests {
             serde_json::json!({"dialog":"accept","kind":"prompt","message":"private-expectation","promptText":"private-response"}),
             serde_json::json!({"wait":"#status","text":"private-expectation","value":"private-response"}),
             serde_json::json!({"dropFiles":"#drop","file":"private-file.txt"}),
+            serde_json::json!({"paste":"#otp","value":"private-paste-secret"}),
+            serde_json::json!({"selectText":"#editor","text":"private-selection-text"}),
         ] {
             let action = serde_json::from_value(value).unwrap();
             let encoded =
@@ -1410,6 +2019,8 @@ mod tests {
                 "private-expectation",
                 "private-response",
                 "private-file.txt",
+                "private-paste-secret",
+                "private-selection-text",
             ] {
                 assert!(!encoded.contains(secret));
             }
@@ -1839,6 +2450,13 @@ mod tests {
         assert_eq!(
             parse_text_input_target(&serde_json::json!({ "kind": "native" })).unwrap(),
             TextInputTarget::Native
+        );
+        assert_eq!(
+            parse_text_input_target(
+                &serde_json::json!({ "kind": "native_value", "inputType": "range" })
+            )
+            .unwrap(),
+            TextInputTarget::NativeValue("range".into())
         );
         assert_eq!(
             parse_text_input_target(&serde_json::json!({ "kind": "contenteditable" })).unwrap(),

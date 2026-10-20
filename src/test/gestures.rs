@@ -12,8 +12,8 @@ use chromiumoxide::{
 use serde_json::{Value, json};
 
 use crate::types::{
-    ActionPoint, ClickAction, DragAction, DragMode, DropFilesAction, PointerButton,
-    PointerModifier, WaitAction, WaitState, WheelAction,
+    ActionPoint, ClickAction, DragAction, DragMode, DropFilesAction, HoverAction, PinchAction,
+    PointerButton, PointerModifier, WaitAction, WaitState, WheelAction,
 };
 
 use super::{
@@ -342,6 +342,33 @@ pub(super) async fn click(
     guard.finish(result).await
 }
 
+pub(super) async fn hover(
+    target: &Target,
+    action: &HoverAction,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    let point = point(target, &action.hover, action.position, true, config).await?;
+    if action.modifiers.as_ref().is_none_or(Vec::is_empty) {
+        return actionability::cdp_hover(target, point.x, point.y, config).await;
+    }
+    let mut guard = InputGuard::new(target, config);
+    let result = async {
+        let modifiers = hold_modifiers(&mut guard, action.modifiers.as_deref()).await?;
+        guard
+            .send(mouse(
+                DispatchMouseEventType::MouseMoved,
+                point,
+                PointerButton::Left,
+                false,
+                0,
+                modifiers,
+            )?)
+            .await
+    }
+    .await;
+    guard.finish(result).await
+}
+
 pub(super) async fn wheel(
     target: &Target,
     action: &WheelAction,
@@ -617,6 +644,143 @@ fn touch_event(
     }
 }
 
+fn multi_touch_event(
+    kind: DispatchTouchEventType,
+    points: &[(i32, ActionPoint)],
+) -> Result<DispatchTouchEventParams> {
+    let mut touch_points = Vec::with_capacity(points.len());
+    for &(id, point) in points {
+        touch_points.push(
+            TouchPoint::builder()
+                .x(point.x)
+                .y(point.y)
+                .id(f64::from(id))
+                .build()
+                .map_err(anyhow::Error::msg)?,
+        );
+    }
+    Ok(DispatchTouchEventParams {
+        r#type: kind,
+        touch_points,
+        modifiers: None,
+        timestamp: None,
+    })
+}
+
+pub(super) fn pinch_endpoints(
+    center: ActionPoint,
+    scale: f64,
+) -> Result<((ActionPoint, ActionPoint), (ActionPoint, ActionPoint))> {
+    ensure!(
+        scale.is_finite() && (0.1..=10.0).contains(&scale) && (scale - 1.0).abs() >= f64::EPSILON,
+        "pinch.scale must be between 0.1 and 10.0 and not equal to 1.0"
+    );
+    const MAX_RADIUS: f64 = 40.0;
+    let (start_radius, end_radius) = if scale > 1.0 {
+        (MAX_RADIUS / scale, MAX_RADIUS)
+    } else {
+        (MAX_RADIUS, MAX_RADIUS * scale)
+    };
+    let start_left = ActionPoint {
+        x: center.x - start_radius,
+        y: center.y,
+    };
+    let start_right = ActionPoint {
+        x: center.x + start_radius,
+        y: center.y,
+    };
+    let end_left = ActionPoint {
+        x: center.x - end_radius,
+        y: center.y,
+    };
+    let end_right = ActionPoint {
+        x: center.x + end_radius,
+        y: center.y,
+    };
+    Ok(((start_left, start_right), (end_left, end_right)))
+}
+
+pub(super) async fn pinch(
+    target: &Target,
+    action: &PinchAction,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    let center = point(target, &action.pinch, action.position, true, config).await?;
+    let ((start_left, start_right), (end_left, end_right)) = pinch_endpoints(center, action.scale)?;
+    for candidate in [start_left, start_right, end_left, end_right] {
+        offset_end(
+            target,
+            center,
+            ActionPoint {
+                x: candidate.x - center.x,
+                y: candidate.y - center.y,
+            },
+            config,
+        )
+        .await?;
+    }
+    let enabled: bool = cdp_with_timeout(
+        Duration::from_millis(config.actionability_timeout_ms),
+        "checking touch capability",
+        target.evaluate("navigator.maxTouchPoints > 0"),
+    )
+    .await?
+    .into_value()?;
+    ensure!(
+        enabled,
+        "Touch capability must be enabled before navigation for this capture"
+    );
+    let duration = action.duration.unwrap_or(300);
+    let mut guard = InputGuard::new(target, config);
+    // Chromium's ForwardEmulatedTouchEvent and DispatchTouchEvent both increment
+    // RenderWidgetHostInputEventRouter::active_touches_ for a second touch point (+3 total
+    // for 2 fingers), whereas releasing 2 points only decrements it by 2, leaving
+    // touch_target_ locked to the current frame. Releasing an extra untracked point ID
+    // while both fingers are still active decrements active_touches_ back to 0.
+    let cleanup_cancel =
+        guard.release_on_exit(touch_event(DispatchTouchEventType::TouchCancel, None))?;
+    let cleanup_extra = guard.release_on_exit(multi_touch_event(
+        DispatchTouchEventType::TouchEnd,
+        &[(2, start_right)],
+    )?)?;
+    let result = async {
+        guard
+            .send(multi_touch_event(
+                DispatchTouchEventType::TouchStart,
+                &[(0, start_left), (1, start_right)],
+            )?)
+            .await?;
+        let steps = duration.div_ceil(16).clamp(2, 240);
+        let started = tokio::time::Instant::now();
+        for step in 1..=steps {
+            tokio::time::sleep_until(started + Duration::from_millis(duration * step / steps))
+                .await;
+            let left = path_point(start_left, end_left, step, steps);
+            let right = path_point(start_right, end_right, step, steps);
+            guard
+                .send(multi_touch_event(
+                    DispatchTouchEventType::TouchMove,
+                    &[(0, left), (1, right)],
+                )?)
+                .await?;
+        }
+        guard
+            .send(multi_touch_event(
+                DispatchTouchEventType::TouchEnd,
+                &[(2, end_right)],
+            )?)
+            .await?;
+        guard.released(cleanup_extra);
+        guard
+            .send(touch_event(DispatchTouchEventType::TouchEnd, None))
+            .await?;
+        guard.released(cleanup_cancel);
+        Ok(())
+    }
+    .await;
+    guard.finish(result).await
+}
+
 pub(super) async fn touch(
     target: &Target,
     selector: &str,
@@ -775,5 +939,22 @@ mod tests {
             ])),
             10
         );
+        let center = ActionPoint { x: 100.0, y: 80.0 };
+        let ((start_left, start_right), (end_left, end_right)) =
+            pinch_endpoints(center, 2.0).unwrap();
+        let start_span = start_right.x - start_left.x;
+        let end_span = end_right.x - end_left.x;
+        assert!(((end_span / start_span) - 2.0).abs() < 1e-6);
+        let multi = command_data(
+            multi_touch_event(
+                DispatchTouchEventType::TouchStart,
+                &[(0, start_left), (1, start_right)],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(multi.params["touchPoints"].as_array().unwrap().len(), 2);
+        assert_eq!(multi.params["touchPoints"][0]["id"], json!(0.0));
+        assert_eq!(multi.params["touchPoints"][1]["id"], json!(1.0));
     }
 }

@@ -94,6 +94,7 @@ impl Field {
         let (step, minimum, maximum) = match self.key.as_str() {
             "misMatchThreshold" => (0.1, 0.0, 100.0),
             "pixelMatchThreshold" => (0.1, 0.0, 100.0),
+            "scale" => (0.1, 0.1, 10.0),
             "asyncCaptureLimit" | "asyncCompareLimit" | "keepTestRuns" | "width" | "height" => {
                 (1.0, 1.0, u32::MAX as f64)
             }
@@ -370,6 +371,9 @@ pub(crate) fn examples(schema: &Value, root: &Value) -> Vec<Value> {
         let schema = variants(schema, root)
             .into_iter()
             .find(|schema| schema["type"] != "null")?;
+        if let Some(constant) = schema.get("const") {
+            return Some(constant.clone());
+        }
         if let Some(choice) = schema["enum"]
             .as_array()
             .and_then(|choices| choices.first())
@@ -444,8 +448,13 @@ fn kind(key: &str, schema: &Value, root: &Value) -> FieldKind {
     }
     let choices = variants(schema, root)
         .iter()
-        .flat_map(|variant| variant["enum"].as_array())
-        .flatten()
+        .flat_map(|variant| {
+            variant["enum"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(variant.get("const"))
+        })
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -892,7 +901,7 @@ mod tests {
             );
             assert_eq!(
                 fields.iter().any(|field| field.key == "frame"),
-                !matches!(*action, "switchTab" | "navigate" | "dialog"),
+                !matches!(*action, "switchTab" | "closeTab" | "navigate" | "dialog"),
                 "{action}"
             );
             let value = action_template(action).unwrap();

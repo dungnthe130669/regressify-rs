@@ -81,7 +81,7 @@ button,input { width:95px; height:32px; margin:3px; }
 </style></head><body>
 <div class="row"><button id="click">Click</button><button id="context">Context</button><a id="aux" href='#aux-link'>Aux link</a><button id="odd'id">Quoted</button>
 <div id="covered-wrap"><button id="covered">Partial cover</button><div id="cover"></div></div></div>
-<div><input id="first"><input id="second"><input id="typed"></div>
+<div><input id="first"><input id="second"><input id="typed"><input id="range" type="range" min="0" max="100" value="10"><input id="color" type="color" value='#000000'><input id="otp"><span id="copy">Alpha Beta Gamma</span></div>
 <div class="row"><div id="pointer">Pointer source</div><div id="native" draggable="true">Native source</div><div id="drop">Drop target</div><div id="files">Files</div></div>
 <div class="row"><div id="scroller"><div>Scrollable</div></div><div id="touch">Touch</div></div>
 <button id="change">Change</button><span id="status">Loading</span><span id="busy">Busy</span><span id="gone">Remove</span>
@@ -97,6 +97,20 @@ get('click').addEventListener('dblclick', e => {
   body.dataset.double = String(e.isTrusted && e.detail === 2 && e.ctrlKey && e.shiftKey);
 });
 get('click').addEventListener('click', e => { body.dataset.modifiers = String(e.ctrlKey || e.shiftKey || e.altKey || e.metaKey); });
+get('click').addEventListener('mousemove', e => {
+  if (e.altKey && e.offsetX >= 5 && e.offsetX <= 20) body.dataset.hoverMod = String(e.isTrusted);
+});
+get('second').addEventListener('blur', () => { body.dataset.blurred = 'true'; });
+get('range').addEventListener('change', () => { body.dataset.rangeChanged = get('range').value; });
+get('color').addEventListener('change', () => { body.dataset.colorChanged = get('color').value; });
+get('otp').addEventListener('paste', e => {
+  e.preventDefault();
+  body.dataset.customPaste = e.clipboardData.getData('text/plain');
+});
+document.addEventListener('selectionchange', () => {
+  const selected = String(window.getSelection() || '');
+  if (selected === 'Beta') body.dataset.selectedDom = 'Beta';
+});
 get('context').addEventListener('contextmenu', e => { e.preventDefault(); body.dataset.context = String(e.isTrusted && e.button === 2); });
 get('aux').addEventListener('auxclick', e => { e.preventDefault(); body.dataset.aux = String(e.isTrusted && e.button === 1); });
 get('covered').onclick = e => body.dataset.position = String(e.isTrusted && e.offsetX < 30);
@@ -119,8 +133,22 @@ get('files').ondrop = async e => {
 get('scroller').onscroll = () => { get('scroller').dataset.moved = String(get('scroller').scrollTop > 0 && get('scroller').scrollLeft > 0); };
 get('scroller').addEventListener('wheel', e => { body.dataset.wheelTrusted = String(e.isTrusted); });
 let touchStart;
-get('touch').addEventListener('touchstart', e => { touchStart = {time:e.timeStamp, x:e.touches[0].clientX}; body.dataset.touchStarted = 'true'; });
-get('touch').addEventListener('touchmove', e => { body.dataset.swipe = String(e.isTrusted && Math.abs(e.touches[0].clientX - touchStart.x) >= 50); });
+let pinchStartSpan = 0;
+get('touch').addEventListener('touchstart', e => {
+  touchStart = {time:e.timeStamp, x:e.touches[0].clientX};
+  if (e.touches.length === 2) {
+    pinchStartSpan = Math.abs(e.touches[1].clientX - e.touches[0].clientX);
+  }
+  body.dataset.touchStarted = 'true';
+});
+get('touch').addEventListener('touchmove', e => {
+  if (e.touches.length === 2 && pinchStartSpan > 0) {
+    const span = Math.abs(e.touches[1].clientX - e.touches[0].clientX);
+    if (e.isTrusted && span > pinchStartSpan * 1.5) body.dataset.pinched = 'true';
+  } else {
+    body.dataset.swipe = String(e.isTrusted && Math.abs(e.touches[0].clientX - touchStart.x) >= 50);
+  }
+});
 get('touch').addEventListener('touchend', e => {
   body.dataset.touchTrusted = String(e.isTrusted);
   body.dataset.touchDuration = String(e.timeStamp - touchStart.time);
@@ -232,6 +260,20 @@ async fn expanded_actions_dispatch_trusted_events_and_preserve_frames() -> Resul
                 json!({"wait":"body[data-file-drop=true]"}),
                 json!({"wheel":"#scroller","deltaY":100,"deltaX":50}),
                 json!({"wait":"#scroller[data-moved=true]"}),
+                json!({"scroll":"#scroller","position":{"x":20,"y":40}}),
+                json!({"scroll":"#scroller","offset":{"x":5,"y":10}}),
+                json!({"hover":"#click","position":{"x":10,"y":10},"modifiers":["Alt"]}),
+                json!({"input":"#range","value":"75"}),
+                json!({"input":"#color","value":"#ff00aa"}),
+                json!({"paste":"#otp","value":"654321"}),
+                json!({"paste":"#first","value":"hello"}),
+                json!({"paste":"#first","value":" world","append":true}),
+                json!({"selectText":"#first","start":0,"end":5}),
+                json!({"selectText":"#copy","text":"Beta"}),
+                json!({"focus":"#second"}),
+                json!({"blur":"#second"}),
+                json!({"focus":"#first"}),
+                json!({"blur":"active"}),
                 json!({"tap":"#touch"}),
                 json!({"longPress":"#touch","duration":600}),
             ] {
@@ -242,11 +284,14 @@ async fn expanded_actions_dispatch_trusted_events_and_preserve_frames() -> Resul
             let target = runtime.target(&frame, Duration::from_secs(4)).await?;
             exec_test_action(context(), &serde_json::from_value(json!({"dialog":"accept","kind":"confirm"}))?).await?;
             exec_test_action(context(), &serde_json::from_value(json!({"click":"#confirm","frame":frame}))?).await?;
-            let values: Value = target.evaluate("({...document.body.dataset, second:document.querySelector('#second').value, typed:document.querySelector('#typed').value})").await?.into_value()?;
-            for name in ["double", "context", "aux", "position", "quoted", "pointerStart", "pointerMoved", "pointerDrop", "dragStart", "nativeDrop", "fileDrop", "wheelTrusted", "touchTrusted", "confirm"] {
-                anyhow::ensure!(values[name] == "true", "Missing trusted interaction result: {name} = {}", values[name]);
+            let values: Value = target.evaluate("({...document.body.dataset, first:document.querySelector('#first').value, second:document.querySelector('#second').value, typed:document.querySelector('#typed').value, scrollLeft:document.querySelector('#scroller').scrollLeft, scrollTop:document.querySelector('#scroller').scrollTop})").await?.into_value()?;
+            for name in ["double", "context", "aux", "position", "quoted", "pointerStart", "pointerMoved", "pointerDrop", "dragStart", "nativeDrop", "fileDrop", "wheelTrusted", "touchTrusted", "confirm", "hoverMod", "blurred"] {
+                anyhow::ensure!(values[name] == "true", "Missing trusted interaction result ({}): {name} = {}", json!(frame), values[name]);
             }
-            anyhow::ensure!(values["second"] == "x" && values["typed"] == "abc", "Focused keys or typing changed the wrong field");
+            anyhow::ensure!(values["first"] == "hello world" && values["second"] == "x" && values["typed"] == "abc", "Focused keys, paste, or typing changed the wrong field");
+            anyhow::ensure!(values["rangeChanged"] == "75" && values["colorChanged"] == "#ff00aa", "Native range/color input values were not updated");
+            anyhow::ensure!(values["customPaste"] == "654321" && values["selectedDom"] == "Beta", "Clipboard paste or DOM text selection did not run");
+            anyhow::ensure!(values["scrollLeft"] == 25 && values["scrollTop"] == 50, "Scroll container position/offset was not applied: {:?}", values);
             anyhow::ensure!(values["initialTouch"].as_str().unwrap().parse::<u64>()? > 0, "Touch was not enabled before document scripts");
             anyhow::ensure!(values["touchDuration"].as_str().unwrap().parse::<f64>()? >= 550.0, "Long press released before its duration");
             let typing: Vec<Value> = serde_json::from_str(values["typing"].as_str().unwrap())?;
@@ -255,6 +300,7 @@ async fn expanded_actions_dispatch_trusted_events_and_preserve_frames() -> Resul
             anyhow::ensure!(characters.windows(2).all(|pair| pair[1]["time"].as_f64().unwrap() - pair[0]["time"].as_f64().unwrap() >= 30.0), "typingDelay did not separate character events");
             for value in [
                 json!({"swipe":"#touch","position":{"x":30,"y":30},"offset":{"x":70,"y":0},"duration":160,"frame":frame}),
+                json!({"pinch":"#touch","scale":2.0,"duration":160,"frame":frame}),
                 json!({"click":"#change","frame":frame}),
                 json!({"wait":"#status","text":"Ready now","frame":frame}),
                 json!({"wait":"#status","containsText":"Ready","frame":frame}),
@@ -269,6 +315,8 @@ async fn expanded_actions_dispatch_trusted_events_and_preserve_frames() -> Resul
             }
             let swiped: String = target.evaluate("document.body.dataset.swipe").await?.into_value()?;
             anyhow::ensure!(swiped == "true", "Swipe did not move a trusted touch point");
+            let pinched: String = target.evaluate("document.body.dataset.pinched").await?.into_value()?;
+            anyhow::ensure!(pinched == "true", "Pinch did not move two trusted touch points");
             let cancelling: TestAction = serde_json::from_value(json!({"longPress":"#touch","duration":5000,"frame":frame}))?;
             anyhow::ensure!(tokio::time::timeout(Duration::from_millis(800), exec_test_action(context(), &cancelling)).await.is_err(), "Cancellation fixture did not interrupt the hold");
             exec_test_action(context(), &serde_json::from_value(json!({"wait":"body[data-touch-cancelled=true]","frame":frame}))?).await?;
@@ -284,6 +332,9 @@ async fn expanded_actions_dispatch_trusted_events_and_preserve_frames() -> Resul
             json!({"swipe":"#touch","offset":{"x":10000,"y":0}}),
             json!({"wait":"#status","text":"never"}),
             json!({"wait":"#busy","state":"visible"}),
+            json!({"blur":"#second"}),
+            json!({"selectText":"#copy","text":"Nonexistent"}),
+            json!({"input":"#range","value":"250"}),
         ] {
             let context = ActionExecutionContext { config: &short, ..context() };
             anyhow::ensure!(exec_test_action(context, &serde_json::from_value(value)?).await.is_err(), "Invalid/unsatisfied interaction succeeded");

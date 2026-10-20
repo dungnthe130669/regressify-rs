@@ -53,19 +53,36 @@ YAML selectors that begin with `#`; unquoted, YAML reads them as comments.
   top-left, default center. `modifiers` accepts Alt, Control, Meta, Shift,
   and ControlOrMeta, held for the gesture and released on completion/failure.
 - `hover`: element selector. Moves the real pointer to an actionable target.
+  Optional `position: {x, y}` picks CSS pixels inside the border box (default
+  center); optional `modifiers` holds modifier keys during the hover and
+  releases them afterwards.
 - `check`: native `<input type="checkbox">` or `<input type="radio">` selector.
   Clicks only if not already checked. Use `click` for custom `role="checkbox"`
   or `role="switch"` controls or when the native input is visually hidden.
 - `uncheck`: native `<input type="checkbox">` selector. Clicks only if checked;
   cannot clear a radio. Use `click` for custom switch/checkbox controls.
 - `focus`: element selector. Fails unless the target becomes the active element.
-- `input`: element selector plus exactly one of `value` (text) or `file` (upload).
+- `blur`: element selector or `"active"`. Removes focus from the matched
+  element (or the active element in the target document when `"active"` is
+  used) and fails if that target does not currently own focus.
+- `input`: element selector plus exactly one of `value` (text or native
+  range/color/date/time value) or `file` (upload).
+- `paste`: element selector plus `value`. Focuses the target, dispatches a
+  cancelable `ClipboardEvent('paste')` with `clipboardData`, and if not
+  `preventDefault()`ed, clears existing text (unless `append: true`) and
+  inserts `value` via CDP without touching the host OS clipboard.
+- `selectText`: element selector. Selects text inside an `<input>`,
+  `<textarea>`, `contenteditable`, or DOM element. Optional `text` selects the
+  first matching substring; optional `start`/`end` select a zero-based Unicode
+  character range; omitting both selects all text in the element.
 - `press`: element selector plus required `key`, such as `Enter` or `Ctrl+A`.
 - `select`: native `<select>` selector plus exactly one of `value` or `label`.
   Multiple values require a multiple-select element. For custom dropdowns or
   comboboxes (`role="combobox"` or `<button>` triggers), use `click` on the
   trigger, `wait` for the option, and `click` the option.
 - `scroll`: element selector to scroll into view; it does not click or focus.
+  Optional `position: {x, y}` sets exact `scrollLeft`/`scrollTop` on the target
+  scroll container, or `offset: {x, y}` scrolls it relatively by `scrollBy`.
 - `goto`: URL. Navigates the page or frame and waits until it is interactive.
 - `wait`: whole milliseconds or an element selector, with an optional `url`.
 - `hide`: standard CSS; matches get `visibility: hidden`, keeping layout space.
@@ -75,6 +92,9 @@ YAML selectors that begin with `#`; unquoted, YAML reads them as comments.
 - `persist`: state name without `.json`; stores cookies and origin-scoped
   localStorage in the active output's `states/` folder.
 - `switchTab`: `new`, `previous`, or `original`; later steps use that tab.
+- `closeTab`: `current`; closes the currently selected popup tab (running any
+  armed `beforeunload` dialog expectation) and returns selection to the
+  previously active tab. Cannot close the scenario's original tab.
 - `drag`: source selector and exactly one of `to` (same-document destination)
   or `offset: {x, y}` (signed CSS pixels). `position` and `toPosition` choose
   source/destination points; `toPosition` needs `to`. Both endpoints must be
@@ -105,8 +125,13 @@ YAML selectors that begin with `#`; unquoted, YAML reads them as comments.
 - `swipe`: start selector and nonzero `offset: {x, y}` in CSS pixels, with
   optional `duration` (1..60000 milliseconds, default 300).
 - `longPress`: hold a touch on the selector; duration defaults 600 milliseconds
-  and must be 1..60000. All touch actions accept `position`; a swipe must stay
-  inside the selected visible document. Browser touch-action remains effective.
+  and must be 1..60000.
+- `pinch`: two-finger touch pinch or spread centered on the selector, with
+  required `scale` in `0.1..=10.0` (excluding `1.0`; `< 1.0` pinches in,
+  `> 1.0` spreads out) and optional `position` and `duration` (1..60000
+  milliseconds, default 300). All touch actions accept `position`; gestures
+  must stay inside the selected visible document. Browser touch-action remains
+  effective.
 
 Finding an element uses `elementTimeout`; visibility, stability, coverage, and
 enabled checks use `actionabilityTimeout`. `hide`, `remove`, and `scroll` only
@@ -207,7 +232,7 @@ selector.
 
 ## Frames and Responsive Actions
 
-All actions except `switchTab`, `navigate`, and `dialog` support optional `frame`: one iframe selector
+All actions except `switchTab`, `closeTab`, `navigate`, and `dialog` support optional `frame`: one iframe selector
 or an array ordered from the outermost to innermost frame. Same-origin and
 cross-origin frames work; each selector must match an `<iframe>` or `<frame>`,
 which may take up to `elementTimeout` to appear and load. Interactive actions
@@ -273,6 +298,14 @@ scenarios:
         offset: {x: -100, y: 0}
       - longPress: "#item"
         duration: 700
+      - pinch: "#map-canvas"
+        scale: 2.0
+      - selectText: "#editable-title"
+        text: "visual"
+      - paste: "#search"
+        value: "regression"
+        append: true
+      - blur: active
       - navigate: reload
 ```
 

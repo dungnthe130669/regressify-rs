@@ -35,6 +35,11 @@ pub enum TestAction {
     Tap(TapAction),
     Swipe(SwipeAction),
     LongPress(LongPressAction),
+    Blur(BlurAction),
+    Pinch(PinchAction),
+    SelectText(SelectTextAction),
+    Paste(PasteAction),
+    CloseTab(CloseTabAction),
 }
 
 impl TestAction {
@@ -53,7 +58,7 @@ impl TestAction {
             Self::Save(action) => &action.frame,
             Self::Select(action) => &action.frame,
             Self::Scroll(action) => &action.frame,
-            Self::SwitchTab(_) => &None,
+            Self::SwitchTab(_) | Self::CloseTab(_) => &None,
             Self::Uncheck(action) => &action.frame,
             Self::Wait(action) => &action.frame,
             Self::Drag(action) => &action.frame,
@@ -64,6 +69,10 @@ impl TestAction {
             Self::Tap(action) => &action.frame,
             Self::Swipe(action) => &action.frame,
             Self::LongPress(action) => &action.frame,
+            Self::Blur(action) => &action.frame,
+            Self::Pinch(action) => &action.frame,
+            Self::SelectText(action) => &action.frame,
+            Self::Paste(action) => &action.frame,
         }
     }
 
@@ -94,12 +103,20 @@ impl TestAction {
             Self::Tap(action) => &action.viewport_names,
             Self::Swipe(action) => &action.viewport_names,
             Self::LongPress(action) => &action.viewport_names,
+            Self::Blur(action) => &action.viewport_names,
+            Self::Pinch(action) => &action.viewport_names,
+            Self::SelectText(action) => &action.viewport_names,
+            Self::Paste(action) => &action.viewport_names,
+            Self::CloseTab(action) => &action.viewport_names,
         };
         names.as_ref().map(Selectors::values)
     }
 
     pub(crate) fn uses_touch(&self) -> bool {
-        matches!(self, Self::Tap(_) | Self::Swipe(_) | Self::LongPress(_))
+        matches!(
+            self,
+            Self::Tap(_) | Self::Swipe(_) | Self::LongPress(_) | Self::Pinch(_)
+        )
     }
 
     pub(crate) fn can_trigger_dialog(&self) -> bool {
@@ -122,6 +139,11 @@ impl TestAction {
                 | Self::Wheel(_)
                 | Self::Focus(_)
                 | Self::Hover(_)
+                | Self::Blur(_)
+                | Self::Pinch(_)
+                | Self::SelectText(_)
+                | Self::Paste(_)
+                | Self::CloseTab(_)
         )
     }
 }
@@ -241,13 +263,19 @@ pub struct HideAction {
     pub viewport_names: Option<Selectors>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct HoverAction {
     /// Element selector to hover using the real mouse pointer. Scrolls into view and waits for an interactable target.
     #[schemars(example = "#navigation-menu")]
     pub hover: String,
+    /// CSS-pixel position inside the element's border box; omitted means its center.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<ActionPoint>,
+    /// Keyboard modifiers held during this hover and released afterwards.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modifiers: Option<Vec<PointerModifier>>,
     pub frame: Option<Frame>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
     /// Omitted, null, or an empty list means all scenario viewports.
@@ -273,19 +301,19 @@ pub struct RemoveAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct InputAction {
-    /// Selector of the input, textarea, or contenteditable element. Supply exactly one of value (text) or file (upload); neither or both fails during preflight before any browser starts.
+    /// Selector of the editable input, textarea, contenteditable element, or native value input (range, color, date, time, datetime-local, month, week). Supply exactly one of value or file; neither or both fails during preflight before any browser starts.
     #[schemars(example = "#email")]
     pub input: String,
-    /// Literal text typed with keyboard events after the existing text is selected and deleted (unless append is true). No environment variables are substituted. Quote numbers, true, and false when they are text. Use an empty quoted string to clear the field.
+    /// Literal text typed with keyboard events after the existing text is selected and deleted (unless append is true), or the value assigned to a native range/color/date/time input. No environment variables are substituted. Quote numbers, true, and false when they are text. Use an empty quoted string to clear a text field.
     #[schemars(example = "qa@example.com", example = &"")]
     pub value: Option<String>,
-    /// Append to existing text instead of clearing it first (default: false).
+    /// Append to existing text instead of clearing it first (default: false). Only supported for text inputs, textareas, and contenteditable targets.
     pub append: Option<bool>,
     /// File path or list of file paths, relative to visual_tests/. Without useFileChooser the target must be a visible input type=file; do not put file contents here.
     pub file: Option<FileInput>,
     /// Click the target (for example a visible upload button) to open a file chooser, then supply file (default: false).
     pub use_file_chooser: Option<bool>,
-    /// Fixed milliseconds between typed characters, from 0 (default) to 10000. Only valid with value, not file.
+    /// Fixed milliseconds between typed characters, from 0 (default) to 10000. Only valid with value on text-typing targets, not file or range/color/date controls.
     #[schemars(range(max = 10000))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub typing_delay: Option<u64>,
@@ -350,13 +378,19 @@ pub struct SaveAction {
     pub viewport_names: Option<Selectors>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct ScrollAction {
-    /// Element selector to scroll into view. Does not click or focus the element.
+    /// Element selector to scroll into view, or the scroll container to scroll when position or offset is set. Does not click or focus the element.
     #[schemars(example = "#footer")]
     pub scroll: String,
+    /// Exact scrollLeft/scrollTop position in nonnegative CSS pixels on the target scroll container. Mutually exclusive with offset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<ActionPoint>,
+    /// Signed CSS-pixel scrollBy delta on the target scroll container; at least one coordinate must be nonzero. Mutually exclusive with position.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<ActionPoint>,
     pub frame: Option<Frame>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
     /// Omitted, null, or an empty list means all scenario viewports.
@@ -684,6 +718,105 @@ pub struct LongPressAction {
     pub viewport_names: Option<Selectors>,
 }
 
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BlurAction {
+    /// Element selector to unfocus, or "active" to unfocus whichever element currently owns focus in the target document. Fails if the target does not currently own focus.
+    #[schemars(example = "#email", example = &"active")]
+    pub blur: String,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinchAction {
+    /// Element where a two-finger touch pinch or spread gesture is centered. Applicable touch actions enable touch capability before the capture's initial navigation.
+    #[schemars(example = "#map-canvas")]
+    pub pinch: String,
+    /// Two-finger scale factor from 0.1 to 10.0 (excluding 1.0). Values below 1.0 pinch fingers together (zoom out); values above 1.0 spread fingers apart (zoom in).
+    #[schemars(range(min = 0.1, max = 10.0), example = 2.0, example = 0.5)]
+    pub scale: f64,
+    /// CSS-pixel center position inside the border box; default center.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub position: Option<ActionPoint>,
+    /// Fixed gesture duration in milliseconds, 1..60000; default 300.
+    #[schemars(range(min = 1, max = 60000))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u64>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectTextAction {
+    /// Selector of the input, textarea, contenteditable, or DOM element whose text should be selected. Omitting text, start, and end selects all text in the element.
+    #[schemars(example = "#editor")]
+    pub select_text: String,
+    /// Exact non-empty substring to select inside the target's text or value. Mutually exclusive with start and end.
+    #[schemars(example = "highlighted phrase")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Zero-based inclusive start character offset (Unicode scalar index). Mutually exclusive with text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<usize>,
+    /// Zero-based exclusive end character offset (Unicode scalar index, must be greater than start). Mutually exclusive with text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<usize>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PasteAction {
+    /// Selector of the editable input, textarea, contenteditable, or focusable target receiving pasted text.
+    #[schemars(example = "#otp-code")]
+    pub paste: String,
+    /// Literal text supplied via a cancelable ClipboardEvent('paste') and inserted with CDP if not preventDefault()ed. Never written to diagnostic archives.
+    #[schemars(example = "123456")]
+    pub value: String,
+    /// Insert at the current selection instead of clearing existing text first (default: false).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub append: Option<bool>,
+    /// Optional iframe selector or outermost-to-innermost frame chain.
+    pub frame: Option<Frame>,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CloseTabTarget {
+    Current,
+}
+
+#[derive(Serialize, Deserialize, Clone, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloseTabAction {
+    /// Close the currently selected popup tab and return selection to the previously active tab. Closing the scenario's original tab is not allowed; frame is not supported.
+    pub close_tab: CloseTabTarget,
+    /// Restrict this action to one viewport label or a list of labels (case-insensitive).
+    /// Omitted, null, or an empty list means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Selectors>,
+}
+
 #[derive(
     Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, schemars::JsonSchema,
 )]
@@ -702,7 +835,7 @@ pub enum WaitState {
 mod tests {
     use super::*;
 
-    fn action_shapes() -> [serde_json::Value; 25] {
+    fn action_shapes() -> [serde_json::Value; 30] {
         use serde_json::json;
 
         [
@@ -731,6 +864,11 @@ mod tests {
             json!({ "tap": "#button" }),
             json!({ "swipe": "#carousel", "offset": { "x": -100, "y": 0 } }),
             json!({ "longPress": "#button" }),
+            json!({ "blur": "#email" }),
+            json!({ "pinch": "#map", "scale": 2.0 }),
+            json!({ "selectText": "#editor", "text": "hello" }),
+            json!({ "paste": "#otp", "value": "123456" }),
+            json!({ "closeTab": "current" }),
         ]
     }
 

@@ -989,6 +989,11 @@ pub const ACTIONS: &[&str] = &[
     "tap",
     "swipe",
     "longPress",
+    "blur",
+    "pinch",
+    "selectText",
+    "paste",
+    "closeTab",
 ];
 
 pub fn action_template(action: &str) -> Result<Value> {
@@ -1009,6 +1014,9 @@ pub fn action_template(action: &str) -> Result<Value> {
         "dialog" => json!({"dialog": "accept", "kind": "confirm"}),
         "key" => json!({"key": "Tab"}),
         "swipe" => json!({"swipe": "#carousel", "offset": {"x": -100, "y": 0}}),
+        "pinch" => json!({"pinch": "#map-canvas", "scale": 2.0}),
+        "paste" => json!({"paste": "#element", "value": ""}),
+        "closeTab" => json!({"closeTab": "current"}),
         selector => json!({selector: "#element"}),
     })
 }
