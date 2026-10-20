@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, type Request, test } from "@playwright/test";
 import { PNG } from "pngjs";
 import { browserExecutable } from "../scripts/create-fixture";
 import { getAssetVersion } from "../scripts/version-assets";
@@ -3869,4 +3869,28 @@ test("every snapshot payload has a content version on a stable path", async ({ p
     expect(response.ok()).toBe(true);
     expect(url.searchParams.get("v")).toBe(getAssetVersion(await response.body()));
   }
+});
+
+test("report data requests carry same-origin access cookies", async ({ page, baseURL }) => {
+  // Cloudflare Access redirects cookie-less requests to a cross-origin login (a CORS error).
+  await page
+    .context()
+    .addCookies([{ name: "CF_Authorization", value: "synthetic-session", url: baseURL }]);
+  const requests: Request[] = [];
+  // Development StrictMode aborts a duplicate first fetch before it reaches the network.
+  page.on("requestfinished", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/_snapshot/data/")) requests.push(request);
+  });
+  await page.goto("/suites/workspace-overview");
+  await expect(
+    page.getByRole("heading", { name: "workspace-overview", exact: true }),
+  ).toBeVisible();
+  expect(requests.map((request) => new URL(request.url()).pathname)).toEqual(
+    expect.arrayContaining([
+      "/_snapshot/data/manifest.json",
+      "/_snapshot/data/suites/workspace-overview.json",
+    ]),
+  );
+  for (const request of requests)
+    expect((await request.allHeaders()).cookie).toContain("CF_Authorization=synthetic-session");
 });

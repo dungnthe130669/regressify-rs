@@ -359,7 +359,8 @@ export async function fetchReport<T>(
     signal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
       : AbortSignal.timeout(15_000),
-    credentials: "omit",
+    // Access gateways such as Cloudflare Access authorize data with the page's session cookie.
+    credentials: "same-origin",
     cache: reload ? "reload" : "default",
   });
   if (!response.ok) throw new Error(`Report request failed (${response.status}).`);

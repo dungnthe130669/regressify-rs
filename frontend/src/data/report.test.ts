@@ -12,6 +12,7 @@ import {
   artifactPath,
   captureSchema,
   encodeArtifactPath,
+  fetchReport,
   filterCaptures,
   imageAlignmentGap,
   imageAlignmentGaps,
@@ -495,6 +496,38 @@ describe("snapshot contract", () => {
       report: `_snapshot/data/suites/shop.json?v=${"a".repeat(20)}`,
     };
     expect(manifestSchema.safeParse({ ...manifest, suites: [suite] }).success).toBe(false);
+  });
+  test("report data requests send same-origin cookies for access-protected hosts", async () => {
+    const manifest = {
+      version: 2,
+      title: "",
+      heading: "",
+      subheading: "",
+      generatedAt: "2026-09-23T00:00:00Z",
+      suites: [],
+    };
+    const url = `/_snapshot/data/manifest.json?v=${"a".repeat(20)}`;
+    const requests: { url: string; init?: RequestInit }[] = [];
+    const originalFetch = globalThis.fetch;
+    Object.assign(globalThis, {
+      fetch: async (input: string, init?: RequestInit) => {
+        requests.push({ url: input, init });
+        return Response.json(manifest);
+      },
+    });
+    try {
+      expect((await fetchReport(url, manifestSchema)).suites).toEqual([]);
+      expect((await fetchReport(url, manifestSchema, undefined, true)).suites).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    // Cloudflare Access redirects cookie-less requests to a cross-origin login (a CORS error).
+    expect(requests.map((request) => request.url)).toEqual([url, url]);
+    expect(requests.map((request) => request.init?.credentials)).toEqual([
+      "same-origin",
+      "same-origin",
+    ]);
+    expect(requests.map((request) => request.init?.cache)).toEqual(["default", "reload"]);
   });
   test("encodes route segments without interpreting names as routes", () => {
     expect(imagePath("caf\u00e9 & shop", "home #1.png")).toBe(

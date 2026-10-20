@@ -3,7 +3,7 @@ title: Change Log
 description: Track changes to the Optimizely CMS testing guides, actions, scenarios, and suite options so you can spot new capabilities quickly.
 guid: 1679e8d7-c710-4a1f-9640-224277efcd7e
 date: 2023-09-06T17:00:00+00:00
-updated: 2026-10-12T00:00:00+00:00
+updated: 2026-10-20T00:00:00+00:00
 draft: false
 hidden: false
 weight: 41000
@@ -16,6 +16,15 @@ extra:
 ---
 
 This page records notable updates to the testing docs, which is much faster than reading Git history with unnecessary archaeology.
+
+## 2026-10-20 (Unreleased)
+
+- Fixed: snapshot reports behind Cloudflare Access loaded the page but failed to
+  load report data with a browser CORS error. Report data requests now send the
+  site's own sign-in cookie. Regenerate and redeploy existing reports with the
+  updated build; no recapture is needed. Landing-page status for Access-protected
+  reports still needs a Bypass for `/_snapshot/status.json`; see
+  [Landing Apps](desktop.md#landing-apps).
 
 ## 2026-10-12 (Unreleased)
 

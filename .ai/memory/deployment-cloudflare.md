@@ -53,6 +53,14 @@ Verified: 2026-09-30
   changed-content update, cached redeployment, exact public bytes/MIME (including
   WebVTT and unknown-header omission), and confirmed deletion. It never targets
   a configured Worker and cleans up after verification errors.
+- Access (verified 2026-10-20): `credentials: "omit"` stripped `CF_Authorization`
+  from same-origin report JSON, so Access redirected it to its cross-origin sign-in
+  (a browser CORS error) while `crossorigin` HTML/JS still loaded.
+  [Report fetches](../../frontend/src/data/report.ts) now use `same-origin`; the
+  `access cookies` browser test failed on the old bundle. Landing status stays
+  anonymous: exempt `/_snapshot/status.json` with a path-scoped self-hosted Access
+  app and Bypass policy. Wrangler's `access` schema allows only `dev` simulation, so
+  it cannot exempt paths. Deploy verification still fails behind Access.
 
 See the [Cloudflare skill](../../.github/skills/deployment-cloudflare/SKILL.md)
 for maintained procedures and live-test prerequisites.

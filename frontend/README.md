@@ -240,6 +240,11 @@ command, and application logs,
 unselected runs, and workspace state are excluded. Log bytes count against the
 provider's existing package/storage allowance and are never silently truncated.
 
+Manifest, suite, and log JSON requests are same-origin and use
+`credentials: "same-origin"`, so cookie-based gateways such as Cloudflare Access
+authorize them like the entry page. Omitting credentials makes Access redirect them
+to its cross-origin sign-in page, which browsers report as a CORS error.
+
 Resource filenames are stable; cache versions appear only in `?v=...`.
 The public aggregate endpoint `/_snapshot/status.json` is deliberately
 unversioned, uses `Cache-Control: no-cache`, and permits anonymous cross-origin

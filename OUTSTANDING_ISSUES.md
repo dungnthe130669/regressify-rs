@@ -3,6 +3,15 @@
 Current verification gaps and dated resolution history. Entries marked resolved
 are historical evidence, not open implementation tasks.
 
+## Cloudflare Access Report Data (2026-10-20)
+
+- Resolved: [report fetches](frontend/src/data/report.ts) omitted credentials, so
+  Cloudflare Access redirected same-origin manifest, suite, and log requests to its
+  cross-origin sign-in page and browsers reported CORS errors. They now send
+  same-origin cookies; the unit and `access cookies` browser tests failed before the fix.
+- By design: landing status stays anonymous and needs a path Bypass behind Access,
+  and desktop public verification cannot pass Access.
+
 ## Source Editor Review (2026-10-19)
 
 - Resolved: [Source line commands](src/desktop/ui/source.rs) classified Unicode
