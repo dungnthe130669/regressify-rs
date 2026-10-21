@@ -5,8 +5,6 @@ mod logs;
 mod site;
 
 pub use actions::snapshot;
-#[cfg(feature = "gui")]
-pub(crate) use actions::snapshot_at;
 pub use helpers::get_asset_version;
 #[cfg(all(test, feature = "desktop"))]
 pub(crate) use site::generate_site;

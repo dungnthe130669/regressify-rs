@@ -3,6 +3,17 @@
 Current verification gaps and dated resolution history. Entries marked resolved
 are historical evidence, not open implementation tasks.
 
+## Local HTML Report Action (2026-10-21)
+
+- Removed the unsupported Results **Open HTML report** button and its file-based
+  launcher. The web snapshot requires HTTP hosting; root-relative assets and
+  browser module/fetch restrictions prevent direct `file://` use. Native Results,
+  artifact-folder access, snapshot generation, and published-site links remain.
+- The [GUI regression](src/desktop/ui/reports.rs) failed before removal and now
+  verifies that the action is absent with or without an output folder and while
+  disabled, while Refresh reports and Open artifact directory remain visible.
+  This supersedes the historical local HTML launch behavior recorded below.
+
 ## Mismatch Precision And Pixel Counts (2026-10-21)
 
 - Resolved: web and desktop reports could display tiny positive mismatches as

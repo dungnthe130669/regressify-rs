@@ -1932,10 +1932,12 @@ retention normally. Results, generated reports, and deployment all use the same
 completed-run selection. Opening results performs skipped comparisons on demand;
 background inventory refreshes do not.
 
-The Results **Open HTML report** action regenerates the snapshot from the latest
-completed full-suite runs in the viewed output folder before opening it. This
-work runs in the background and uses the current workspace report text settings;
-an older existing HTML file is not treated as proof that its results are current.
+Results does not offer an **Open HTML report** action. The web snapshot requires
+HTTP hosting for its root-relative assets, JavaScript modules, JSON requests,
+and routes; opening its HTML through `file://` is unsupported. Use native Results
+for local review, or generate the snapshot and serve or publish it over HTTP.
+**Open artifact directory**, **Refresh reports**, and published **Open Site**
+links remain available.
 
 ## Reviewing Results
 

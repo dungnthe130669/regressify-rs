@@ -70,7 +70,6 @@ fn image_page_url(pair: &Pair, index: usize) -> Option<reqwest::Url> {
 }
 
 pub(super) enum ResultEvent {
-    OpenHtmlReport(PathBuf),
     Cleanup {
         root: PathBuf,
         suite: Option<String>,
@@ -1318,14 +1317,6 @@ impl ResultsPanel {
             });
         })
         .detach();
-    }
-
-    fn open_report(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.disabled
-            && let Some(root) = &self.root
-        {
-            cx.emit(ResultEvent::OpenHtmlReport(root.clone()));
-        }
     }
 
     fn render_captures(&self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2971,16 +2962,6 @@ impl Render for ResultsPanel {
                             })),
                     )
                     .child(
-                        Button::new("open-report")
-                            .ghost()
-                            .icon(gpui_kit::assets::IconName::ExternalLink)
-                            .tooltip("Open HTML report")
-                            .disabled(self.disabled || self.root.is_none())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_report(window, cx)),
-                            ),
-                    )
-                    .child(
                         Button::new("open-artifacts")
                             .ghost()
                             .icon(IconName::FolderOpen)
@@ -3495,54 +3476,30 @@ mod pointer_tests {
 
     #[cfg(feature = "gui-tests")]
     #[gpui_kit::test]
-    async fn latest_html_report_button_requests_the_viewed_output(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
+    fn local_html_report_action_is_not_offered(cx: &mut gpui_kit::TestAppContext) {
         use gpui_kit::AppContext;
-        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
-        use std::{path::PathBuf, time::Duration};
+        use gpui_kit::test::TestWindowExt;
         let directory = tempfile::tempdir().unwrap();
         let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
         let output = directory.path().join("missing-custom-output");
         let results = cx.update(|cx| view.read(cx).results.clone());
-        let requested = cx.update(|cx| {
-            cx.new(|cx| {
-                cx.subscribe(&results, |outputs: &mut Vec<PathBuf>, _, event, _| {
-                    if let super::ResultEvent::OpenHtmlReport(output) = event {
-                        outputs.push(output.clone());
-                    }
-                })
-                .detach();
-                Vec::<PathBuf>::new()
-            })
-        });
         cx.update_window(handle.into(), |_, window, cx| {
             view.update(cx, |this, cx| {
                 this.main_tab = 2;
                 cx.notify();
             });
-            results.update(cx, |panel, cx| {
-                panel.root = Some(output.clone());
-                panel.disabled = false;
-                cx.notify();
-            });
-            window.render_frame(cx);
-            window.click("open-report", cx);
-        })
-        .unwrap();
-        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
-            !view.read(cx).busy
-        })
-        .await;
-        cx.update_window(handle.into(), |_, window, cx| {
-            assert_eq!(requested.read(cx), &vec![output.clone()]);
-            results.update(cx, |panel, cx| {
-                panel.disabled = true;
-                cx.notify();
-            });
-            window.render_frame(cx);
-            window.click("open-report", cx);
-            assert_eq!(requested.read(cx), &vec![output]);
+            for (has_output, disabled) in [(false, false), (true, false), (true, true)] {
+                results.update(cx, |panel, cx| {
+                    panel.root = has_output.then(|| output.clone());
+                    panel.disabled = disabled;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert!(window.try_find("open-report").is_none());
+                assert!(window.find("refresh-results").visible());
+                assert!(window.find("open-artifacts").visible());
+                assert!(!view.read(cx).busy);
+            }
         })
         .unwrap();
     }
