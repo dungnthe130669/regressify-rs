@@ -9,7 +9,7 @@ import {
   StatusBadge,
   useFilters,
 } from "../components/ui";
-import { filterCaptures, imagePath, passRate, suiteLabel } from "../data/report";
+import { filterCaptures, formatMismatch, imagePath, passRate, suiteLabel } from "../data/report";
 import { useSuite } from "../data/store";
 
 export function SuitePage() {
@@ -160,8 +160,14 @@ export function SuitePage() {
                   <span className="mono">
                     {capture.mismatch === null
                       ? "Not compared"
-                      : `${capture.mismatch.toFixed(2)}% difference`}
+                      : `${formatMismatch(capture.mismatch)}% difference`}
                   </span>
+                  {capture.mismatchPixels !== undefined && (
+                    <span className="mono">
+                      {capture.mismatchPixels.toLocaleString("en")} mismatched{" "}
+                      {capture.mismatchPixels === 1 ? "pixel" : "pixels"}
+                    </span>
+                  )}
                   <span className="mono muted">{capture.threshold}% threshold</span>
                 </div>
                 {(capture.error || capture.comparisonError) && (

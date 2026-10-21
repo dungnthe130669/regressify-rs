@@ -124,7 +124,7 @@ Each `report.json` `tests[]` entry has `status` (`pass` or `fail`) and a `pair`
 with `fileName`, `scenarioId`, `selector` (`document`, `viewport`,
 `save:<name>`, or a selector capture name), `url`, `referenceUrl`,
 `misMatchThreshold`, `pixelMatchThreshold`, `comparisonOutcome` (`success`,
-`mismatch`, or `failure`), optional `diff` (`misMatchPercentage`,
+`mismatch`, or `failure`), optional `diff` (`rawMisMatchPercentage`, `mismatchPixels`,
 `isSameDimensions`, `dimensionDifference`), `engineErrorMsg`, and
 `referenceLog`/`testLog` links. Common `engineErrorMsg` values:
 
@@ -168,8 +168,17 @@ viewport-skipped actions are not counted. A summary never contains selectors,
 URLs, page text, or error messages.
 
 A visual mismatch has `comparisonOutcome` `mismatch`, with
-`misMatchPercentage` above `misMatchThreshold`. In diff images, magenta pixels
+`rawMisMatchPercentage` above `misMatchThreshold`. In diff images, magenta pixels
 mark differences over a dimmed copy of the reference.
+
+The raw percentage is an unrounded floating-point JSON number for audits, and
+`mismatchPixels` is the exact integer count after pixel sensitivity and anti-alias
+filtering. Display formatting does not change either value. Small positive
+percentages use extra decimals or scientific notation instead of `0.00%`.
+Legacy reports may contain a formatted `misMatchPercentage` string; use it only
+when the raw percentage is absent. Missing pixel counts are unavailable, not
+zero. Rerun `regressify compare` against the selected saved run to add exact
+counts, then regenerate and redeploy its snapshot. No recapture is required.
 
 ## Read Capture Records
 

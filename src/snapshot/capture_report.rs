@@ -132,6 +132,7 @@ impl RawPair {
 struct RawDiff {
     raw_mis_match_percentage: Option<f64>,
     mis_match_percentage: Option<String>,
+    mismatch_pixels: Option<u64>,
     is_same_dimensions: bool,
     dimension_difference: RawDimensions,
     alignment: Option<crate::compare::image_compare::DiffAlignment>,
@@ -463,6 +464,13 @@ pub(super) fn load_suite(
                 Ok::<_, anyhow::Error>(value)
             })
             .transpose()?;
+        ensure!(
+            pair.diff
+                .as_ref()
+                .and_then(|diff| diff.mismatch_pixels)
+                .is_none_or(|pixels| pixels <= crate::helpers::png::MAX_VISUAL_IMAGE_PIXELS),
+            "Invalid snapshot mismatch pixel count"
+        );
         let reference = resolve_image_source(
             root,
             id,
@@ -631,6 +639,7 @@ pub(super) fn load_suite(
             status,
             threshold: pair.mis_match_threshold,
             mismatch,
+            mismatch_pixels: pair.diff.as_ref().and_then(|diff| diff.mismatch_pixels),
             error,
             comparison_error,
             reference: reference.as_ref().map(|asset| asset.full.clone()),
@@ -726,6 +735,50 @@ mod tests {
             &mut BTreeMap::new(),
             &mut super::super::logs::LogCache::new(),
         )
+    }
+
+    #[test]
+    fn mismatch_pixels_preserve_exact_counts_and_legacy_absence() {
+        for pixels in [None, Some(0), Some(1)] {
+            let (temp, mut report) = fixture();
+            let percentage = if pixels == Some(0) {
+                0.0
+            } else {
+                0.000017922688690066528_f64
+            };
+            report["tests"][0]["pair"]["diff"]["rawMisMatchPercentage"] = json!(percentage);
+            report["tests"][0]["pair"]["diff"]["misMatchPercentage"] = json!("0.00");
+            if let Some(pixels) = pixels {
+                report["tests"][0]["pair"]["diff"]["mismatchPixels"] = json!(pixels);
+            }
+            write_fixture(temp.path(), &report);
+            let suite = load(temp.path()).unwrap().unwrap();
+            assert_eq!(suite.tests[0].mismatch_pixels, pixels);
+            assert_eq!(
+                suite.tests[0].mismatch.unwrap().to_bits(),
+                percentage.to_bits()
+            );
+            let decoded: SuiteReport =
+                serde_json::from_str(&serde_json::to_string(&suite).unwrap()).unwrap();
+            assert_eq!(
+                decoded.tests[0].mismatch.unwrap().to_bits(),
+                percentage.to_bits()
+            );
+            let serialized = serde_json::to_value(&suite).unwrap();
+            assert!(serialized["tests"][0]["mismatch"].is_number());
+            assert_eq!(
+                serialized["tests"][0]
+                    .get("mismatchPixels")
+                    .and_then(|value| value.as_u64()),
+                pixels
+            );
+        }
+        for invalid in [json!(-1), json!(1.5), json!("1"), json!(64_000_001)] {
+            let (temp, mut report) = fixture();
+            report["tests"][0]["pair"]["diff"]["mismatchPixels"] = invalid;
+            write_fixture(temp.path(), &report);
+            assert!(load(temp.path()).is_err());
+        }
     }
 
     #[test]

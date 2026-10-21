@@ -100,7 +100,7 @@ Write-TestImage (Join-Path $output 'bitmaps_test/smoke-run/checkout_diff.png') (
 Write-JsonFixture (Join-Path $output 'bitmaps_test/smoke-run/report.json') ([ordered]@{
     id = 'smoke'
     tests = @(
-        @{ status = 'fail'; pair = @{ label = '8ac900fea19642cc0000 desktop FINAL'; scenarioId = '8ac900fea19642cc0000'; scenarioLabel = 'Checkout'; selector = 'document'; referenceUrl = 'https://example.com/checkout'; url = 'https://staging.example.com/checkout'; fileName = '8ac900fea19642cc0000_desktop__FINAL.png'; reference = '../bitmaps_reference/checkout.png'; test = '../bitmaps_test/smoke-run/checkout.png'; diffImage = '../bitmaps_test/smoke-run/checkout_diff.png'; diff = @{ rawMisMatchPercentage = 4.2; misMatchPercentage = '4.20'; dimensionDifference = @{ width = 0; height = 0 } } } },
+        @{ status = 'fail'; pair = @{ label = '8ac900fea19642cc0000 desktop FINAL'; scenarioId = '8ac900fea19642cc0000'; scenarioLabel = 'Checkout'; selector = 'document'; referenceUrl = 'https://example.com/checkout'; url = 'https://staging.example.com/checkout'; fileName = '8ac900fea19642cc0000_desktop__FINAL.png'; reference = '../bitmaps_reference/checkout.png'; test = '../bitmaps_test/smoke-run/checkout.png'; diffImage = '../bitmaps_test/smoke-run/checkout_diff.png'; diff = @{ rawMisMatchPercentage = 4.2; mismatchPixels = 42; dimensionDifference = @{ width = 0; height = 0 } } } },
         @{ status = 'fail'; pair = @{ label = 'Account desktop'; scenarioLabel = 'Account desktop'; selector = 'body .carousel'; referenceUrl = 'https://example.com/account'; url = 'https://example.com/account'; engineErrorMsg = 'Missing selector #account' } }
     )
 })

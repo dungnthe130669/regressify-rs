@@ -2015,18 +2015,25 @@ tooltips. Generated desktop run UUIDs are presented as report timestamps;
 timestamp-based CLI run IDs are formatted as local dates. Custom run names remain
 unchanged.
 
-The compact comparison heading shows the scenario name and measured difference.
+The compact comparison heading shows the scenario name, measured difference,
+and exact mismatched-pixel count when available.
 Hover over the information icon beside the name to see Label, Selector,
-Reference URL, Test URL, Diff %, Diff X, and Diff Y. Selector is the recorded
+Reference URL, Test URL, Diff %, Diff X, Diff Y, and Mismatch pixels. Selector is the recorded
 capture target, such as `document` or `body .carousel`. Each recorded URL can
 be opened in the external default browser or copied using its adjacent button.
 When both URLs match, Test URL displays Same URL but still opens and copies the
 actual URL. Diff X and Diff Y are the signed width and height differences in
 pixels (test minus reference). Missing metadata displays Unavailable rather
 than an inferred value; unavailable URL controls are disabled.
+Percentages use the raw floating-point report value, retaining two decimal places
+unless a positive difference would appear as zero. Smaller values use additional
+decimals or scientific notation, without modifying the saved audit percentage.
+Legacy rounded strings are only a fallback when the raw percentage is absent.
+Rerun Compare to populate missing pixel counts in older reports; no recapture is needed.
 Capture context, allowed mismatch, page, failure details, and raw capture ID are
 available in the Copy capture details tooltip and copied summary, without extra
-metadata rows above the images. Image panes have no repeated headings or
+metadata rows above the images. The summary also includes the precise display
+percentage and available pixel count. Image panes have no repeated headings or
 external-open buttons; image actions are in the context menu. Report totals are
 on Refresh reports. Edit suite opens
 the owning workspace file through the same guarded navigation used by the

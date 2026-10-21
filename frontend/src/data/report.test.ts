@@ -14,6 +14,7 @@ import {
   encodeArtifactPath,
   fetchReport,
   filterCaptures,
+  formatMismatch,
   imageAlignmentGap,
   imageAlignmentGaps,
   imagePath,
@@ -44,6 +45,54 @@ export const capture = captureSchema.parse({
 });
 
 describe("snapshot contract", () => {
+  test.each([
+    [0, "0.00"],
+    [-0, "0.00"],
+    [0.005, "0.01"],
+    [0.01, "0.01"],
+    [1.2345, "1.23"],
+    [12.3456, "12.35"],
+    [100, "100.00"],
+    [0.0049999, "0.005"],
+    [0.0005, "0.001"],
+    [0.0004999, "0.0005"],
+    [0.000017922688690066528, "0.00002"],
+    [1e-8, "0.00000001"],
+    [1e-12, "0.000000000001"],
+    [1e-100, "1e-100"],
+    [1e-101, "1e-101"],
+    [Number.MIN_VALUE, "5e-324"],
+  ] as const)("mismatch formatting: %s becomes %s", (mismatch, expected) => {
+    expect(formatMismatch(mismatch)).toBe(expected);
+  });
+
+  test("positive mismatch formatting never displays zero or changes audit values", () => {
+    for (let exponent = -323; exponent <= 2; exponent++) {
+      for (const coefficient of [1, 4.9999, 5, 9.9999]) {
+        const mismatch = coefficient * 10 ** exponent;
+        if (mismatch <= 0 || mismatch > 100) continue;
+        const parsed = captureSchema.parse({ ...capture, mismatch });
+        const formatted = formatMismatch(mismatch);
+        expect(Number(formatted)).toBeGreaterThan(0);
+        expect(parsed.mismatch).toBe(mismatch);
+        expect(JSON.parse(JSON.stringify(parsed)).mismatch).toBe(mismatch);
+        if (Number(mismatch.toFixed(2)) > 0) expect(formatted).toBe(mismatch.toFixed(2));
+      }
+    }
+  });
+
+  test("mismatch pixel counts preserve exact zero and legacy absence", () => {
+    expect(capture.mismatchPixels).toBeUndefined();
+    for (const mismatchPixels of [0, 1, 64_000_000]) {
+      const parsed = captureSchema.parse({ ...capture, mismatchPixels });
+      expect(parsed.mismatchPixels).toBe(mismatchPixels);
+      expect(JSON.parse(JSON.stringify(parsed)).mismatchPixels).toBe(mismatchPixels);
+    }
+    for (const mismatchPixels of [-1, 1.5, 64_000_001, Infinity, NaN, "1", null]) {
+      expect(captureSchema.safeParse({ ...capture, mismatchPixels }).success).toBe(false);
+    }
+  });
+
   test("capture diagnostic schema is typed and excludes provider detail", () => {
     const record = {
       schemaVersion: 1,

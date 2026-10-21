@@ -1930,6 +1930,122 @@ test("visual mismatches remain failed while capture failures are engine errors",
   }
 });
 
+test("tiny mismatch percentages remain visible in suite views and capture information", async ({
+  page,
+}, info) => {
+  const cases = [
+    {
+      id: "overview__desktop.png",
+      mismatch: 0.000017922688690066528,
+      mismatchPixels: 1,
+      status: "fail",
+      expected: "0.00002",
+    },
+    {
+      id: "recent-orders__mobile.png",
+      mismatch: 0,
+      mismatchPixels: 0,
+      status: "pass",
+      expected: "0.00",
+    },
+    {
+      id: "channel-summary__desktop.png",
+      mismatch: 0.005,
+      mismatchPixels: 10,
+      status: "fail",
+      expected: "0.01",
+    },
+    { id: "full-page__mobile.png", mismatch: 1.2345, status: "fail", expected: "1.23" },
+    {
+      id: "smallest-mismatch.png",
+      mismatch: Number.MIN_VALUE,
+      mismatchPixels: 1,
+      status: "fail",
+      expected: "5e-324",
+    },
+    {
+      id: "scientific-mismatch.png",
+      mismatch: 1e-100,
+      mismatchPixels: 1,
+      status: "fail",
+      expected: "1e-100",
+    },
+  ];
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
+    const response = await route.fetch();
+    const manifest = await response.json();
+    const summary = manifest.suites.find(
+      (suite: { id: string }) => suite.id === "workspace-overview",
+    );
+    Object.assign(summary, { total: cases.length, passed: 1, failed: cases.length - 1, errors: 0 });
+    await route.fulfill({ response, json: manifest });
+  });
+  await page.route("**/_snapshot/data/suites/workspace-overview.json?*", async (route) => {
+    const response = await route.fetch();
+    const suite = await response.json();
+    for (const fixture of cases) {
+      let capture = suite.tests.find((capture: { id: string }) => capture.id === fixture.id);
+      if (!capture) {
+        capture = { ...suite.tests[0], id: fixture.id, label: fixture.id, scenario: fixture.id };
+        suite.tests.push(capture);
+      }
+      Object.assign(capture, {
+        mismatch: fixture.mismatch,
+        mismatchPixels: fixture.mismatchPixels,
+        status: fixture.status,
+        threshold: 0,
+        error: null,
+        comparisonError: null,
+        dimensions: { same: true, width: 0, height: 0 },
+      });
+    }
+    await route.fulfill({ response, json: suite });
+  });
+
+  await page.goto("/suites/workspace-overview");
+  for (const view of ["Grid view", "List view"]) {
+    await page.getByRole("button", { name: view, exact: true }).click();
+    for (const fixture of cases) {
+      const card = page.locator(`.capture-card[href*="/images/${fixture.id}"]`);
+      await expect(card.locator(".capture-detail .mono").first()).toHaveText(
+        `${fixture.expected}% difference`,
+      );
+      if (fixture.mismatchPixels !== undefined) {
+        await expect(card).toContainText(
+          `${fixture.mismatchPixels} mismatched ${fixture.mismatchPixels === 1 ? "pixel" : "pixels"}`,
+        );
+      } else {
+        await expect(card).not.toContainText("mismatched pixel");
+      }
+      await expect(card.locator(".status-badge")).toHaveText(
+        fixture.status === "pass" ? "Passed" : "Failed",
+      );
+    }
+  }
+
+  for (const fixture of cases) {
+    await page.goto(`/suites/workspace-overview/images/${fixture.id}`);
+    await page.getByRole("button", { name: "Capture information", exact: true }).click();
+    const bubble = page.getByRole("dialog", { name: "Capture information", exact: true });
+    await expect(bubble.getByText(`${fixture.expected}%`, { exact: true })).toBeVisible();
+    if (fixture.mismatchPixels !== undefined) {
+      const pixels = bubble
+        .locator(".capture-metadata > div")
+        .filter({ hasText: "Mismatched pixels" });
+      await expect(pixels.locator("dd")).toHaveText(String(fixture.mismatchPixels));
+    } else {
+      await expect(bubble.getByText("Mismatched pixels", { exact: true })).toHaveCount(0);
+    }
+    await expect(bubble).toBeInViewport({ ratio: 1 });
+    await expect(page.locator(".status-badge")).toHaveText(
+      fixture.status === "pass" ? "Passed" : "Failed",
+    );
+    if (fixture.expected === "0.00002") {
+      await screenshot(page, info.project.name, "tiny-mismatch-information");
+    }
+  }
+});
+
 test("capture information opens on hover or tap and remains selectable", async ({
   page,
   isMobile,

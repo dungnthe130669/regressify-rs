@@ -24,9 +24,22 @@ pub struct CompareResult {
     pub test_width: usize,
     pub test_height: usize,
     pub alignment: DiffAlignment,
+    pub mismatch_pixels: u64,
     pub raw_mis_match_percentage: f64,
-    pub mis_match_percentage: String,
     pub analysis_time_ms: u128,
+}
+
+pub fn format_mismatch_percentage(mismatch: f64) -> String {
+    if mismatch == 0.0 {
+        return "0.00".into();
+    }
+    for decimals in 2..=12 {
+        let formatted = format!("{mismatch:.decimals$}");
+        if formatted.parse::<f64>().is_ok_and(|value| value != 0.0) {
+            return formatted;
+        }
+    }
+    format!("{mismatch:e}")
 }
 
 fn read_png_bytes(path: &Path) -> Result<(Vec<u8>, usize, usize)> {
@@ -1511,8 +1524,8 @@ pub fn compare_images_with_threshold(
                 test_width: ref_w,
                 test_height: ref_h,
                 alignment: DiffAlignment::default(),
+                mismatch_pixels: 0,
                 raw_mis_match_percentage: 0.0,
-                mis_match_percentage: "0.00".to_string(),
                 analysis_time_ms: start.elapsed().as_millis(),
             },
             None,
@@ -1539,8 +1552,8 @@ pub fn compare_images_with_threshold(
                 test_width: test_w,
                 test_height: test_h,
                 alignment: DiffAlignment::default(),
+                mismatch_pixels: 0,
                 raw_mis_match_percentage: 0.0,
-                mis_match_percentage: "0.00".to_string(),
                 analysis_time_ms: start.elapsed().as_millis(),
             },
             None,
@@ -1624,8 +1637,8 @@ pub fn compare_images_with_threshold(
             test_width: test_w,
             test_height: test_h,
             alignment,
+            mismatch_pixels: diff_count,
             raw_mis_match_percentage: raw_mis_match,
-            mis_match_percentage: format!("{:.2}", raw_mis_match),
             analysis_time_ms: elapsed,
         },
         diff_png,
@@ -1638,6 +1651,42 @@ mod tests {
     use std::fs;
 
     use crate::helpers::png::MAX_VISUAL_IMAGE_DIMENSION;
+
+    #[test]
+    fn mismatch_formatting_preserves_zero_and_nonzero_precision() {
+        for (mismatch, expected) in [
+            (0.0, "0.00"),
+            (-0.0, "0.00"),
+            (0.005, "0.01"),
+            (0.01, "0.01"),
+            (1.2345, "1.23"),
+            (12.3456, "12.35"),
+            (100.0, "100.00"),
+            (0.0049999, "0.005"),
+            (0.0005, "0.001"),
+            (0.0004999, "0.0005"),
+            (0.000017922688690066528, "0.00002"),
+            (1e-8, "0.00000001"),
+            (1e-12, "0.000000000001"),
+            (1e-100, "1e-100"),
+            (1e-101, "1e-101"),
+            (f64::from_bits(1), "5e-324"),
+        ] {
+            assert_eq!(format_mismatch_percentage(mismatch), expected);
+        }
+        for exponent in -323..=2 {
+            for coefficient in [1.0, 4.9999, 5.0, 9.9999] {
+                let mismatch = coefficient * 10.0_f64.powi(exponent);
+                if mismatch > 0.0 && mismatch <= 100.0 {
+                    let formatted = format_mismatch_percentage(mismatch);
+                    assert!(formatted.parse::<f64>().unwrap() > 0.0, "{mismatch}");
+                    if format!("{mismatch:.2}").parse::<f64>().unwrap() > 0.0 {
+                        assert_eq!(formatted, format!("{mismatch:.2}"));
+                    }
+                }
+            }
+        }
+    }
 
     fn png_header(width: u32, height: u32) -> Vec<u8> {
         let mut header = vec![137, 80, 78, 71, 13, 10, 26, 10];
@@ -1830,6 +1879,7 @@ mod tests {
         let (result, diff) = compare_images(&img_path, &img_path).unwrap();
         assert!(result.is_same_dimensions);
         assert_eq!(result.alignment, DiffAlignment::default());
+        assert_eq!(result.mismatch_pixels, 0);
         assert_eq!(result.raw_mis_match_percentage, 0.0);
         assert!(diff.is_none());
     }
@@ -1853,6 +1903,7 @@ mod tests {
         let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
 
         assert!(result.is_same_dimensions);
+        assert_eq!(result.mismatch_pixels, 1);
         assert_eq!(result.raw_mis_match_percentage, 100.0);
         assert!(diff.is_some());
     }
@@ -1877,6 +1928,7 @@ mod tests {
 
         assert!(!result.is_same_dimensions);
         assert_eq!(result.dimension_difference, (1, 0));
+        assert_eq!(result.mismatch_pixels, 1);
         assert_eq!(result.raw_mis_match_percentage, 50.0);
         assert!(diff.is_some());
     }
@@ -2450,7 +2502,10 @@ mod tests {
         let expected =
             (gap_height * width + changed_rows * changed_cols) as f64 / test.len() as f64 * 100.0;
         assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
-        assert_eq!(result.mis_match_percentage, "15.56");
+        assert_eq!(
+            format_mismatch_percentage(result.raw_mis_match_percentage),
+            "15.56"
+        );
     }
 
     #[test]
@@ -2502,7 +2557,10 @@ mod tests {
             / reference.len() as f64
             * 100.0;
         assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
-        assert_eq!(result.mis_match_percentage, "15.56");
+        assert_eq!(
+            format_mismatch_percentage(result.raw_mis_match_percentage),
+            "15.56"
+        );
     }
 
     #[test]
@@ -2591,7 +2649,10 @@ mod tests {
             result.alignment,
             DiffAlignment::from_gaps(vec![gap1, gap2], Vec::new())
         );
-        assert_eq!(result.mis_match_percentage, "11.11");
+        assert_eq!(
+            format_mismatch_percentage(result.raw_mis_match_percentage),
+            "11.11"
+        );
     }
 
     #[test]
@@ -2737,7 +2798,10 @@ mod tests {
                     result.alignment, expected,
                     "border_column={border_column}, reversed={reversed}"
                 );
-                assert_eq!(result.mis_match_percentage, "11.50");
+                assert_eq!(
+                    format_mismatch_percentage(result.raw_mis_match_percentage),
+                    "11.50"
+                );
                 let diff = lodepng::decode32(diff.unwrap()).unwrap();
                 let pink = RGBA8::new(255, 0, 255, 200);
                 for row in 37..107 {

@@ -108,6 +108,8 @@ pub(super) struct Capture {
     pub status: String,
     pub threshold: f64,
     pub mismatch: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mismatch_pixels: Option<u64>,
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison_error: Option<String>,

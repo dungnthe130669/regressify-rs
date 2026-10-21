@@ -1,6 +1,6 @@
 # Results Review
 
-Verified: 2026-10-15
+Verified: 2026-10-21
 
 - [Overview](../../src/desktop/ui/overview.rs) uses uniform DataTable rows with
   full summaries/errors retained in explicit selectable Details. `overview_table_`
@@ -23,12 +23,12 @@ Verified: 2026-10-15
   the disappearing popup still owns it. Mixed-button mouse clicks cannot open
   a pane; the held-pan regression verifies cancellation and unchanged offsets.
   Image action/lifecycle tests and native Comparison pass without toolkit edits.
-- Capture information in [Results](../../src/desktop/ui/reports.rs) uses an
-  unbordered DescriptionList with paired URL columns and full-width metadata,
-  retaining normal controls and stable URL children. The GUI regression checks
-  8px outer gaps plus the stock 10px text inset and verifies raw reference/test
-  URLs, exact copy values, signed dimensions, unavailable fields, and rejects
-  javascript/data schemes before either open or copy.
+- [Capture information](../../src/desktop/ui/reports.rs) uses an unbordered
+  DescriptionList with paired URLs, full-width metadata, exact optional `mismatchPixels`,
+  normal controls and stable URL children. Header/Info/copy prefer raw percentages
+  with adaptive precision; absent counts stay unavailable. GUI tests verify 8px
+  outer gaps, stock 10px text insets, raw URLs, exact copy values, signed dimensions,
+  unavailable fields, and reject javascript/data schemes before open or copy.
 - Capture/approval error bands retain their named Role::Alert wrapper around
   presentational Kit Marker content. Styled Alert plus a neutral wrapper lost
   the error name in native UIA; the full `-ComparisonFlows` smoke passes with the

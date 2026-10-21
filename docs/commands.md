@@ -851,6 +851,22 @@ Two independent settings control comparison:
 - `misMatchThreshold` is the percentage of mismatched pixels allowed for a pass.
   Range: `0` to `100`; default: `0.1`. It does not change diff highlighting.
 
+Saved comparison reports retain `diff.rawMisMatchPercentage` as an unrounded
+floating-point JSON number and `diff.mismatchPixels` as the exact integer count
+from the comparer, after pixel sensitivity and anti-alias filtering. Pass/fail
+uses the raw percentage and image dimensions, never the displayed percentage.
+New reports do not write the legacy formatted `misMatchPercentage` string;
+readers still accept it when a legacy report has no raw percentage.
+
+Web reports retain the same numeric percentage as `mismatch` and the optional
+integer `mismatchPixels`. The CLI, web report, and desktop app use two decimal
+places when they show a nonzero difference, adding precision for smaller positive
+values. Extremely small values use scientific notation after 12 decimal places;
+only an actual zero is displayed as `0.00%`. Formatting never changes audit data.
+Web and desktop views show exact pixel counts when available. Missing legacy
+counts are not inferred from percentages or assumed to be zero. Rerun Compare
+to populate them, then regenerate and redeploy the snapshot; no recapture is needed.
+
 Set `pixelMatchThreshold` in `regressify.yaml` or `regressify.yml`, at the root of
 a test suite, or on an individual scenario. Resolution is scenario, then suite,
 then workspace, then the default. An explicit `0` overrides inherited values.

@@ -12,10 +12,12 @@ function Test-CaptureInformation([string]$Name, [switch]$SameUrl, [int]$DiffX = 
             Wait-Control 'Diff %: Unavailable' | Out-Null
             Wait-Control 'Diff X: Unavailable' | Out-Null
             Wait-Control 'Diff Y: Unavailable' | Out-Null
+            Wait-Control 'Mismatch pixels: Unavailable' | Out-Null
         } else {
             Wait-Control 'Diff %: 4.20%' | Out-Null
             Wait-Control "Diff X: $DiffX" | Out-Null
             Wait-Control "Diff Y: $DiffY" | Out-Null
+            Wait-Control 'Mismatch pixels: 42' | Out-Null
         }
         foreach ($kind in @('Reference', 'Test')) {
             if (-not (Test-ControlInvokable "Open $kind URL")) { throw "$kind URL must be clickable." }

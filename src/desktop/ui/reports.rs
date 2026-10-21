@@ -2266,14 +2266,7 @@ impl ResultsPanel {
                 let difference = pair.diff.as_ref();
                 let dimensions = difference.and_then(|diff| diff.dimension_difference.as_ref());
                 let percentage = difference
-                    .and_then(|diff| {
-                        if diff.mis_match_percentage.is_empty() {
-                            diff.raw_mis_match_percentage
-                                .map(|value| format!("{value:.3}%"))
-                        } else {
-                            Some(format!("{}%", diff.mis_match_percentage))
-                        }
-                    })
+                    .and_then(|diff| diff.formatted_mismatch())
                     .unwrap_or_else(|| "Unavailable".into());
                 let content = div()
                     .id("capture-information-content")
@@ -2451,6 +2444,21 @@ impl ResultsPanel {
                     diff_stats.into_any_element(),
                     2,
                 );
+                let pixels = difference
+                    .and_then(|diff| diff.mismatch_pixels)
+                    .map(|pixels| pixels.to_string())
+                    .unwrap_or_else(|| "Unavailable".into());
+                details = details.item(
+                    div().text_sm().child("Mismatch pixels:").into_any_element(),
+                    div()
+                        .id("capture-info-mismatch-pixels")
+                        .role(Role::Status)
+                        .aria_label(format!("Mismatch pixels: {pixels}"))
+                        .test_support()
+                        .child(pixels)
+                        .into_any_element(),
+                    2,
+                );
                 content.child(details)
             })
             .into_any_element()
@@ -2520,13 +2528,20 @@ impl ResultsPanel {
         let mismatch = test
             .and_then(|test| test.pair.diff.as_ref())
             .map(|diff| {
-                if diff.mis_match_percentage.is_empty() {
-                    diff.raw_mis_match_percentage
-                        .map(|percentage| format!("{percentage:.3}%"))
-                        .unwrap_or_default()
-                } else {
-                    format!("{}%", diff.mis_match_percentage)
-                }
+                [
+                    diff.formatted_mismatch()
+                        .map(|percentage| format!("{percentage} mismatch")),
+                    diff.mismatch_pixels.map(|pixels| {
+                        format!(
+                            "{pixels} mismatched {}",
+                            if pixels == 1 { "pixel" } else { "pixels" }
+                        )
+                    }),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ")
             })
             .unwrap_or_default();
         let source = self
@@ -2575,13 +2590,13 @@ impl ResultsPanel {
                     )
                     .child(
                         div()
+                            .id("capture-mismatch")
+                            .role(Role::Status)
+                            .aria_label(mismatch.clone())
+                            .test_support()
                             .text_xs()
                             .flex_shrink_0()
-                            .child(if mismatch.is_empty() {
-                                String::new()
-                            } else {
-                                format!("{mismatch} mismatch")
-                            }),
+                            .child(mismatch),
                     )
                     .when_some(test, |header, test| {
                         header

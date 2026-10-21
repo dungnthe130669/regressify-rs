@@ -3,6 +3,22 @@
 Current verification gaps and dated resolution history. Entries marked resolved
 are historical evidence, not open implementation tasks.
 
+## Mismatch Precision And Pixel Counts (2026-10-21)
+
+- Resolved: web and desktop reports could display tiny positive mismatches as
+  zero. [Web](frontend/src/data/report.ts) and
+  [Rust](src/compare/image_compare.rs) formatting now adds precision only when
+  needed, with scientific notation for extremely small values. Exact zero and
+  ordinary two-decimal formatting remain unchanged.
+- [Comparison reports](src/compare/report_gen.rs) store the unrounded floating-point
+  percentage and exact integer `mismatchPixels`, without a formatted percentage
+  string. Snapshot conversion preserves the numeric audit value. Desktop prefers
+  the raw value over legacy rounded strings; web and desktop show exact counts
+  without inferring absent legacy metadata. Comparison thresholds are unchanged.
+- The web precision regression failed before the fix. One-pixel PNG comparisons,
+  bit-exact JSON round trips, extreme positive values, legacy metadata, and native
+  and browser display regressions cover the new behavior.
+
 ## GPUI Kit 0.8.0 Upgrade (2026-10-21)
 
 - Resolved: numeric Fields and Source font-size spinners had unnamed SpinButton

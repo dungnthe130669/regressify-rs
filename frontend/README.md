@@ -198,6 +198,14 @@ Pixel and dimension mismatches remain failed comparisons, not engine errors.
 Optional `comparisonError` preserves comparison diagnostics, including missing
 references and comparison-processing failures, without adding to engine-error
 counts. Result cards and Capture information retain these messages.
+Mismatch percentages keep two decimal places whenever that displays a nonzero
+value. Positive differences that would round to `0.00%` use additional decimal
+places, with scientific notation for values still zero after 12 decimal places;
+an exact zero remains `0.00%`. Formatting never alters the numeric `mismatch`
+audit value, comparison thresholds, or pass/fail decisions. Optional integer
+`mismatchPixels` contains the comparer's exact count, shown in suite cards and
+Capture information. Absent legacy counts are omitted, not inferred or set to zero.
+Rerun Compare to add counts to older reports before regenerating the snapshot.
 Older capture payloads are normalized on load; regenerate existing snapshots and
 redeploy hosted copies to refresh their bundled UI and overview totals. Existing
 capture runs are reused; no recapture is needed. The manifest version remains 2.

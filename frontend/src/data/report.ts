@@ -183,6 +183,7 @@ export const captureSchema = z
     status: z.enum(["pass", "fail"]),
     threshold: percentage,
     mismatch: percentage.nullable(),
+    mismatchPixels: count.max(64_000_000).optional(),
     error: z.string().nullable(),
     comparisonError: z.string().nullable().optional(),
     reference: artifact("images").nullable(),
@@ -334,6 +335,14 @@ export function passRate(passed: number, total: number): string {
   return total === 0
     ? "0"
     : ((passed / total) * 100).toLocaleString("en", { maximumFractionDigits: 1 });
+}
+
+export function formatMismatch(mismatch: number): string {
+  for (let decimals = 2; decimals <= 12; decimals++) {
+    const formatted = mismatch.toFixed(decimals);
+    if (mismatch === 0 || Number(formatted) !== 0) return formatted;
+  }
+  return mismatch.toString();
 }
 
 export function filterCaptures(tests: Capture[], query: string, status: StatusFilter): Capture[] {

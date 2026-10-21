@@ -14,7 +14,7 @@ import {
 } from "@floating-ui/react";
 import { ExternalLink, Info, X } from "lucide-react";
 import { useId, useState } from "react";
-import { type Capture, safePageUrl } from "../data/report";
+import { type Capture, formatMismatch, safePageUrl } from "../data/report";
 import { IconButton } from "./ui";
 
 export function CaptureInfo({
@@ -93,9 +93,17 @@ export function CaptureInfo({
               <div>
                 <dt>Difference</dt>
                 <dd className={`mono ${capture.status === "fail" ? "text-fail" : "text-pass"}`}>
-                  {capture.mismatch === null ? "Not compared" : `${capture.mismatch.toFixed(2)}%`}
+                  {capture.mismatch === null
+                    ? "Not compared"
+                    : `${formatMismatch(capture.mismatch)}%`}
                 </dd>
               </div>
+              {capture.mismatchPixels !== undefined && (
+                <div>
+                  <dt>Mismatched pixels</dt>
+                  <dd className="mono">{capture.mismatchPixels.toLocaleString("en")}</dd>
+                </div>
+              )}
               <div>
                 <dt>Threshold</dt>
                 <dd className="mono">{capture.threshold}%</dd>

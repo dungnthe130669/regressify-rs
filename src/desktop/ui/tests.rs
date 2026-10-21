@@ -12871,9 +12871,10 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
         std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
             "id": "ui-test", "tests": [
                 {"status": "fail", "pair": {"scenarioLabel": "Carousel", "selector": "body .carousel", "referenceUrl": "https://production.example.test/start", "url": "https://staging.example.test/start", "diff": {"misMatchPercentage": "4.20", "dimensionDifference": {"width": -20, "height": 40}}}},
-                {"status": "pass", "pair": {"scenarioLabel": "Whole document", "selector": "document", "referenceUrl": "https://example.test/", "url": "https://example.test/", "diff": {"rawMisMatchPercentage": 0.0, "dimensionDifference": {"width": 0, "height": 0}}}},
+                {"status": "pass", "pair": {"scenarioLabel": "Whole document", "selector": "document", "referenceUrl": "https://example.test/", "url": "https://example.test/", "diff": {"rawMisMatchPercentage": 0.0, "mismatchPixels": 0, "dimensionDifference": {"width": 0, "height": 0}}}},
                 {"status": "fail", "pair": {"scenarioLabel": "Legacy capture", "referenceUrl": "javascript:alert(1)", "url": "data:text/html,<script>alert(1)</script>"}},
-                {"status": "pass", "pair": {"scenarioLabel": "Long URL capture", "selector": "document", "referenceUrl": long_url, "url": long_url}},
+                {"status": "fail", "pair": {"scenarioLabel": "Long URL capture", "selector": "document", "referenceUrl": long_url, "url": long_url, "diff": {"rawMisMatchPercentage": 0.000017922688690066528, "misMatchPercentage": "0.00", "mismatchPixels": 1}}},
+                {"status": "fail", "pair": {"scenarioLabel": "Smallest mismatch", "selector": "document", "diff": {"rawMisMatchPercentage": f64::from_bits(1), "misMatchPercentage": "0.00", "mismatchPixels": 1}}},
             ]
         })).unwrap()).unwrap();
         let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
@@ -12886,7 +12887,7 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
             window.try_find("capture-information").is_some()
         })
         .await;
-        for index in 0_usize..4 {
+        for index in 0_usize..5 {
             cx.update_window(handle.into(), |_, window, cx| {
                 window.click(("capture", index), cx);
                 window.hover("capture-information", cx);
@@ -12903,6 +12904,7 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
                         0 => "Label: Carousel",
                         1 => "Label: Whole document",
                         3 => "Label: Long URL capture",
+                        4 => "Label: Smallest mismatch",
                         _ => "Label: Legacy capture",
                     })
                 );
@@ -12926,14 +12928,14 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
                 }
                 assert!(diff_stats[2].right() <= bounds.right());
                 assert!(
-                    bounds.size.height <= px(160.),
+                    bounds.size.height <= px(196.),
                     "capture={index}, window={width}x{height}, bounds={bounds:?}"
                 );
                 assert_eq!(
                     window.find("capture-info-selector").label(),
                     Some(match index {
                         0 => "Selector: body .carousel",
-                        1 | 3 => "Selector: document",
+                        1 | 3 | 4 => "Selector: document",
                         _ => "Selector: Unavailable",
                     })
                 );
@@ -12941,10 +12943,30 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
                     window.find("capture-info-diff").label(),
                     Some(match index {
                         0 => "Diff %: 4.20%",
-                        1 => "Diff %: 0.000%",
+                        1 => "Diff %: 0.00%",
+                        3 => "Diff %: 0.00002%",
+                        4 => "Diff %: 5e-324%",
                         _ => "Diff %: Unavailable",
                     })
                 );
+                assert_eq!(
+                    window.find("capture-info-mismatch-pixels").label(),
+                    Some(match index {
+                        1 => "Mismatch pixels: 0",
+                        3 | 4 => "Mismatch pixels: 1",
+                        _ => "Mismatch pixels: Unavailable",
+                    })
+                );
+                if index == 3 || index == 4 {
+                    assert_eq!(
+                        window.find("capture-mismatch").label(),
+                        Some(if index == 3 {
+                            "0.00002% mismatch, 1 mismatched pixel"
+                        } else {
+                            "5e-324% mismatch, 1 mismatched pixel"
+                        })
+                    );
+                }
                 assert_eq!(
                     window.find("capture-info-diff-x").label(),
                     Some(match index {

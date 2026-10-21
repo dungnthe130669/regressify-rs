@@ -175,8 +175,9 @@ struct ReportDiff {
     dimension_difference: DimensionDiff,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     alignment: Option<DiffAlignment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mismatch_pixels: Option<u64>,
     raw_mis_match_percentage: f64,
-    mis_match_percentage: String,
     analysis_time: u128,
 }
 
@@ -1020,10 +1021,14 @@ fn finish_staged_compared_pair(
     let passed =
         result.raw_mis_match_percentage <= pair.mis_match_threshold && result.is_same_dimensions;
     let status = if passed { "pass" } else { "fail" };
+    let percentage = format!(
+        "{}%",
+        crate::compare::image_compare::format_mismatch_percentage(result.raw_mis_match_percentage)
+    );
     let status_text = if passed {
-        format!("{:.2}%", result.raw_mis_match_percentage).green()
+        percentage.green()
     } else {
-        format!("{:.2}%", result.raw_mis_match_percentage).red()
+        percentage.red()
     };
 
     eprintln!(
@@ -1263,8 +1268,8 @@ pub(crate) fn generate_reference_report(
                     height: 0,
                 },
                 alignment: Some(DiffAlignment::default()),
+                mismatch_pixels: Some(0),
                 raw_mis_match_percentage: 0.0,
-                mis_match_percentage: "0.00".to_string(),
                 analysis_time: 0,
             });
             pair.comparison_outcome = Some(crate::diagnostics::record::Outcome::Success);
@@ -1912,8 +1917,8 @@ fn build_diff(result: &CompareResult) -> ReportDiff {
             height: result.dimension_difference.1,
         },
         alignment: Some(result.alignment.clone()),
+        mismatch_pixels: Some(result.mismatch_pixels),
         raw_mis_match_percentage: result.raw_mis_match_percentage,
-        mis_match_percentage: result.mis_match_percentage.clone(),
         analysis_time: result.analysis_time_ms,
     }
 }
@@ -1926,6 +1931,85 @@ mod tests {
 
     fn png_bytes(red: u8) -> Vec<u8> {
         lodepng::encode32(&[red, 20, 30, 255], 1, 1).unwrap()
+    }
+
+    #[test]
+    fn mismatch_one_pixel_report_retains_raw_audit_value_and_fails_zero_threshold() {
+        let directory = tempfile::tempdir().unwrap();
+        let suite = directory.path().join("suite");
+        let reference = suite.join("bitmaps_reference");
+        let run = suite.join("bitmaps_test/current");
+        fs::create_dir_all(&reference).unwrap();
+        fs::create_dir_all(&run).unwrap();
+        let mut pixels = vec![rgb::RGBA8::new(255, 255, 255, 255); 256 * 256];
+        fs::write(
+            reference.join("home.png"),
+            lodepng::encode32(&pixels, 256, 256).unwrap(),
+        )
+        .unwrap();
+        pixels[128 * 256 + 128] = rgb::RGBA8::new(0, 0, 0, 255);
+        fs::write(
+            run.join("home.png"),
+            lodepng::encode32(&pixels, 256, 256).unwrap(),
+        )
+        .unwrap();
+
+        generate_comparison_report(&suite, "suite", "current", 0.0, 1).unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(run.join("report.json")).unwrap()).unwrap();
+        let test = &report["tests"][0];
+        let diff = &test["pair"]["diff"];
+        assert_eq!(test["status"], "fail");
+        assert_eq!(diff["mismatchPixels"], 1);
+        assert_eq!(
+            diff["rawMisMatchPercentage"].as_f64(),
+            Some(100.0 / 65536.0)
+        );
+        assert!(diff.get("misMatchPercentage").is_none());
+        #[cfg(feature = "desktop")]
+        {
+            let desktop: crate::desktop::results::TestResult =
+                serde_json::from_value(test.clone()).unwrap();
+            assert_eq!(desktop.pair.diff.as_ref().unwrap().mismatch_pixels, Some(1));
+            assert!(desktop.copy_summary().contains("Mismatch: 0.002%"));
+            assert!(desktop.copy_summary().contains("Mismatch pixels: 1"));
+        }
+    }
+
+    #[test]
+    fn mismatch_audit_metadata_preserves_raw_float_without_display_formatting() {
+        for percentage in [
+            0.0,
+            0.000017922688690066528,
+            1.2345678901234567,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            100.0,
+        ] {
+            let result = CompareResult {
+                is_same_dimensions: true,
+                dimension_difference: (0, 0),
+                ref_width: 1920,
+                ref_height: 2906,
+                test_width: 1920,
+                test_height: 2906,
+                alignment: DiffAlignment::default(),
+                mismatch_pixels: 1,
+                raw_mis_match_percentage: percentage,
+                analysis_time_ms: 0,
+            };
+            let encoded = serde_json::to_string(&build_diff(&result)).unwrap();
+            let decoded: ReportDiff = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(
+                decoded.raw_mis_match_percentage.to_bits(),
+                percentage.to_bits()
+            );
+            assert_eq!(decoded.mismatch_pixels, Some(1));
+            assert!(!encoded.contains("\"misMatchPercentage\""));
+            let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            assert!(value["rawMisMatchPercentage"].is_number());
+            assert_eq!(value["mismatchPixels"], 1);
+        }
     }
 
     #[test]
@@ -1980,8 +2064,8 @@ mod tests {
                 test_width: 32,
                 test_height: 133,
                 alignment: alignment.clone(),
+                mismatch_pixels: 17,
                 raw_mis_match_percentage: 1.0,
-                mis_match_percentage: "1.00".into(),
                 analysis_time_ms: 0,
             };
             let mut value = serde_json::to_value(build_diff(&result)).unwrap();
@@ -1991,6 +2075,8 @@ mod tests {
             );
             let parsed: ReportDiff = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(parsed.alignment, Some(alignment.clone()));
+            assert_eq!(parsed.mismatch_pixels, Some(17));
+            assert_eq!(value["mismatchPixels"], 17);
             #[cfg(feature = "desktop")]
             {
                 let parsed: crate::desktop::results::Difference =
@@ -1998,8 +2084,16 @@ mod tests {
                 assert_eq!(parsed.alignment, Some(alignment));
             }
             value.as_object_mut().unwrap().remove("alignment");
+            value.as_object_mut().unwrap().remove("mismatchPixels");
             let legacy: ReportDiff = serde_json::from_value(value).unwrap();
             assert!(legacy.alignment.is_none());
+            assert!(legacy.mismatch_pixels.is_none());
+            assert!(
+                serde_json::to_value(&legacy)
+                    .unwrap()
+                    .get("mismatchPixels")
+                    .is_none()
+            );
             assert!(
                 serde_json::to_value(legacy)
                     .unwrap()

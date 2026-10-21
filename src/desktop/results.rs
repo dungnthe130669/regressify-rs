@@ -109,10 +109,11 @@ impl TestResult {
             lines.push(format!("Page: {url}"));
         }
         if let Some(diff) = &self.pair.diff {
-            if !diff.mis_match_percentage.is_empty() {
-                lines.push(format!("Mismatch: {}%", diff.mis_match_percentage));
-            } else if let Some(percentage) = diff.raw_mis_match_percentage {
-                lines.push(format!("Mismatch: {percentage:.3}%"));
+            if let Some(percentage) = diff.formatted_mismatch() {
+                lines.push(format!("Mismatch: {percentage}"));
+            }
+            if let Some(pixels) = diff.mismatch_pixels {
+                lines.push(format!("Mismatch pixels: {pixels}"));
             }
         }
         if let Some(threshold) = self.pair.mis_match_threshold {
@@ -348,8 +349,23 @@ pub struct Difference {
     pub raw_mis_match_percentage: Option<f64>,
     #[serde(default)]
     pub mis_match_percentage: String,
+    pub mismatch_pixels: Option<u64>,
     pub dimension_difference: Option<DimensionDifference>,
     pub alignment: Option<crate::compare::image_compare::DiffAlignment>,
+}
+
+impl Difference {
+    pub fn formatted_mismatch(&self) -> Option<String> {
+        self.raw_mis_match_percentage
+            .or_else(|| self.mis_match_percentage.parse::<f64>().ok())
+            .filter(|percentage| (0.0..=100.0).contains(percentage))
+            .map(|percentage| {
+                format!(
+                    "{}%",
+                    crate::compare::image_compare::format_mismatch_percentage(percentage)
+                )
+            })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -949,6 +965,64 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mismatch_display_and_copy_prefer_raw_precision_and_exact_counts() {
+        for (percentage, expected, pixels) in [
+            (0.0, "0.00%", 0),
+            (1.2345, "1.23%", 1),
+            (0.000017922688690066528, "0.00002%", 1),
+            (f64::from_bits(1), "5e-324%", 1),
+        ] {
+            let test: super::TestResult = serde_json::from_value(serde_json::json!({
+                "status": "fail", "pair": {"diff": {
+                    "rawMisMatchPercentage": percentage,
+                    "misMatchPercentage": "0.00",
+                    "mismatchPixels": pixels
+                }}
+            }))
+            .unwrap();
+            let diff = test.pair.diff.as_ref().unwrap();
+            assert_eq!(diff.formatted_mismatch().as_deref(), Some(expected));
+            assert_eq!(diff.mismatch_pixels, Some(pixels));
+            let summary = test.copy_summary();
+            assert!(summary.contains(&format!("Mismatch: {expected}")));
+            assert!(summary.contains(&format!("Mismatch pixels: {pixels}")));
+        }
+        for (value, expected) in [
+            (serde_json::json!({}), None),
+            (
+                serde_json::json!({"misMatchPercentage": "0.00001"}),
+                Some("0.00001%"),
+            ),
+            (
+                serde_json::json!({"misMatchPercentage": "4.2"}),
+                Some("4.20%"),
+            ),
+            (serde_json::json!({"misMatchPercentage": "NaN"}), None),
+        ] {
+            let diff: super::Difference = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(diff.formatted_mismatch().as_deref(), expected);
+            assert!(diff.mismatch_pixels.is_none());
+            let test: super::TestResult = serde_json::from_value(serde_json::json!({
+                "status": "fail", "pair": {"diff": value}
+            }))
+            .unwrap();
+            assert!(!test.copy_summary().contains("Mismatch pixels:"));
+        }
+        for invalid in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("1"),
+        ] {
+            assert!(
+                serde_json::from_value::<super::Difference>(serde_json::json!({
+                    "mismatchPixels": invalid
+                }))
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn capture_log_view_groups_by_execution_viewport_attempt() {
         use crate::diagnostics::{journal::*, record::*, runtime::ArchiveReference};
