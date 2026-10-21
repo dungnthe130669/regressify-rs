@@ -2529,7 +2529,11 @@ impl Workbench {
                     .aria_label(field.label.clone())
                     .test_support()
                     .w_full()
-                    .child(NumberInput::new(state).disabled(self.busy))
+                    .child(
+                        NumberInput::new(state)
+                            .accessibility_label(field.label.clone())
+                            .disabled(self.busy),
+                    )
                     .into_any_element(),
                 Control::Input(state) => Input::new(state)
                     .id(field_id)

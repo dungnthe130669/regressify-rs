@@ -24,7 +24,7 @@ Omit the workspace argument to use the native folder picker. The default
 `cargo build` and `cargo run -- test` remain CLI-only. Feature `desktop` builds
 headless models; `gui` adds native widgets; `gui-tests` adds UI instrumentation.
 
-The native UI pins GPUI Kit 0.7.3 through the single optional `gpui-kit`
+The native UI pins GPUI Kit 0.8.0 through the single optional `gpui-kit`
 dependency. Production windows and native test fixtures use
 `gpui_kit::open_window`; its Base root owns dialog, sheet and notification
 layers. Application close, cancellation and unsaved-document guards remain
@@ -38,6 +38,8 @@ binary control; folder and suite aggregates retain partial-selection semantics.
 Numeric Fields controls support toolkit step buttons and Up/Down stepping.
 Regressify retains schema limits, inherited values and document undo/redo;
 invalid or intermediate text remains editable and is not coerced on blur.
+Numeric spinners expose their field names to assistive technologies; the separate
+Source preference spinner is named `Source font size`.
 
 For distribution, use `cargo build --release --features gui --bin regressify-desktop`.
 The desktop executable contains the engine; no separate `regressify` binary or

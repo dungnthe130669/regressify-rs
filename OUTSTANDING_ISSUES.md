@@ -3,6 +3,20 @@
 Current verification gaps and dated resolution history. Entries marked resolved
 are historical evidence, not open implementation tasks.
 
+## GPUI Kit 0.8.0 Upgrade (2026-10-21)
+
+- Resolved: numeric Fields and Source font-size spinners had unnamed SpinButton
+  nodes despite named outer groups. [Fields](src/desktop/ui/mod.rs) and
+  [Source](src/desktop/ui/source.rs) now use Kit's `accessibility_label`.
+  Both scoped role/name regressions failed before the fix; Windows default smoke
+  also verifies the Source spinner's actual name, child editor and focus.
+- Resolved: [default smoke](ci/desktop-smoke/flows/default.ps1) searched for Actions
+  after Source reconciliation had selected the suite. It now explicitly opens
+  Checkout before Fields. The full flow passes without a scrolling workaround.
+- Resolved: the [zoom/pan test](src/desktop/ui/tests.rs) left Control held before
+  plain scrolling. Kit 0.8.0 preserves modifiers, exposing that test defect;
+  stock `change_modifiers` releases Control and the unchanged geometry assertions pass.
+
 ## Cloudflare Access Report Data (2026-10-20)
 
 - Resolved: [report fetches](frontend/src/data/report.ts) omitted credentials, so

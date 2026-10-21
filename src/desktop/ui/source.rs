@@ -1568,6 +1568,7 @@ impl Workbench {
                                     .flex_shrink_0()
                                     .child(
                                         NumberInput::new(&self.source_font_size_input)
+                                            .accessibility_label("Source font size")
                                             .with_size(gpui_kit::component::Size::Medium),
                                     ),
                             ),

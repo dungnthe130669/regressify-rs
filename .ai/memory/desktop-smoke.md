@@ -1,12 +1,16 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-19
+Verified: 2026-10-21
 
-- Run/download bars use Kit 0.7.3 Progress with percentages and accessible names
-  (`Scenario job progress` verified as a 0..100 ProgressBar in default smoke).
-  Kit 0.7.3 registers `base::Progress`, `TitleBar`/`window-controls` (scope dialog
-  X assertions `.within("dialog-close")`), and `completion-menu` with `test_support()`
-  directly, retiring the `update-download-progress` outer wrapper.
+- [Kit 0.8.0 tests](../../src/desktop/ui/tests.rs) adopt stock modifier clicks, role queries and
+  `TestEventExt` pointer steps, retiring both local modifier-click helpers. Clicks restore prior
+  modifiers; scroll/drag preserve held state. The zoom/pan regression failed until Ctrl-wheel
+  explicitly released Control through `change_modifiers`; production zoom behavior was unchanged.
+- Kit Progress retains percentage values/names and direct observation, as do TitleBar and
+  CompletionMenu. Scope dialog X with `.within("dialog-close")`, excluding titlebar Close.
+- All seven upgrade native flows passed in light/dark compact/large windows with restored preferences.
+  The default flow now verifies the actual `Source font size` Spinner name and opens Checkout
+  before compact Actions checks: checked sidebar state is not the reconciled editor selection.
 - The [entry point](../../ci/desktop-smoke.ps1) owns parameters, Windows safety
   guards, build, flow precedence, and the run/cleanup boundary. It dot-sources
   [support and flow scripts](../../ci/desktop-smoke) into the same script scope.
@@ -37,14 +41,11 @@ Verified: 2026-10-19
   focus return, unchanged draft/saved bytes, and window-close owner release.
   Native Update, Artifact, Publishing, Deployment and Git flows pass with this
   footer check and the shared DialogFooter layout across all nine dialog sites.
-- Editor Toolbar Left wrapping failed in native input and a two-button public
-  fixture, while forward/Shift+Tab worked. The owner-approved
-  [ToolbarFocus adapter](../../src/desktop/ui/design.rs) uses bounded forward
-  tab order and scoped destinations, yielding to active toolkit popups. Five
-  `toolbar_` tests pass for geometry, actions, menu/modified keys, input caret
-  handling, dynamic controls and release. Native default verifies Add-to-More
-  Left plus exact log-search caret edits and clearing; Schema, Git and Deployment
-  also pass. Dropdown focus wrappers and input exclusion lists were unnecessary.
+- Kit 0.8.0 still needs [ToolbarFocus](../../src/desktop/ui/design.rs) for backward wrap,
+  menu dismissal/cycle-release helpers, CopyText generation keys, mixed checkboxes and contrast fixes.
+  Base Toolbar/Accordion, Clipboard and theme colors did not change; menu scrolling/context-trigger
+  fixes do not replace ownership/focus adapters. Tab remains pointer-only, so keep log-tab keys.
+  Native default verifies Add-to-More Left and exact log-search caret behavior; `toolbar_` covers release.
 - Run interactive flows without concurrent user mouse/keyboard input. Pointer
   movement dismissed a metadata hover card and redirected image-tab clicks;
   the undisturbed fresh-STA `-ComparisonFlows` run passed all four size/theme
@@ -114,7 +115,6 @@ Verified: 2026-10-19
   Header menus are File/Publish/Help. The [header regression](../../src/desktop/ui/tests.rs)
   checks equal group gaps, aligned text, compact tab underlines, version visibility
   at 1080px, and workspace visibility at 1400px across live resize.
-- Minimum-size flows bring scrollable targets into view: Actions via settings
-  search, the Comparison suite via wheel, and landing removal via editor scroll.
+- Minimum-size flows reveal Actions via settings search, the Comparison suite via wheel, and landing removal via editor scroll.
   Artifact's added Rename size matrix uses the scoped context menu; original
   F2/escape-focus checks remain. Never bypass native focus/isolation guards.

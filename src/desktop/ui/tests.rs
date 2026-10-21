@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use gpui_kit::base::Root;
-use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+use gpui_kit::test::{TestAppContextExt, TestEventExt, TestWindowExt};
 use gpui_kit::{
     AppContext, Bounds, Entity, Focusable, Point, TestAppContext, WindowBounds, WindowHandle,
     WindowOptions, px, size,
@@ -1707,6 +1707,11 @@ async fn source_font_size_accepts_direct_integer_entry(cx: &mut TestAppContext) 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.within("editor-tabs").click(0_usize, cx);
+        let spinners = window
+            .within("source-text-size")
+            .find_all_by_role(gpui_kit::Role::SpinButton);
+        assert_eq!(spinners.len(), 1);
+        assert_eq!(spinners[0].label(), Some("Source font size"));
         window.click("source-text-size", cx);
         window.press(
             if cfg!(target_os = "macos") {
@@ -2781,7 +2786,10 @@ async fn accept_and_save_source_completion(
             let position = source.scroll_offset()
                 + caret.origin
                 + gpui_kit::point(px(8.), line_height + px(16.));
-            click_at_with_modifiers(window, position, Default::default(), cx);
+            assert_eq!(window.modifiers(), gpui_kit::Modifiers::default());
+            window.pointer_move(position, None, cx);
+            window.pointer_down(position, gpui_kit::MouseButton::Left, cx);
+            window.pointer_up(position, gpui_kit::MouseButton::Left, cx);
         } else {
             window.press(accept_action, cx);
         }
@@ -6818,61 +6826,6 @@ fn suite_row_click_checks_the_selected_suite(cx: &mut TestAppContext) {
     .unwrap();
 }
 
-fn click_with_modifiers(
-    window: &mut gpui_kit::Window,
-    target: impl Into<gpui_kit::ElementId>,
-    modifiers: gpui_kit::Modifiers,
-    cx: &mut gpui_kit::App,
-) {
-    window.render_frame(cx);
-    let target = window.find(target);
-    assert!(target.visible());
-    let position = target.bounds().center();
-    click_at_with_modifiers(window, position, modifiers, cx);
-}
-
-fn click_at_with_modifiers(
-    window: &mut gpui_kit::Window,
-    position: gpui_kit::Point<gpui_kit::Pixels>,
-    modifiers: gpui_kit::Modifiers,
-    cx: &mut gpui_kit::App,
-) {
-    use gpui_kit::{InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
-    window.dispatch_event(
-        MouseMoveEvent {
-            position,
-            pressed_button: None,
-            modifiers,
-        }
-        .to_platform_input(),
-        cx,
-    );
-    window.render_frame(cx);
-    window.dispatch_event(
-        MouseDownEvent {
-            button: MouseButton::Left,
-            position,
-            modifiers,
-            click_count: 1,
-            first_mouse: false,
-        }
-        .to_platform_input(),
-        cx,
-    );
-    window.render_frame(cx);
-    window.dispatch_event(
-        MouseUpEvent {
-            button: MouseButton::Left,
-            position,
-            modifiers,
-            click_count: 1,
-        }
-        .to_platform_input(),
-        cx,
-    );
-    window.render_frame(cx);
-}
-
 #[gpui_kit::test]
 fn navigator_suite_selection_supports_modifiers_filters_and_empty_space(cx: &mut TestAppContext) {
     use gpui_kit::{Modifiers, point};
@@ -6918,27 +6871,28 @@ fn navigator_suite_selection_supports_modifiers_filters_and_empty_space(cx: &mut
         assert!(window.try_find(("sidebar-suite", indices[0])).is_none());
         window.click(("file", indices[0]), cx);
         assert_eq!(selected(cx), ["a-ui"]);
-        click_with_modifiers(window, ("file", indices[2]), control, cx);
+        window.click_with_modifiers(("file", indices[2]), control, cx);
+        assert_eq!(window.modifiers(), Modifiers::default());
         assert_eq!(selected(cx), ["a-ui", "ui-test"]);
-        click_with_modifiers(window, ("file", indices[0]), control, cx);
+        window.click_with_modifiers(("file", indices[0]), control, cx);
         assert_eq!(selected(cx), ["ui-test"]);
         window.click(("file", indices[1]), cx);
         assert_eq!(selected(cx), ["middle"]);
-        click_with_modifiers(window, ("file", indices[0]), shift, cx);
+        window.click_with_modifiers(("file", indices[0]), shift, cx);
         assert_eq!(selected(cx), ["a-ui", "middle"]);
-        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        window.click_with_modifiers(("file", indices[2]), shift, cx);
         assert_eq!(selected(cx), ["middle", "ui-test"]);
-        click_with_modifiers(window, ("file", indices[0]), both, cx);
+        window.click_with_modifiers(("file", indices[0]), both, cx);
         assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
         window.click(("file", indices[2]), cx);
-        click_with_modifiers(window, ("file", indices[0]), shift, cx);
+        window.click_with_modifiers(("file", indices[0]), shift, cx);
         assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
         let pane = window.find("suite-pane").bounds();
         let last = window.find(("suite-row", indices[2])).bounds();
         assert!(last.bottom() < pane.bottom() - px(12.));
         window.click_at("suite-pane", point(px(12.), pane.size.height - px(12.)), cx);
         assert!(selected(cx).is_empty());
-        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        window.click_with_modifiers(("file", indices[2]), shift, cx);
         assert_eq!(selected(cx), ["ui-test"]);
         window.click("sidebar-select-none", cx);
         assert!(selected(cx).is_empty());
@@ -6951,14 +6905,14 @@ fn navigator_suite_selection_supports_modifiers_filters_and_empty_space(cx: &mut
         window.render_frame(cx);
         assert!(window.try_find(("file", indices[1])).is_none());
         window.click(("file", indices[0]), cx);
-        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        window.click_with_modifiers(("file", indices[2]), shift, cx);
         assert_eq!(selected(cx), ["a-ui", "ui-test"]);
         view.update(cx, |this, cx| {
             this.search
                 .update(cx, |state, cx| state.set_value("ui-test", window, cx));
         });
         window.render_frame(cx);
-        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        window.click_with_modifiers(("file", indices[2]), shift, cx);
         assert_eq!(selected(cx), ["ui-test"]);
         window.click("sidebar-select-all", cx);
         assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
@@ -7081,20 +7035,21 @@ fn navigator_scenario_selection_supports_modifiers_filters_and_empty_space(
         assert!(window.try_find(("sidebar-scenario", 0_usize)).is_none());
         window.click(("scenario", 0_usize), cx);
         assert_eq!(selected(cx), [0]);
-        click_with_modifiers(window, ("scenario", 4_usize), control, cx);
+        window.click_with_modifiers(("scenario", 4_usize), control, cx);
+        assert_eq!(window.modifiers(), Modifiers::default());
         assert_eq!(selected(cx), [0, 4]);
-        click_with_modifiers(window, ("scenario", 0_usize), control, cx);
+        window.click_with_modifiers(("scenario", 0_usize), control, cx);
         assert_eq!(selected(cx), [4]);
         window.click(("scenario", 2_usize), cx);
         assert_eq!(selected(cx), [2]);
-        click_with_modifiers(window, ("scenario", 0_usize), shift, cx);
+        window.click_with_modifiers(("scenario", 0_usize), shift, cx);
         assert_eq!(selected(cx), [0, 1, 2]);
-        click_with_modifiers(window, ("scenario", 4_usize), shift, cx);
+        window.click_with_modifiers(("scenario", 4_usize), shift, cx);
         assert_eq!(selected(cx), [2, 3, 4]);
-        click_with_modifiers(window, ("scenario", 0_usize), both, cx);
+        window.click_with_modifiers(("scenario", 0_usize), both, cx);
         assert_eq!(selected(cx), [0, 1, 2, 3, 4]);
         window.click(("scenario", 4_usize), cx);
-        click_with_modifiers(window, ("scenario", 0_usize), shift, cx);
+        window.click_with_modifiers(("scenario", 0_usize), shift, cx);
         assert_eq!(selected(cx), [0, 1, 2, 3, 4]);
         let pane = window.find("scenario-pane").bounds();
         let last = window.find(("scenario-row", 4_usize)).bounds();
@@ -7105,7 +7060,7 @@ fn navigator_scenario_selection_supports_modifiers_filters_and_empty_space(
             cx,
         );
         assert!(selected(cx).is_empty());
-        click_with_modifiers(window, ("scenario", 4_usize), shift, cx);
+        window.click_with_modifiers(("scenario", 4_usize), shift, cx);
         assert_eq!(selected(cx), [4]);
         window.click("sidebar-scenarios-none", cx);
         assert!(selected(cx).is_empty());
@@ -7118,14 +7073,14 @@ fn navigator_scenario_selection_supports_modifiers_filters_and_empty_space(
         window.render_frame(cx);
         assert!(window.try_find(("scenario", 1_usize)).is_none());
         window.click(("scenario", 0_usize), cx);
-        click_with_modifiers(window, ("scenario", 4_usize), shift, cx);
+        window.click_with_modifiers(("scenario", 4_usize), shift, cx);
         assert_eq!(selected(cx), [0, 2, 4]);
         view.update(cx, |this, cx| {
             this.scenario_search
                 .update(cx, |state, cx| state.set_value("Other", window, cx));
         });
         window.render_frame(cx);
-        click_with_modifiers(window, ("scenario", 3_usize), shift, cx);
+        window.click_with_modifiers(("scenario", 3_usize), shift, cx);
         assert_eq!(selected(cx), [3]);
         view.update(cx, |this, cx| {
             this.runs
@@ -9015,6 +8970,15 @@ async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut T
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        let spinners = window
+            .within("field-asyncCaptureLimit")
+            .find_all_by_role(gpui_kit::Role::SpinButton);
+        assert_eq!(spinners.len(), 1);
+        assert!(spinners[0].label().is_some());
+        assert_eq!(
+            spinners[0].label(),
+            window.find("field-asyncCaptureLimit").label()
+        );
         window
             .within("field-asyncCaptureLimit")
             .click("increment", cx);
@@ -14242,6 +14206,8 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                             assert_eq!(after.origin - viewport.origin, other.origin - other_viewport.origin);
                         }
                     }
+                    // Kit preserves held modifiers across pointer gestures and scrolling.
+                    window.change_modifiers(gpui_kit::Modifiers::default(), cx);
                     if fitted {
                         window.click("fit-image", cx);
                     }

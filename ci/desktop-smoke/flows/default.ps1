@@ -175,6 +175,7 @@ function Test-DefaultFlows {
     $sourceSizeSpinners = (Wait-Control 'Source font size').FindAll([System.Windows.Automation.TreeScope]::Descendants, $sourceSizeSpinnerCondition)
     if ($sourceSizeSpinners.Count -ne 1) { throw 'Source font size must expose exactly one native spin button.' }
     $sourceSizeSpinner = $sourceSizeSpinners[0]
+    if ($sourceSizeSpinner.Current.Name -cne 'Source font size') { throw 'The source font-size spin button must expose its accessible name.' }
     if (-not [System.Windows.Automation.Automation]::Compare($sourceSizeSpinner.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $sourceSizeInputCondition), $sourceSizeInput)) { throw 'The source font-size spin button must own its actual edit input.' }
     $sourceSizePattern = $null
     if (-not $sourceSizeInput.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$sourceSizePattern)) { throw 'Source font size must expose the actual input value.' }
@@ -345,6 +346,7 @@ function Test-DefaultFlows {
     Invoke-Control 'Show navigator'
     Wait-Control 'Preferences saved' | Out-Null
     Invoke-Control 'Editor'
+    Invoke-Control 'Checkout' -Pointer
     Invoke-Control 'Fields'
     Wait-Control 'Checkout' | Out-Null
     Capture-Window 'editor-compact'
