@@ -1,14 +1,15 @@
-fn generate_pe_header() {
-    use time::OffsetDateTime;
+fn copyright() -> String {
+    let year = time::OffsetDateTime::now_utc().year();
+    format!("Copyright © 2023-{year} Tuyen Pham")
+}
 
-    let today = OffsetDateTime::now_utc();
-    let copyright = format!("Copyright © 2023-{} Tuyen Pham", today.year());
+fn generate_pe_header(copyright: &str) {
     let mut res = winres::WindowsResource::new();
     // needed for MinGW cross-compiling
     if cfg!(unix) {
         res.set_windres_path("x86_64-w64-mingw32-windres");
     }
-    res.set("LegalCopyright", &copyright);
+    res.set("LegalCopyright", copyright);
     if std::env::var_os("CARGO_FEATURE_GUI").is_some() {
         println!("cargo:rerun-if-changed=assets/icon.ico");
         res.set_icon("assets/icon.ico");
@@ -116,6 +117,8 @@ fn main() {
     // Always embed the git hash so it is available to every build profile.
     emit_git_hash();
     emit_desktop_release();
+    let copyright = copyright();
+    println!("cargo:rustc-env=REGRESSIFY_COPYRIGHT={copyright}");
 
     // GPUI's debug render trees exceed Windows' default 1 MiB main-thread stack.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
@@ -135,6 +138,6 @@ fn main() {
         return;
     }
     if cfg!(windows) {
-        generate_pe_header();
+        generate_pe_header(&copyright);
     }
 }

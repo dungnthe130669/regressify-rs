@@ -82,6 +82,7 @@ if ($SmokeTest) {
     $uninstaller = Join-Path $destination 'unins000.exe'
     $installed = Join-Path $destination 'regressify-desktop.exe'
     $installedCli = Join-Path $destination 'regressify.exe'
+    $licenseFiles = @('LICENSE', 'LICENSING.md')
     $originalHash = (Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash
     $originalCliHash = (Get-FileHash -LiteralPath $cliBinary.FullName -Algorithm SHA256).Hash
     function Assert-InstallerCliPath {
@@ -207,6 +208,13 @@ if ($SmokeTest) {
         Assert-ChromiumPreparation $installLog $false
         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash) { throw 'Installed executable differs from the built payload.' }
         if ((Get-FileHash -LiteralPath $installedCli -Algorithm SHA256).Hash -ne $originalCliHash) { throw 'Installed CLI differs from the built payload.' }
+        foreach ($name in $licenseFiles) {
+            $installedLicense = Join-Path $destination $name
+            if (-not (Test-Path -LiteralPath $installedLicense -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $installedLicense -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath (Join-Path $root $name) -Algorithm SHA256).Hash) {
+                throw "Installer did not install the repository $name."
+            }
+        }
         & $installedCli --version
         if ($LASTEXITCODE -ne 0) { throw 'Installed CLI failed to run.' }
         Assert-InstallerCliPath
@@ -275,6 +283,9 @@ if ($SmokeTest) {
             if ($result -ne 0) { throw "Fixture uninstall failed ($result). See $fixture." }
             if (Test-Path -LiteralPath $installed) { throw 'Uninstall left the installed executable behind.' }
             if (Test-Path -LiteralPath $installedCli) { throw 'Uninstall left the installed CLI behind.' }
+            foreach ($name in $licenseFiles) {
+                if (Test-Path -LiteralPath (Join-Path $destination $name)) { throw "Uninstall left $name behind." }
+            }
             if (Test-Path -LiteralPath $registration) { throw 'Uninstall left the fixture registration behind.' }
             if (Test-Path -LiteralPath $pathOwner) { throw 'Uninstall left PATH ownership metadata behind.' }
             $remainingPath = Get-UserPathState

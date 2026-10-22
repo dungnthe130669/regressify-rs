@@ -88,7 +88,9 @@ then
   cargo build "${build_args[@]}"
 fi
 
-cd target/$TARGET/release
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+cd "${CARGO_TARGET_DIR:-target}/$TARGET/release"
 case $OS in
   ubuntu*)
     # asset="$PACKAGE_NAME-$TAG-$TARGET.tar.gz"
@@ -146,22 +148,29 @@ then
   rm $PACKAGE_ZIP_SHA256
 fi
 
+# AGPL recipients of the binary must also receive the license.
+LICENSE_FILES=(LICENSE LICENSING.md)
+for license_file in "${LICENSE_FILES[@]}"
+do
+  cp "$SOURCE_DIR/$license_file" .
+done
+
 if [ -n "$PASSWORD" ]
 then
   # Password is set, enable header compression and encryption
   # -mhc: header compression
   # -mhe: header encryption
   # -mx[N] : set compression level: -mx1 (fastest) ... -mx9 (ultra)
-  7z a $PACKAGE_7Z $asset -mhc=on -mhe=on -mx9 -p"$PASSWORD"
+  7z a $PACKAGE_7Z $asset "${LICENSE_FILES[@]}" -mhc=on -mhe=on -mx9 -p"$PASSWORD"
 
   # Also create a zip file
-  7z a $PACKAGE_ZIP $asset -mx5 -p"$PASSWORD"
+  7z a $PACKAGE_ZIP $asset "${LICENSE_FILES[@]}" -mx5 -p"$PASSWORD"
 else
   # No password set, just compress
-  7z a $PACKAGE_7Z $asset -mx9
+  7z a $PACKAGE_7Z $asset "${LICENSE_FILES[@]}" -mx9
 
   # Also create a zip file
-  7z a $PACKAGE_ZIP $asset -mx5
+  7z a $PACKAGE_ZIP $asset "${LICENSE_FILES[@]}" -mx5
 fi
 
 create_sha256_file() {

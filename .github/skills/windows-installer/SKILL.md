@@ -16,7 +16,8 @@ description: 'Use when changing Inno Setup packaging, Windows installer versions
 1. Preserve canonical four-part `N.N.N.N` installer/PE versions, matching executable
    resources, x64 artifact naming, and static MSVC runtime verification.
 1. Require both `regressify-desktop.exe` and `regressify.exe` in the payload source
-   directory and install them together in `{app}`. Verify each static runtime and
+   directory and install them together in `{app}` with the repository `LICENSE` and
+   `LICENSING.md`. Verify each static runtime and
    payload hash; the CLI keeps its Cargo version, not the desktop tag version.
 1. Register `{app}` only in the user PATH. Preserve raw values, registry types,
    pre-existing entries and later edits; keep ownership across upgrades and remove

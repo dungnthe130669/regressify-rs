@@ -3,6 +3,21 @@
 Current verification gaps and dated resolution history. Entries marked resolved
 are historical evidence, not open implementation tasks.
 
+## Third-Party Notices In Distributions (2026-10-22)
+
+- Open: release archives, the Windows installer, and published reports ship
+  third-party components without their license notices. Rust crates and frontend
+  npm packages (MIT, Apache-2.0, BSD, ISC, MPL-2.0, and others) are compiled into
+  the executables and report bundle, but no third-party notice file accompanies them.
+- The subset report fonts in [frontend/src/assets/fonts](frontend/src/assets/fonts)
+  are Roboto Flex and JetBrains Mono 2.304 (SIL OFL 1.1), identified from their
+  `name` tables. Subsetting removed their license records, and no OFL text is
+  distributed with reports or binaries.
+- Regressify itself is AGPL-3.0-or-later ([LICENSING.md](LICENSING.md)); archives
+  and the installer include `LICENSE` and `LICENSING.md`. Vendored Playwright assets
+  keep their Apache-2.0 notices in [src/test/vendor](src/test/vendor/README.md).
+  `cargo deny check licenses` verifies Rust license compatibility, not notice delivery.
+
 ## Local HTML Report Action (2026-10-21)
 
 - Removed the unsupported Results **Open HTML report** button and its file-based

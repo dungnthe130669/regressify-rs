@@ -2,6 +2,7 @@
   "name": "@regressify/snapshot",
   "private": true,
   "version": "0.0.0",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "dev": "bun run fixtures && bun --bun vite --host 127.0.0.1",

@@ -52,12 +52,12 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 - Diagnostic archive failures warn without changing capture/command outcomes; preserve original execution provenance and explicit completeness. See the [diagnostics skill](.github/skills/logging-diagnostics/SKILL.md).
 - Promote only successful captures. Never replace a good reference with an error placeholder or delete it before a replacement capture succeeds.
 - Default results use completed full-suite runs; cleanup preserves baselines and active artifacts. Follow the [retention skill](.github/skills/run-retention/SKILL.md).
-- Preserve `camelCase` config and untagged action deserialization precedence.
-  Configuration resolves scenario -> suite -> workspace -> defaults.
+- Preserve `camelCase` config and untagged action deserialization precedence. Configuration resolves scenario -> suite -> workspace -> defaults.
 - Suite `displayName` is presentation-only; keep file, output, and route identity separate.
 - Desktop writes must preserve user edits and detect external conflicts. Keep blocking work off the UI thread; cancellation must account for child processes.
 - Validate workspace-relative paths at filesystem boundaries. Escape for the
   actual JS/CSS/HTML sink; pass process arguments separately from shell strings.
+- Regressify is AGPL-3.0-or-later with an output exception ([LICENSING.md](LICENSING.md)). Dependencies and vendored code must be AGPL-compatible and keep their license notices; run `cargo deny check licenses` after Rust dependency changes.
 
 ## Entry Points
 

@@ -2,6 +2,7 @@
   "name": "regressify-cli",
   "type": "module",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "ver": "bun ver.ts",
     "sync": "git add .istari -f",

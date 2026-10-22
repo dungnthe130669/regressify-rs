@@ -39,6 +39,15 @@ Linux headless models run:
 cargo test --locked --features desktop --lib
 ```
 
+Cargo manifest, lockfile, or [deny.toml](../../../deny.toml) changes run the
+[license gate](../../workflows/license-checks.yml). Every allowed license must stay
+AGPL-3.0-or-later compatible; review compatibility before adding one. Locally,
+install `cargo-deny` (for example under `target/tools`) and run:
+
+```sh
+cargo deny --locked check licenses
+```
+
 Native smoke additionally requires an unlocked Windows desktop and isolated app
 state. Installer/release checks require their own prerequisites; ordinary unit
 tests do not validate visible setup, shell integration, or actual update installation.

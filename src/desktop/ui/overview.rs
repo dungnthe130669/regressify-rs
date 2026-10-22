@@ -492,6 +492,12 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // AGPL "Appropriate Legal Notices": copyright, no warranty, redistribution terms and license.
+        const WARRANTY: &str = "This program comes with ABSOLUTELY NO WARRANTY. It is free software; you may redistribute it under the terms of the license below.";
+        const LICENSE: &str = "GNU AGPL v3 or later";
+        const LICENSE_URL: &str =
+            "https://github.com/precise-alloy/regressify-rs/blob/master/LICENSING.md";
+        const SOURCE_URL: &str = "https://github.com/precise-alloy/regressify-rs";
         window.open_dialog(cx, |dialog, _, _| {
             dialog
                 .title("About")
@@ -528,6 +534,40 @@ impl Workbench {
                             .label("https://tuyen.blog/")
                             .accessibility_label("https://tuyen.blog/")
                             .on_click(|_, _, cx| cx.open_url("https://tuyen.blog/")),
+                    ),
+                )
+                .child(
+                    div()
+                        .id("about-copyright")
+                        .role(Role::Status)
+                        .aria_label(env!("REGRESSIFY_COPYRIGHT"))
+                        .test_support()
+                        .child(env!("REGRESSIFY_COPYRIGHT")),
+                )
+                .child(
+                    div()
+                        .id("about-warranty")
+                        .role(Role::Status)
+                        .aria_label(WARRANTY)
+                        .test_support()
+                        .child(WARRANTY),
+                )
+                .child(
+                    div().flex().items_center().gap_1().child("License:").child(
+                        Button::new("about-license")
+                            .ghost()
+                            .label(LICENSE)
+                            .accessibility_label(LICENSE)
+                            .on_click(|_, _, cx| cx.open_url(LICENSE_URL)),
+                    ),
+                )
+                .child(
+                    div().flex().items_center().gap_1().child("Source:").child(
+                        Button::new("about-source")
+                            .ghost()
+                            .label(SOURCE_URL)
+                            .accessibility_label(SOURCE_URL)
+                            .on_click(|_, _, cx| cx.open_url(SOURCE_URL)),
                     ),
                 )
                 .footer(

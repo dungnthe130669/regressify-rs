@@ -146,3 +146,17 @@ git update-index --chmod=+x ./ci/make-release.sh
 See also:
 
 - <https://github.com/mattsse/chromiumoxide>
+
+## License
+
+Copyright (C) 2023-2026 Tuyen Pham. Regressify is free software under the
+[GNU Affero General Public License v3.0 or later](LICENSE) and comes with
+ABSOLUTELY NO WARRANTY.
+
+An additional permission lets you use Regressify output, such as generated
+reports, `regressify mcp` exports, `regressify init` files, and documentation
+samples, under terms of your choice. See [LICENSING.md](LICENSING.md) for its
+exact scope and for third-party components that keep their own licenses.
+
+Rust dependencies must use licenses allowed by [deny.toml](deny.toml). Check them
+with `cargo deny check licenses` (requires `cargo-deny`).

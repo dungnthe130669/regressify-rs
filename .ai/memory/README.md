@@ -64,6 +64,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   client-side status, and native publishing verification.
 - [Release pipelines](release-pipelines.md): GitHub/Azure release selection, Library
   scope, stage locking, and Windows tool compatibility.
+- [Licensing](licensing.md): verbatim AGPL text hash, output-exception upkeep,
+  and cargo-deny license-gate checks.
 
 ## Checks
 

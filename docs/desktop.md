@@ -85,14 +85,16 @@ window icons and rendered title-bar/taskbar pixels with:
 Windows x86_64 releases include `Regressify-Desktop-Setup-N.N.N.N-x64.exe`.
 Run the installer normally, without administrator elevation. It installs
 `regressify-desktop.exe` and `regressify.exe` together in the per-user folder
-`%LOCALAPPDATA%\Programs\Regressify Desktop`, creates desktop and Start-menu
-shortcuts, and adds **Open with Regressify Desktop** to folder and folder-background
+`%LOCALAPPDATA%\Programs\Regressify Desktop` with the `LICENSE` and
+`LICENSING.md` license files, creates desktop and Start-menu shortcuts, and adds
+**Open with Regressify Desktop** to folder and folder-background
 context menus. On Windows 11, the command is under **Show more options**.
 Setup adds this shared install folder to the user's PATH, leaving the machine PATH
 unchanged. Open a new terminal after setup to run `regressify`; restart any existing
 terminal host to pick up the environment change. Upgrades do not duplicate the
-entry. Uninstall removes both executables, shortcuts, context-menu entries, and
-only the PATH entry owned by setup; pre-existing entries and later PATH edits are
+entry. Uninstall removes both executables, the license files, shortcuts,
+context-menu entries, and only the PATH entry owned by setup; pre-existing entries
+and later PATH edits are
 preserved. Workspaces and desktop preferences survive updates and uninstall.
 Both release executables link the MSVC runtime statically.
 
@@ -913,7 +915,8 @@ selecting only Musl with `desktop` fails early with an actionable error. With
 `both`, Musl jobs build the CLI and desktop jobs run for selected supported targets.
 
 Untagged/manual archive builds produce `regressify-cli-<target>` or
-`regressify-desktop-<target>` in ZIP and 7z formats with SHA-256 sidecars. Their
+`regressify-desktop-<target>` in ZIP and 7z formats with SHA-256 sidecars. Each
+archive contains the executable with `LICENSE` and `LICENSING.md`. Their
 destination repository and `linux`/`macos`/`windows` release tags are unchanged.
 Every build now checks out the triggering ref, not a hard-coded release branch.
 
@@ -982,9 +985,10 @@ and their Jump List identity, and checks the folder context-menu commands.
 Chromium requests in the smoke child processes use an unreachable loopback proxy:
 setup must reuse an existing cached build or log a non-fatal network failure,
 without downloading a browser. The fixture also checks `/SKIPCHROMIUM=1`.
-Uninstall must remove both executables, the owned PATH entry, fixture shortcuts,
-context menus and installation registration, preserving the original user PATH
-value and type and leaving the machine PATH unchanged.
+Uninstall must remove both executables, the license files, the owned PATH entry,
+fixture shortcuts, context menus and installation registration, preserving the
+original user PATH value and type and leaving the machine PATH unchanged. Fresh
+installation must also copy the repository `LICENSE` and `LICENSING.md` unchanged.
 The smoke helper waits for the complete installer/uninstaller process tree with
 a two-minute execution deadline and retains `uninstall.log` in the fixture.
 Inno's first-phase uninstaller can exit before its second phase finishes PATH
@@ -1252,7 +1256,9 @@ client widths of 1080px or wider; narrower windows hide the title-bar version.
 The workspace name uses the same text size as the menus, with a small gap after
 Results. Help > About always shows Regressify Desktop, its version, author Tuyen
 Pham, and the clickable website `https://tuyen.blog/`, which opens in the external
-default browser.
+default browser. It also shows the copyright and no-warranty notices, a
+**GNU AGPL v3 or later** link to the licensing terms, and a link to the public
+source repository.
 There is no bottom application or Results status bar. Application status and
 Report status icons in their respective headers retain messages in tooltips and
 accessibility labels, leaving the bottom edge available for content.

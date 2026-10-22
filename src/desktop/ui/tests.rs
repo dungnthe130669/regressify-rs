@@ -10567,6 +10567,23 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
             window.find("about-website").label(),
             Some("https://tuyen.blog/")
         );
+        let copyright = env!("REGRESSIFY_COPYRIGHT");
+        assert!(copyright.starts_with("Copyright © 2023-") && copyright.ends_with(" Tuyen Pham"));
+        assert_eq!(window.find("about-copyright").label(), Some(copyright));
+        assert_eq!(
+            window.find("about-warranty").label(),
+            Some(
+                "This program comes with ABSOLUTELY NO WARRANTY. It is free software; you may redistribute it under the terms of the license below."
+            )
+        );
+        assert_eq!(
+            window.find("about-license").label(),
+            Some("GNU AGPL v3 or later")
+        );
+        assert_eq!(
+            window.find("about-source").label(),
+            Some("https://github.com/precise-alloy/regressify-rs")
+        );
         window.click("about-close", cx);
         assert!(view.read(cx).unsaved(cx));
         view.update(cx, |this, _| this.session.workspace = None);
@@ -10611,7 +10628,7 @@ async fn about_dialog_public_close_preserves_keyboard_focus_and_drafts(cx: &mut 
         settle_dialog(cx, handle).await;
         cx.update_window(handle.into(), |_, window, cx| {
             if dismissal != "escape" {
-                for _ in 0..6 {
+                for _ in 0..10 {
                     if window.within("about-close").find("close").focused() == Some(true) {
                         break;
                     }

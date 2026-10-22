@@ -281,6 +281,9 @@ function Test-ApplicationMenus {
     Wait-Control "Version: $version" | Out-Null
     Wait-Control 'Author: Tuyen Pham' | Out-Null
     if (-not (Test-ControlInvokable 'https://tuyen.blog/')) { throw 'About website must be an external link.' }
+    Wait-Control 'This program comes with ABSOLUTELY NO WARRANTY. It is free software; you may redistribute it under the terms of the license below.' | Out-Null
+    if (-not (Test-ControlInvokable 'GNU AGPL v3 or later')) { throw 'About license must be an external link.' }
+    if (-not (Test-ControlInvokable 'https://github.com/precise-alloy/regressify-rs')) { throw 'About source must be an external link.' }
     Capture-Window 'help-about'
     Invoke-Control 'Close' -Within 'About actions' -Pointer
     Wait-WindowState { $null -eq (Find-Control "Version: $version") } 'About dialog did not close.'

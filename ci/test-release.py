@@ -505,6 +505,50 @@ function tuyen {
                         expected.extend(["--features", features])
                     self.assertEqual(arguments.read_text(encoding="utf-8").splitlines(), expected)
 
+    def test_release_archives_include_license_files(self):
+        bash = os.environ.get("BASH_PATH") or shutil.which("bash")
+        self.assertIsNotNone(bash, "Bash is required; on Windows set BASH_PATH to Git Bash")
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            stubs = temporary / "stubs"
+            stubs.mkdir()
+            for name, source in {
+                "rustc": "#!/usr/bin/env bash\nprintf 'host: x86_64-unknown-linux-gnu\\n'\n",
+                "upx": "#!/usr/bin/env bash\n",
+                "7z": '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$ARCHIVE_ARGS_FILE"\n: > "$2"\n',
+            }.items():
+                path = stubs / name
+                path.write_text(source, encoding="utf-8", newline="\n")
+                path.chmod(0o755)
+            release = temporary / "target/x86_64-unknown-linux-gnu/release"
+            release.mkdir(parents=True)
+            (release / "regressify").write_bytes(b"synthetic binary")
+            arguments = temporary / "archive-arguments"
+            env = dict(
+                os.environ, TEST_MODE="1", GITHUB_REF="refs/tags/test", OS="ubuntu-22.04",
+                TARGET="x86_64-unknown-linux-gnu", BINARY_GIT_HASH="test", SKIP_BUILD="1",
+                REPO="", TOKEN="", FILE_NAME="regressify", PACKAGE_NAME="regressify-cli",
+                CARGO_TARGET_DIR=(temporary / "target").as_posix(), STUB_DIR=stubs.as_posix(),
+                ARCHIVE_ARGS_FILE=arguments.as_posix(),
+            )
+            script = 'if command -v cygpath >/dev/null; then\n'
+            script += '  STUB_DIR="$(cygpath -u "$STUB_DIR")"; CARGO_TARGET_DIR="$(cygpath -u "$CARGO_TARGET_DIR")"\n'
+            script += '  ARCHIVE_ARGS_FILE="$(cygpath -u "$ARCHIVE_ARGS_FILE")"\nfi\n'
+            script += 'export PATH="$STUB_DIR:$PATH"\nbash ci/make-release.sh'
+            for password in ("", "synthetic-archive-password"):
+                with self.subTest(password=bool(password)):
+                    arguments.unlink(missing_ok=True)
+                    result = subprocess.run([bash, "-c", script], cwd=ROOT, env=dict(env, PASSWORD=password),
+                                            capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    archives = [line.split()[:5] for line in arguments.read_text(encoding="utf-8").splitlines()]
+                    self.assertEqual(archives, [
+                        ["a", f"regressify-cli-{env['TARGET']}.{extension}", "regressify", "LICENSE", "LICENSING.md"]
+                        for extension in ("7z", "zip")
+                    ])
+                    for name in ("LICENSE", "LICENSING.md"):
+                        self.assertEqual((release / name).read_bytes(), (ROOT / name).read_bytes())
+
 
 class AzureReleaseTests(unittest.TestCase):
     def setUp(self):
@@ -915,7 +959,12 @@ if (-not $loop) { throw 'Installer payload dependency loop was not found.' }
         installer = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
         self.assertIn('Source: "{#SourceDir}\\regressify.exe"; DestDir: "{app}"; Flags: ignoreversion', installer)
         self.assertIn('Source: "{#SourceDir}\\regressify-desktop.exe"; DestDir: "{app}"; Flags: ignoreversion', installer)
+        for name in ("LICENSE", "LICENSING.md"):
+            self.assertIn(f'Source: "..\\{name}"; DestDir: "{{app}}"; Flags: ignoreversion', installer)
         smoke = (ROOT / "ci/build-desktop-installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("$licenseFiles = @('LICENSE', 'LICENSING.md')", smoke)
+        self.assertIn('throw "Installer did not install the repository $name."', smoke)
+        self.assertIn('throw "Uninstall left $name behind."', smoke)
         self.assertIn('Get-FileHash -LiteralPath $installedCli -Algorithm SHA256', smoke)
         self.assertIn('& $installedCli --version', smoke)
         self.assertIn("$installedCli = Join-Path $destination 'regressify.exe'", smoke)

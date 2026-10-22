@@ -13,7 +13,7 @@ description: 'Use when changing GitHub Actions or Azure Pipelines release matric
 
 1. Trace matrix inputs to target/toolchain/features, artifact names, upload fields, installer versions, and update manifests. Do not assume CLI/desktop targets match.
 1. Desktop selections also schedule a CLI job for each supported desktop target without duplicates; desktop-only Musl selections still fail. Tagged Windows payloads build independently with static runtimes. A dependent installer job must download both exact artifacts from the same run and stop if either build fails. CLI-only archive publishing stays separate.
-1. Preserve `--locked`, static-runtime flags where required, archive contents, executable resource versions, and immutable installer naming/hash/size contracts.
+1. Preserve `--locked`, static-runtime flags where required, archive contents (the executable plus `LICENSE` and `LICENSING.md`), executable resource versions, and immutable installer naming/hash/size contracts.
 1. Keep preparation/verification separate from publication. A script or workflow edit does not authorize a tag, release upload, real remote operation, or install.
 1. Validate external responses and URLs with bounded reads and clear errors. Never print publishing secrets or embed credentials in artifacts/manifests.
 1. Azure `Plan` must stay secret-free. Load `GitHub` and `Regressify` Library groups only in `Release`, map tokens only into their publishing steps, and reject pull-request releases. Distinguish automatic tag CI from manual runs on tags when building the matrix.
