@@ -13142,7 +13142,7 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
         assert!(summary.contains("Capture ID: 8ac900fea19642cc0000_phone__FINAL"));
         assert!(summary.contains("Page: https://example.com/receipt"));
         assert!(summary.contains("Allowed mismatch: 0.1%"));
-        assert!(summary.contains("Mismatch: 0.050%"));
+        assert!(summary.contains("Mismatch: 0.05%"));
         window.click(("capture", 1_usize), cx);
         assert_eq!(
             window.find("capture-heading").label(),

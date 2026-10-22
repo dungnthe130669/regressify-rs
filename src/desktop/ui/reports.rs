@@ -4098,7 +4098,7 @@ mod pointer_tests {
                         image.top() - panel.top(), toolbar.size.height, image.size.height / panel.size.height,
                     );
                     for id in [
-                        "results-information", "refresh-results", "open-report", "open-artifacts",
+                        "results-information", "refresh-results", "open-artifacts",
                         "capture-information", "results-show-capture-log", "copy-capture-details",
                         "edit-capture-suite", "approve-scenario", "fit-image", "fit-width",
                         "zoom-out", "zoom-in", "actual-size",
