@@ -93,6 +93,13 @@ The download buttons and the archive table are resolved once at build time by [s
 
 Only validated values reach the page, as escaped text; manifest text is never rendered as HTML.
 
+The home page keeps a short introduction, an existing desktop screenshot, and
+terminal commands. Downloads are grouped by platform, with archive tables,
+checksums, installer details, and source builds in native `details` disclosures.
+Keep all files accessible without JavaScript and preserve the platform anchors.
+The global scrollbar reserves a stable gutter and uses opaque theme-aware thumb
+and track colors, so opening details never shifts the page horizontally.
+
 | Variable                       | Effect                                                                                          |
 | ------------------------------ | ----------------------------------------------------------------------------------------------- |
 | `PUBLIC_DOWNLOAD_ORIGIN`       | Site origin hosting `/downloads/` (default `https://regressify.eshn.dev`).                      |
