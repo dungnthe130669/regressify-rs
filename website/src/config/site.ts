@@ -26,4 +26,9 @@ export const NAV_LINKS = [
   { href: '/download/', label: 'Download' },
 ] as const;
 
+export const HEADER_LINKS = [
+  ...NAV_LINKS,
+  { href: '/admin', label: 'Login' },
+] as const;
+
 export const THEME_STORAGE_KEY = 'regressify-theme';

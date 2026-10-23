@@ -1,6 +1,9 @@
 # Regressify Website
 
-The public site for Regressify: a minimal landing page, a download page, and room to grow with docs and a blog. It is a static [Astro](https://astro.build) site with no UI framework. Its look follows the desktop app's theme, and every page works without JavaScript.
+The public site for Regressify: a minimal landing page, downloads, docs, a blog,
+and a private deployment admin view. Public pages are static [Astro](https://astro.build)
+with no UI framework and work without JavaScript. The admin view uses a Worker
+API and JavaScript. The site's look follows the desktop app's theme.
 
 ## Develop
 
@@ -31,6 +34,14 @@ bun run dev
 | `src/content/docs`, `/blog` | Markdown content collections.                                     |
 | `src/lib/release.ts`        | Build-time installer resolution and validation.                   |
 | `public/`                   | Logo and favicons copied from [assets](../assets).                |
+
+Header navigation uses `HEADER_LINKS` in [src/config/site.ts](src/config/site.ts).
+It includes shared `NAV_LINKS` plus a header-only Login link to `/admin`, where
+Cloudflare Access handles authentication. Add future header-only links to
+`HEADER_LINKS`; add links to `NAV_LINKS` when they should also appear in the footer.
+Below 640px all header links sit in a native hamburger dropdown, keeping the
+header one row tall even when open. Navigation works without JavaScript; scripts
+add Escape, outside-click, focus-leave, and desktop-resize dismissal.
 
 ## Add Docs and Blog Posts
 
@@ -119,10 +130,72 @@ manifest, copies only `latest.txt` into `dist/downloads/`, generates the MCP Wor
 into ignored `mcp-worker/` with the released CLI, verifies it, and deploys with
 [wrangler.jsonc](wrangler.jsonc).
 
-That configuration deploys one Worker, `regressify`, on the custom domain `regressify.eshn.dev` with `workers.dev` and preview URLs disabled. `dist/` is served as static assets with `404.html` for unknown paths, and `run_worker_first: ["/mcp"]` sends only `/mcp` to the MCP handler. Keep its `compatibility_date` and `compatibility_flags` in sync with [the MCP Worker template](../src/mcp/worker/wrangler.jsonc.template); `python ci/test-release.py` checks this. Deployment needs `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, and the `eshn.dev` zone must belong to that account.
+That configuration deploys one Worker, `regressify`, on the custom domain
+`regressify.eshn.dev` with `workers.dev` and preview URLs disabled. `dist/` serves
+static assets with `404.html` for unknown paths. The website-owned
+[Worker entry point](worker/index.ts) routes `/mcp` to the generated MCP handler
+and `/admin` plus `/admin/*` to the private admin handler. The `ASSETS` binding
+serves the admin page with no-store headers. Both the generated package and the
+combined Worker are checked before deployment; `worker:build` is a dry run.
+Keep compatibility settings aligned with
+[the MCP Worker template](../src/mcp/worker/wrangler.jsonc.template);
+`python ci/test-release.py` checks this. Deployment needs `CLOUDFLARE_ACCOUNT_ID`
+and `CLOUDFLARE_API_TOKEN`, and the `eshn.dev` zone must belong to that account.
 
 Do not deploy without a verified release manifest: a deployment replaces site
 assets, including the update feed. GitHub binaries are not deleted by site deploys.
+
+## Private Admin
+
+The deployment table is at `https://regressify.eshn.dev/admin/`. Its same-origin
+`GET /admin/api/sites` feed calls the configured PostHog endpoint server-side
+with `POST {}` and a bearer token. Set Worker secrets `POSTHOG_API_ENDPOINT` and
+`POSTHOG_API_TOKEN`; neither value belongs in `PUBLIC_*`, HTML, client scripts,
+build-time environment definitions, or Wrangler `vars`.
+
+Cloudflare Access must protect **both `/admin` and `/admin/*`**, including the API.
+The Worker relies on that policy; it does not implement a second login or validate
+Access JWTs. Do not enable unprotected Worker aliases or expose another origin.
+The page is excluded from the sitemap and marked noindex. Admin responses use
+`Cache-Control: private, no-store`; upstream error bodies and query metadata are
+never returned. The upstream URL must use HTTPS, redirects are refused, requests
+time out after 15 seconds, and results are limited to 2 MiB and 10,000 rows.
+
+The query must return unique columns `url`, `datetime`, `file_count`,
+`total_bytes`, `duration_ms` in any order. Additional columns are omitted.
+Measurements must be nonnegative finite numbers or null; dates must be parseable
+strings or null. The table supports full-URL search, raw-value column sorting,
+manual refresh, and automatic refresh every 60 seconds while visible. Failed
+refreshes retain the last successful table and show a warning. A PostHog
+`hasMore` response is shown as partial, not silently treated as a complete list.
+The desktop-only `#` column numbers the currently filtered and sorted rows from 1.
+Size is binary MiB; relative dates have full local timestamp tooltips. Metrics
+blend green/neutral/red over each complete returned column; values at or above
+75% of its maximum are bold. Only HTTP(S) URLs without credentials become links.
+
+For local end-to-end development, generate the ignored MCP package from the
+repository root using the locally built CLI (this does not deploy):
+
+```sh
+cargo build --locked --bin regressify
+target/debug/regressify mcp --output website/mcp-worker
+cd website/mcp-worker
+npm ci
+cd ..
+bun run check
+bun run build
+bun run worker:check
+bun run worker:build
+bun run worker:dev
+```
+
+On Windows the binary is `target/debug/regressify.exe`. Export requires a new
+directory; reuse an existing generated package only if it matches your source.
+`worker:dev` uses Wrangler's local runtime and reads the two keys from the
+repository-root `.env.local` into Worker bindings without sending them to the
+browser. Open the localhost URL Wrangler prints, then `/admin/`. Never bind this
+development server to a public interface: local development has no Access gate.
+`bun run dev` serves only Astro and cannot serve this Worker API.
 
 ## Terminal Installation
 

@@ -35,6 +35,14 @@ Verified: 2026-10-23
   `archive.<filename>=<size>:<sha256>`; Rust additionally requires Windows ZIPs.
   Binary limits are 1 GiB, manifest 16 KiB. Cloudflare's binary size limit is no
   longer part of application distribution.
+- The [website Worker](../../website/worker/index.ts) wraps the generated MCP
+  handler without changing its export template. Admin page/API routes run Worker
+  first, rely on Cloudflare Access for `/admin` and `/admin/*`, and use server-only
+  PostHog secrets. Combined typecheck and dry-run build precede deployment; see
+  [local checks and setup](../../website/README.md#private-admin).
+- Workerd rejects `fetch` with `redirect: 'error'`; the admin feed uses `manual`
+  and rejects non-2xx responses without forwarding bearer credentials. Website
+  tests are scoped to `src` so an ignored MCP export cannot pollute discovery.
 - [Offline tests](../../ci/test-release.py) exercise all 48 GitHub selections,
   full inventories and mocked publication, all supported Unix target scripts,
   and mocked Windows script execution. Set `BASH_PATH` to Git Bash on Windows.

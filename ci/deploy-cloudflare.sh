@@ -45,6 +45,12 @@ cp "$downloads/latest.txt" "$website/dist/downloads/latest.txt"
   npm test
 )
 
+(
+  cd "$website"
+  bun run worker:check
+  bun run worker:build
+)
+
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || fail "Set the CLOUDFLARE_ACCOUNT_ID secret to deploy."
 [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || fail "Set the CLOUDFLARE_API_TOKEN secret to deploy."
 export WRANGLER_SEND_METRICS=false

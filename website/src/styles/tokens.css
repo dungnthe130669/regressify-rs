@@ -147,17 +147,11 @@
 
   /*
    * Sticky header height (Header.astro): 2px gradient + 48px bar + 1px border.
-   * Below 640px the tabs wrap under the 44px brand row: 2 + 44 + 36 + 1 = 83px.
+  * The mobile navigation overlays content without adding another header row.
    * Used for scroll padding so fragment targets and focused elements are not
    * hidden under the header. Update when the header layout changes.
    */
   --header-height: 51px;
-}
-
-@media (max-width: 639px) {
-  :root {
-    --header-height: 83px;
-  }
 }
 
 :root[data-theme='light'] {

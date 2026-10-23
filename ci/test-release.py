@@ -433,6 +433,7 @@ gh() {
                  'RELEASE_REQUIRED=1 RELEASE_MANIFEST_FILE="$downloads/latest.txt" bun run build',
                  '[ ! -e "$website/dist/downloads" ]', 'cp "$downloads/latest.txt" "$website/dist/downloads/latest.txt"',
                  '"$REGRESSIFY_BIN" mcp --output "$worker"', "npm ci", "npm run check", "npm test",
+                 "bun run worker:check", "bun run worker:build",
                  "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", 'wrangler" deploy --config wrangler.jsonc']
         indexes = [script.index(item) for item in order]
         self.assertEqual(indexes, sorted(indexes))
@@ -442,10 +443,11 @@ gh() {
         for key in ("compatibility_date", "compatibility_flags", "minify", "upload_source_maps"):
             self.assertEqual(config[key], template[key], key)
         self.assertEqual(config["name"], "regressify")
-        self.assertEqual(config["main"], "mcp-worker/src/index.ts")
+        self.assertEqual(config["main"], "worker/index.ts")
+        self.assertEqual(config["tsconfig"], "tsconfig.worker.json")
         self.assertFalse(config["workers_dev"])
         self.assertEqual(config["routes"], [{"pattern": "regressify.eshn.dev", "custom_domain": True}])
-        self.assertEqual(config["assets"], {"directory": "dist", "not_found_handling": "404-page", "run_worker_first": ["/mcp"]})
+        self.assertEqual(config["assets"], {"binding": "ASSETS", "directory": "dist", "not_found_handling": "404-page", "run_worker_first": ["/mcp", "/admin", "/admin/*"]})
         self.assertFalse((ROOT / "website/public/downloads").exists(), "Release downloads must only come from CI staging")
         self.assertTrue((ROOT / "website/public/install.ps1").is_file())
         self.assertTrue((ROOT / "website/public/install.sh").is_file())

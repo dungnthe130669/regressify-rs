@@ -11,7 +11,7 @@ const SITE_URL = process.env.SITE_URL || 'https://regressify.eshn.dev';
 export default defineConfig({
   site: SITE_URL,
   trailingSlash: 'ignore',
-  integrations: [sitemap()],
+  integrations: [sitemap({ filter: (page) => !/^\/admin(?:\/|$)/.test(new URL(page).pathname) })],
   markdown: {
     // Code stays monochrome to match the desktop's neutral palette and keep
     // contrast predictable in both themes.
