@@ -2,12 +2,18 @@
 
 Verified: 2026-10-15
 
+- Live verification on 2026-10-23: `https://regressify.eshn.dev/mcp` served
+  `regressify-authoring` v2.0.8. The pinned SDK read all 3 tools, 9 guides,
+  6 schemas, 46 examples, 15 resources, and the `author_regressify` prompt.
+  Protocol `2026-07-28` discovery/list/tool calls also passed. Invalid tool input,
+  untrusted origins (403), oversized bodies (413), and malformed JSON (400) were
+  rejected. A plain GET returns 405 by design; use an MCP HTTP client.
 - [The CLI exporter](../../src/mcp/mod.rs) embeds its guides and Worker template;
   it does not scan the current workspace or need a source checkout. Output is a
   new directory under an existing parent, with no-clobber file publication.
   Failures may leave a partial export; there is no automatic recursive cleanup.
 - [The catalog](../../src/mcp/catalog.rs) derives six schemas from real Rust
-  types, embeds nine guides (including `recipes`), and includes 32 synthetic
+  types, embeds nine guides (including `recipes`), and includes synthetic
   examples. The overview lists every example task name by category, and the
   hooks and troubleshooting topics cover script contracts, local evidence, and
   safe repair. Tests check real parsers, local schema references, property help,
@@ -83,6 +89,8 @@ Verified: 2026-10-15
 - [Protocol tests](../../src/mcp/worker/tests/worker.test.mjs.template) cover SDK legacy
   compatibility and current HTTP metadata. Invalid tool arguments are tool-error
   results; stateless tests provide `MCP-Protocol-Version` and `Mcp-Method` headers.
+  Stateless `tools/call` also needs `Mcp-Name` matching `params.name`; a live probe
+  omitting it received HTTP 400/code -32020, then passed with the header present.
 - [CI](../../.github/workflows/mcp-checks.yml) builds the default CLI, copies it
   into an empty directory, exports a package, and runs npm installation,
   typechecking, local MCP tests, and a Wrangler dry run. No publishing is implied.
