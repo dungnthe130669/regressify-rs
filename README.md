@@ -1,57 +1,101 @@
-# Regressify CLI
+# Regressify
 
-Rust CLI for visual regression testing. It launches Chromium through the Chrome DevTools Protocol, captures screenshots from YAML/JSON suites, compares them with reference images, and generates HTML report data.
+Regressify is a visual regression testing tool built in Rust, available as both a standalone CLI (`regressify`) and a native desktop workbench (`regressify-desktop`).
 
-## Desktop App
+Both interfaces share the same Rust engine: they launch a managed Chromium build directly through the Chrome DevTools Protocol (`chromiumoxide`—no Node.js or Playwright runtime required), execute declarative YAML/JSON test suites, compare captured screenshots against reference baselines, and generate self-contained interactive HTML reports.
 
-An optional Rust-native GPUI Kit workbench lets QA edit workspace configuration,
-suites, scenarios, all action types, and viewports. It includes guided and
-source editors, inheritance previews, safe saves with undo/redo, a bundled engine,
-and reference/current/diff image review. One workspace is active at a time.
-Select multiple suites with checkboxes and track their scenarios live through
-queued, running, captured, comparing, passed, failed, and cancelled states.
+## Install
+
+Download prebuilt releases from <https://regressify.eshn.dev/download/> or install from a terminal:
+
+- **Windows (Desktop + CLI):**
+
+  ```powershell
+  irm https://regressify.eshn.dev/install.ps1 | iex
+  ```
+
+- **macOS / Linux (CLI):**
+
+  ```sh
+  curl -fsSL https://regressify.eshn.dev/install.sh | sh
+  ```
+
+These commands execute an install script from the site after SHA-256 verification; unsigned application warnings may still apply. On Windows, setup installs `regressify-desktop.exe` and `regressify.exe` into `%LOCALAPPDATA%\Programs\Regressify`, adds that directory to the user `PATH`, registers **Open with Regressify Desktop** in Explorer context menus, and prepares the pinned Chromium build in `%LOCALAPPDATA%\regressify\chromium` (shared by CLI and Desktop). Official Windows builds also check for updates in the background and support in-app installation.
+
+## Desktop App (`regressify-desktop`)
+
+The Rust-native [GPUI Kit](https://gpui-kit.com) workbench lets QA and developers author, run, review, version-control, and publish visual regression suites without leaving the app:
+
+- **Guided & Source Authoring:** Edit workspace configuration (`regressify.yaml`), suites, scenarios, all action types, and viewports through structured **Fields** forms or syntax-highlighted **Source** editors (YAML, JSON, JavaScript) with JSON Schema validation, hover documentation, autocompletion, inheritance previews (`scenario -> suite -> workspace -> defaults`), comment-preserving saves, external-conflict detection, and undo/redo.
+- **Bundled Worker Execution:** Runs `ref`, `test`, `compare`, `approve`, `snapshot`, `optimize`, `clean`, `install`, and `init` in isolated background worker processes with no separate CLI binary required. Select multiple suites with checkboxes and track scenarios live through `queued`, `running`, `captured`, `comparing`, `passed`, `failed`, and `cancelled` states.
+- **Visual Results & Log Review:** Inspect reference, current, and diff images in side-by-side, wipe, overlay, or diff modes; approve updated baselines in place per viewport; and inspect structured capture and command diagnostic logs.
+- **Integrated Git Review:** Track repository status and remote ahead/behind counts from the title bar; review side-by-side text diffs; stage, commit, or discard selected files; and manage remotes (`fetch`, fast-forward `pull`, `push`). Project changes and `.regressify*` **Comparison Changes** are separated into distinct trees so baseline/report artifacts are never committed accidentally.
+- **Report & Landing App Publishing:** Deploy generated snapshot reports and multi-site customer **Landing Apps** (with live `/_snapshot/status.json` pass-rate badges) directly to **Azure Static Web Apps**, **Netlify**, or **Cloudflare Workers Static Assets**, using credentials stored in the OS keyring via reusable **Deployment Tokens**.
+- **Workspace Management:** Enforces single-instance window ownership per workspace with activation handoff, supports Windows taskbar **Recent Workspaces** Jump Lists, and initializes missing workspace files automatically on open.
+
+Build or launch from source:
 
 ```bash
 cargo build --features gui --bin regressify-desktop
 cargo run --features gui --bin regressify-desktop -- /path/to/test-workspace
 ```
 
-Omit the workspace argument to use the native folder picker. The default build
-remains CLI-only. The desktop is self-contained: build it with
-`--release --features gui --bin regressify-desktop`. No separate CLI executable
-is required; the app runs the shared Rust engine in its own isolated workers.
+Omit the workspace argument to use the native folder picker. For distribution, build with `cargo build --release --features gui --bin regressify-desktop`. See [the desktop guide](docs/desktop.md) for workflows, shortcuts, safety limits, and test commands, and [the delivery plan](docs/desktop-plan.md) for feature scope and verification evidence.
 
-See [the desktop guide](docs/desktop.md) for workflows, shortcuts, safety limits,
-and test commands, and [the delivery plan](docs/desktop-plan.md) for feature scope
-and verification evidence.
+## CLI (`regressify`)
 
-## Build
+The default Cargo build produces the standalone CLI binary (`regressify`).
+
+| Command    | Purpose                                                                                                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`     | Create missing starter files, schemas, editor associations, and `.ai/memory` guidance; configure the Regressify MCP endpoint without overwriting user data. |
+| `install`  | Fetch the pinned Chromium build into the shared per-user cache.                                                                                             |
+| `ref`      | Capture baseline screenshots and promote successful captures to references while preserving existing baselines on capture errors.                           |
+| `test`     | Capture screenshots for selected suites/scenarios, compare against references (unless `--skip-compare` is set), and generate the HTML snapshot report.      |
+| `compare`  | Re-run image comparisons against reference screenshots for the latest completed run or an explicit `--run-id`.                                              |
+| `approve`  | Promote successful test screenshots from the latest completed run (or `--run-id`) to references, optionally scoped by `--scenario`.                         |
+| `snapshot` | Generate the static HTML snapshot SPA from existing comparison reports, with optional `--test-suite` glob filters.                                          |
+| `optimize` | Losslessly or lossily compress PNG files across the project output tree.                                                                                    |
+| `clean`    | Preview and delete old completed test runs and unreferenced logs (`--keep-runs`, `--yes`) while protecting active baselines.                                |
+| `mcp`      | Export a standalone Cloudflare Worker containing versioned authoring guides, schemas, and synthetic examples.                                               |
+| `version`  | Print the CLI version and Git commit hash.                                                                                                                  |
+
+Key engine capabilities shared by CLI and Desktop:
+
+- **Browser Automation:** Actionability-waited `click`, `hover`, `input`, `press`, `key`, `select`, `check`, `uncheck`, `focus`, `scroll`, `dragAndDrop`, `upload`, `wait`, `navigate`, and `switchTab` actions across the main document, nested/cross-origin iframes, and popup tabs.
+- **Session & Lifecycle Control:** `persist` and `restore` browser storage state (cookies and origin-scoped `localStorage`), HTTP Basic Auth, URL replacement profiles, CSS overrides, and lifecycle hooks (`onBeforeScript`, `onReadyScript`, `jsOnReadyPath`).
+- **Capture Stability & Run Retention:** Multi-viewport expansion, lazy-load settling, animation/caret freezing, selector clipping, per-suite `runs.json` completion tracking, opt-in automatic run retention (`autoCleanRuns`, `keepTestRuns`), and bounded `_diagnostics` journals.
+
+See [docs/commands.md](docs/commands.md) for global flags (`--root`, `--site-env`, `--run-id`, `--async-capture-limit`, `--debug`, `--log-level`), output directories, and exit-code semantics, and [docs/get-started.md](docs/get-started.md) for authoring your first suite.
+
+## Build and Validate
+
+Build and install the CLI from source:
 
 ```bash
 cargo build --release
-```
-
-Run the CLI from the repository with:
-
-```bash
 cargo run -- --help
-```
-
-Install the local build into your Cargo bin directory with:
-
-```bash
 cargo install --path .
 ```
 
-## Validate
+Cargo features:
+
+- `local` (default): CLI binary and core engine.
+- `cloud`: Cloud integration support.
+- `desktop`: Headless desktop workspace, editor, Git, and deployment models.
+- `gui`: Native GPUI Kit desktop application (`regressify-desktop`).
+- `gui-tests`: Headless and native GPUI test support.
+
+Run CLI and model validation gates:
 
 ```bash
-cargo fmt --check
+cargo fmt --all -- --check
 cargo check
-cargo test
+cargo test --lib
+cargo test --features desktop --lib
 ```
 
-Desktop gates:
+Run full GUI and lint gates:
 
 ```bash
 cargo test --features gui-tests --all-targets -- --test-threads=1
@@ -59,103 +103,26 @@ cargo clippy --features gui --lib -- -D warnings
 ```
 
 On an interactive Windows desktop, run [the native smoke test](ci/desktop-smoke.ps1)
-to verify real windows, screenshot rendering, and GUI-to-CLI execution.
-
-## Commands
-
-Implemented commands are `init`, `install`, `mcp`, `version`, `ref`, `test`, `compare`, `approve`, `snapshot`, and `optimize`. See [docs/commands.md](docs/commands.md) for command behavior, global flags, output folders, and exit-code semantics.
+to verify real windows, screenshot rendering, and GUI-to-CLI execution. See [docs/commands.md](docs/commands.md) for all CLI options.
 
 ## MCP Authoring Guidance
 
-Generate a standalone Cloudflare Worker from the installed CLI:
+Export a standalone, read-only Cloudflare MCP Worker containing versioned authoring guides, schemas, and synthetic examples so AI clients can author and troubleshoot Regressify suites:
 
 ```sh
 regressify mcp --output ./regressify-mcp-worker
 cd regressify-mcp-worker
 npm ci
-npm run check
-npm test
-npm run build
+npm run verify
 ```
 
-The destination must be new and its parent must exist. Generation needs no source
-checkout, browser, Node installation, Cloudflare credentials, or workspace data.
-The generated project includes versioned guides, schemas, synthetic examples,
-the MCP handler, and a pinned npm lockfile. Local Worker checks require Node 22.12
-or newer; `build` is a dry run. Review the generated Worker name and README before
-separately running `npm run deploy` with your own Cloudflare authentication.
+In this repository, use `bun run deploy:check` to validate MCP templates and `bun run deploy` to export and publish the Worker. See [docs/commands.md](docs/commands.md#mcp-authoring-worker) for details.
 
-The generated `npm run verify` command audits dependencies (blocking high/critical
-advisories), type-checks, runs Worker tests, and performs a dry-run build.
-`npm run deploy` runs that gate before publishing; any failure stops deployment.
-In this source repository, `bun run deploy:check` checks Rust formatting, MCP
-tests, and the locked CLI build without publishing. The root `bun run deploy`
-then recreates `../regressify-mcp-worker`, exports using the local Cargo source
-rather than an installed CLI, installs locked dependencies, and invokes the
-generated gated deploy. It requires Bun, Node/npm, Rust, Tuyen for cleanup, and
-Cloudflare authorization. The sibling directory is replaced; do not keep manual
-edits there. No Git pull or dependency update is part of this workflow.
+## Snapshot Frontend and Website
 
-AI clients connect to the deployed `/mcp` endpoint to retrieve instructions for
-suites, scenarios, actions, workspace configuration, predefined files, lifecycle
-hooks, and troubleshooting. The hooks topic includes tested Node examples; the
-troubleshooting topic explains local reports/logs and focused diagnostic commands. The
-default Worker is public and read-only: it cannot read local files, run captures,
-accept private logs, or approve references. See [the command guide](docs/commands.md#mcp-authoring-worker).
-
-After creating or editing a suite, agents must run
-`regressify ref --test-suite <suite-name>` with the CLI installed alongside desktop
-on the user's `PATH`, then verify all intended screenshots in the fresh run.
-This updates successful references, so target-page and baseline-write permissions
-still apply; blocked verification must be reported as incomplete.
-
-For components that expand between scenarios, the MCP guidance recommends the
-same larger capture area for default and expanded states: viewport or full page.
-A header-only default screenshot can miss a menu that is already open before a
-click. Optional component details supplement, rather than replace, these images.
-
-The MCP guidance and generated `AGENTS.md` direct agents to reuse and record
-site-specific lessons in the consumer project's `.ai/memory/`: one behavior or
-issue on one site per file, at most 60 lines, with a compact linked index. Notes
-retain verified fixes, failed approaches, and evidence without secrets or raw logs.
-The server never reads or stores this project memory.
-
-## Snapshot Frontend
-
-The unified snapshot SPA has overview, suite, and image URLs, light/dark themes,
-responsive suite navigation, and zoomable side-by-side, wipe, overlay, and diff views.
-Develop it in [frontend](frontend/README.md). `bun run build` there regenerates the
-embedded assets in `src/snapshot/data`; Cargo builds need no JavaScript tooling.
-Frontend changes pushed to `release` create a generated-assets-only PR to `master`
-through the [snapshot assets workflow](.github/workflows/snapshot-assets.yml).
-
-## Release Script Permissions
-
-The [GitHub release workflow](.github/workflows/tuyen-release.yml) runs from
-`precise-alloy/regressify-rs`. Version tags build all supported targets in parallel.
-Only after all binaries, archives, checksums, and the Windows bootstrapper are ready
-does it create a draft release, upload and verify every asset, and publish it.
-The website builds and deploys only after a second GitHub inventory check.
-GitHub retains versioned binaries; Cloudflare serves the website, install commands,
-`/downloads/latest.txt`, and `/mcp`. Azure release publishing is retired.
-
-Install from <https://regressify.eshn.dev/download/> or use
-`irm https://regressify.eshn.dev/install.ps1 | iex` on Windows, or
-`curl -fsSL https://regressify.eshn.dev/install.sh | sh` on macOS/Linux.
-These commands execute a script from the site. Downloads are SHA-256 checked;
-unsigned application warnings may still apply. Windows setup installs the desktop
-app and CLI into `%LOCALAPPDATA%\Programs\Regressify` and adds that directory
-to the user PATH. See the [release guide](docs/desktop.md#release-pipeline)
-for supported targets, secrets, and publishing safeguards.
-
-```bash
-git update-index --chmod=+x ./ci/install-rust.sh
-git update-index --chmod=+x ./ci/make-release.sh
-```
-
-See also:
-
-- <https://github.com/mattsse/chromiumoxide>
+- **Snapshot SPA ([frontend](frontend/README.md)):** React + Vite + TypeScript app for interactive comparison reports and static landing pages. Run `bun run build` in `frontend/` to regenerate the embedded assets in `src/snapshot/data` (ordinary Cargo builds do not require JavaScript tooling).
+- **Public Website ([website](website/README.md)):** Astro site serving <https://regressify.eshn.dev> (downloads, documentation, blog, and private deployment admin view).
+- **Release Pipeline:** Version tags build all supported targets, publish verified GitHub Release assets and the Windows bootstrapper, and deploy the website and `/mcp` Worker to Cloudflare. See the [release guide](docs/desktop.md#release-pipeline).
 
 ## Contributors
 
