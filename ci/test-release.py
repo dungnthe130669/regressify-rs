@@ -1706,6 +1706,51 @@ class ReleaseFeedTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertEqual([path.name for path in app_dir.iterdir()], ["Regressify.app"])
 
+    def test_unix_install_script_releases_lock_when_staging_cleanup_fails(self):
+        bash = os.environ.get("BASH_PATH") or shutil.which("bash")
+        if not bash or not shutil.which("rm"):
+            self.skipTest("Bash and rm are required for install.sh checks")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = root / "assets"
+            assets.mkdir()
+            archives = []
+            for app, binary in [("cli", "regressify"), ("desktop", "regressify-desktop")]:
+                archive_name = f"regressify-{app}-aarch64-apple-darwin.zip"
+                with zipfile.ZipFile(assets / archive_name, "w") as zf:
+                    zf.writestr(binary, "#!/bin/sh\nexit 0\n")
+                    zf.writestr("LICENSE", "AGPL")
+                    zf.writestr("LICENSING.md", "Exception")
+                data = (assets / archive_name).read_bytes()
+                archives.append((archive_name, len(data), hashlib.sha256(data).hexdigest()))
+            manifest_path = root / "latest.txt"
+            manifest_path.write_text(
+                release_feed.manifest_text("v1.2.3", "1.2.3.0", 22, "a" * 64, archives), encoding="utf-8")
+            shim_dir = root / "shim"
+            shim_dir.mkdir()
+            with open(shim_dir / "rm", "w", encoding="utf-8", newline="\n") as shim_file:
+                shim_file.write(
+                    "#!/bin/sh\n"
+                    'for arg in "$@"; do\n'
+                    '  case "$arg" in */.Regressify.*) exit 1 ;; esac\n'
+                    "done\n"
+                    'PATH="$REAL_PATH"\n'
+                    'exec rm "$@"\n')
+            (shim_dir / "rm").chmod(0o755)
+            app_dir = root / "apps"
+            env = dict(
+                os.environ, PATH=f"{shim_dir}{os.pathsep}{os.environ['PATH']}", REAL_PATH=os.environ["PATH"],
+                REGRESSIFY_OS="Darwin", REGRESSIFY_ARCH="arm64", REGRESSIFY_LOCK_TIMEOUT="1",
+                REGRESSIFY_MANIFEST_FILE=manifest_path.as_posix(), REGRESSIFY_ASSETS_DIR=assets.as_posix(),
+                REGRESSIFY_INSTALL_DIR=(root / "bin").as_posix(), REGRESSIFY_SHARE_DIR=(root / "share").as_posix(),
+                REGRESSIFY_APP_DIR=app_dir.as_posix(), REGRESSIFY_SKIP_CHROMIUM="1")
+            result = subprocess.run([bash, "website/public/install.sh"], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("could not remove staging directory", result.stderr)
+            self.assertTrue((app_dir / "Regressify.app/Contents/MacOS/regressify-desktop").is_file())
+            self.assertFalse((app_dir / ".Regressify.lock").exists())
+
     def test_unix_installer_rejects_unsupported_linux_before_reading_manifest(self):
         bash = os.environ.get("BASH_PATH") or shutil.which("bash")
         self.assertIsNotNone(bash, "Bash is required for install.sh checks")

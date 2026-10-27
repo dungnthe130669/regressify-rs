@@ -97,7 +97,8 @@ backup_app=""
 backup_dest=""
 lock_dir=""
 cleanup() {
-  rm -rf "$tmp_dir"
+  # Removals are best effort so a failure never skips restoring the backup or releasing the lock.
+  rm -rf "$tmp_dir" || true
   keep_stage=0
   # A replaced app that was never swapped back in is restored before cleanup;
   # if that fails the backup is kept and its location is reported.
@@ -108,7 +109,9 @@ cleanup() {
     fi
   fi
   if [ -n "$stage_dir" ] && [ "$keep_stage" = "0" ]; then
-    rm -rf "$stage_dir"
+    if ! rm -rf "$stage_dir"; then
+      printf 'warning: could not remove staging directory %s; you can delete it manually\n' "$stage_dir" >&2
+    fi
   fi
   if [ -n "$lock_dir" ]; then
     rmdir "$lock_dir" 2>/dev/null || true
