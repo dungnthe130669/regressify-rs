@@ -157,6 +157,13 @@ See also:
 
 - <https://github.com/mattsse/chromiumoxide>
 
+## Contributors
+
+- Author and lead developer: [Tuyen Pham](https://github.com/tuyen-at-work)
+- Developer and docs maintainer: [Dinh Pham](https://github.com/dinh-pham-optimizely)
+- Developer: [Hung Le](https://github.com/lehung1109)
+- Advisors (QA): Nga Nguyen, Hanh Nguyen, Duyen Pham — use the tool, provide feedback, and report bugs to help improve Regressify
+
 ## License
 
 Copyright (C) 2023-2026 Tuyen Pham. Regressify is free software under the
