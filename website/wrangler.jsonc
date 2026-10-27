@@ -15,12 +15,6 @@
   "observability": {
     "enabled": false
   },
-  "routes": [
-    {
-      "pattern": "regressify.eshn.dev",
-      "custom_domain": true
-    }
-  ],
   "assets": {
     "binding": "ASSETS",
     "directory": "dist",
@@ -30,5 +24,6 @@
       "/admin",
       "/admin/*"
     ]
-  }
+  },
+  "keep_vars": true
 }
