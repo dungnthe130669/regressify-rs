@@ -348,6 +348,14 @@ PLIST
   mv "$staged_app" "$destination" || fail "Cannot install '$destination'"
   backup_app=""
   app_path="$destination"
+  # The swap is complete: drop the old app and release the lock now, not at exit, so a
+  # long Chromium download does not block other installers.
+  if ! rm -rf "$stage_dir"; then
+    printf 'warning: could not remove staging directory %s; you can delete it manually\n' "$stage_dir" >&2
+  fi
+  stage_dir=""
+  rmdir "$lock_dir" 2>/dev/null || true
+  lock_dir=""
 }
 if [ "$install_desktop" = "1" ] && [ "$os_name" = "Darwin" ]; then
   install_macos_app

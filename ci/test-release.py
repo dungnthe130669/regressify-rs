@@ -1751,6 +1751,41 @@ class ReleaseFeedTests(unittest.TestCase):
             self.assertTrue((app_dir / "Regressify.app/Contents/MacOS/regressify-desktop").is_file())
             self.assertFalse((app_dir / ".Regressify.lock").exists())
 
+    def test_unix_install_script_releases_lock_before_chromium_step(self):
+        bash = os.environ.get("BASH_PATH") or shutil.which("bash")
+        if not bash:
+            self.skipTest("Bash is required for install.sh checks")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = root / "assets"
+            assets.mkdir()
+            archives = []
+            for app, binary in [("cli", "regressify"), ("desktop", "regressify-desktop")]:
+                archive_name = f"regressify-{app}-aarch64-apple-darwin.zip"
+                with zipfile.ZipFile(assets / archive_name, "w") as zf:
+                    # The CLI stub stands in for `regressify install`: it fails if the app lock is still held.
+                    zf.writestr(binary, '#!/bin/sh\n[ ! -e "$APP_LOCK" ] || exit 7\nexit 0\n')
+                    zf.writestr("LICENSE", "AGPL")
+                    zf.writestr("LICENSING.md", "Exception")
+                data = (assets / archive_name).read_bytes()
+                archives.append((archive_name, len(data), hashlib.sha256(data).hexdigest()))
+            manifest_path = root / "latest.txt"
+            manifest_path.write_text(
+                release_feed.manifest_text("v1.2.3", "1.2.3.0", 22, "a" * 64, archives), encoding="utf-8")
+            app_dir = root / "apps"
+            env = dict(
+                os.environ, APP_LOCK=(app_dir / ".Regressify.lock").as_posix(),
+                REGRESSIFY_OS="Darwin", REGRESSIFY_ARCH="arm64",
+                REGRESSIFY_MANIFEST_FILE=manifest_path.as_posix(), REGRESSIFY_ASSETS_DIR=assets.as_posix(),
+                REGRESSIFY_INSTALL_DIR=(root / "bin").as_posix(), REGRESSIFY_SHARE_DIR=(root / "share").as_posix(),
+                REGRESSIFY_APP_DIR=app_dir.as_posix())
+            env.pop("REGRESSIFY_SKIP_CHROMIUM", None)
+            result = subprocess.run([bash, "website/public/install.sh"], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("Chromium could not be prepared", result.stderr)
+            self.assertEqual([path.name for path in app_dir.iterdir()], ["Regressify.app"])
+
     def test_unix_installer_rejects_unsupported_linux_before_reading_manifest(self):
         bash = os.environ.get("BASH_PATH") or shutil.which("bash")
         self.assertIsNotNone(bash, "Bash is required for install.sh checks")
