@@ -1604,8 +1604,7 @@ class ReleaseFeedTests(unittest.TestCase):
 
     def test_unix_install_script_keeps_previous_app_when_replacement_fails(self):
         bash = os.environ.get("BASH_PATH") or shutil.which("bash")
-        real_mv = shutil.which("mv")
-        if not bash or not real_mv:
+        if not bash or not shutil.which("mv"):
             self.skipTest("Bash and mv are required for install.sh checks")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1627,15 +1626,17 @@ class ReleaseFeedTests(unittest.TestCase):
             shim_dir = root / "shim"
             shim_dir.mkdir()
             shim = shim_dir / "mv"
-            shim.write_text(
-                "#!/bin/sh\n"
-                'for arg in "$@"; do last="$arg"; done\n'
-                'case "$1" in\n'
-                '  */.Regressify.*/Regressify.app) exit 1 ;;\n'
-                f'  */previous.app) [ -n "$FAIL_ROLLBACK" ] && exit 1 ;;\n'
-                "esac\n"
-                f'exec {real_mv} "$@"\n',
-                encoding="utf-8")
+            # The shim restores the caller's PATH before delegating, so no executable path is
+            # embedded; LF endings keep the shebang valid under Windows Git Bash.
+            with open(shim, "w", encoding="utf-8", newline="\n") as shim_file:
+                shim_file.write(
+                    "#!/bin/sh\n"
+                    'case "$1" in\n'
+                    '  */.Regressify.*/Regressify.app) exit 1 ;;\n'
+                    '  */previous.app) [ -n "$FAIL_ROLLBACK" ] && exit 1 ;;\n'
+                    "esac\n"
+                    'PATH="$REAL_PATH"\n'
+                    'exec mv "$@"\n')
             shim.chmod(0o755)
             for fail_rollback in ("", "1"):
                 with self.subTest(fail_rollback=bool(fail_rollback)):
@@ -1645,7 +1646,7 @@ class ReleaseFeedTests(unittest.TestCase):
                     marker.write_text("previous", encoding="utf-8")
                     env = dict(
                         os.environ, PATH=f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
-                        FAIL_ROLLBACK=fail_rollback, REGRESSIFY_OS="Darwin", REGRESSIFY_ARCH="arm64",
+                        FAIL_ROLLBACK=fail_rollback, REAL_PATH=os.environ["PATH"], REGRESSIFY_OS="Darwin", REGRESSIFY_ARCH="arm64",
                         REGRESSIFY_MANIFEST_FILE=manifest_path.as_posix(), REGRESSIFY_ASSETS_DIR=assets.as_posix(),
                         REGRESSIFY_INSTALL_DIR=(root / "bin").as_posix(), REGRESSIFY_SHARE_DIR=(root / "share").as_posix(),
                         REGRESSIFY_APP_DIR=app_dir.as_posix(), REGRESSIFY_SKIP_CHROMIUM="1")
@@ -1658,6 +1659,52 @@ class ReleaseFeedTests(unittest.TestCase):
                     else:
                         self.assertIn("kept at", result.stderr)
                         self.assertEqual(len(list(app_dir.glob(".Regressify.*/previous.app/Contents/marker"))), 1)
+
+    def test_unix_install_script_serializes_app_replacement(self):
+        bash = os.environ.get("BASH_PATH") or shutil.which("bash")
+        if not bash:
+            self.skipTest("Bash is required for install.sh checks")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = root / "assets"
+            assets.mkdir()
+            archives = []
+            for app, binary in [("cli", "regressify"), ("desktop", "regressify-desktop")]:
+                archive_name = f"regressify-{app}-aarch64-apple-darwin.zip"
+                with zipfile.ZipFile(assets / archive_name, "w") as zf:
+                    zf.writestr(binary, "#!/bin/sh\nexit 0\n")
+                    zf.writestr("LICENSE", "AGPL")
+                    zf.writestr("LICENSING.md", "Exception")
+                data = (assets / archive_name).read_bytes()
+                archives.append((archive_name, len(data), hashlib.sha256(data).hexdigest()))
+            manifest_path = root / "latest.txt"
+            manifest_path.write_text(
+                release_feed.manifest_text("v1.2.3", "1.2.3.0", 22, "a" * 64, archives), encoding="utf-8")
+            app_dir = root / "apps"
+            marker = app_dir / "Regressify.app/Contents/marker"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("previous", encoding="utf-8")
+            env = dict(
+                os.environ, REGRESSIFY_OS="Darwin", REGRESSIFY_ARCH="arm64", REGRESSIFY_LOCK_TIMEOUT="1",
+                REGRESSIFY_MANIFEST_FILE=manifest_path.as_posix(), REGRESSIFY_ASSETS_DIR=assets.as_posix(),
+                REGRESSIFY_INSTALL_DIR=(root / "bin").as_posix(), REGRESSIFY_SHARE_DIR=(root / "share").as_posix(),
+                REGRESSIFY_APP_DIR=app_dir.as_posix(), REGRESSIFY_SKIP_CHROMIUM="1")
+            # Another installer holds the destination lock: this one must not touch the app.
+            lock = app_dir / ".Regressify.lock"
+            lock.mkdir()
+            result = subprocess.run([bash, "website/public/install.sh"], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Another Regressify install", result.stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "previous")
+            self.assertTrue(lock.is_dir())
+            # Once the lock is released the install succeeds and releases the lock itself.
+            lock.rmdir()
+            result = subprocess.run([bash, "website/public/install.sh"], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(marker.exists())
+            self.assertEqual([path.name for path in app_dir.iterdir()], ["Regressify.app"])
 
     def test_unix_installer_rejects_unsupported_linux_before_reading_manifest(self):
         bash = os.environ.get("BASH_PATH") or shutil.which("bash")

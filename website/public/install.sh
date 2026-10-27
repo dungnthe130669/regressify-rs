@@ -95,18 +95,23 @@ tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t regressify-install)"
 stage_dir=""
 backup_app=""
 backup_dest=""
+lock_dir=""
 cleanup() {
   rm -rf "$tmp_dir"
+  keep_stage=0
   # A replaced app that was never swapped back in is restored before cleanup;
   # if that fails the backup is kept and its location is reported.
   if [ -n "$backup_app" ] && [ -e "$backup_app" ] && [ ! -e "$backup_dest" ]; then
     if ! mv "$backup_app" "$backup_dest"; then
       printf 'warning: could not restore the previous app; it is kept at %s\n' "$backup_app" >&2
-      return 0
+      keep_stage=1
     fi
   fi
-  if [ -n "$stage_dir" ]; then
+  if [ -n "$stage_dir" ] && [ "$keep_stage" = "0" ]; then
     rm -rf "$stage_dir"
+  fi
+  if [ -n "$lock_dir" ]; then
+    rmdir "$lock_dir" 2>/dev/null || true
   fi
 }
 trap cleanup 0
@@ -249,6 +254,19 @@ install_macos_app() {
   fi
   mkdir -p "$app_parent" || fail "Cannot create '$app_parent'"
   destination="$app_parent/Regressify.app"
+
+  # Serialize installs per destination: mkdir is atomic, so only one installer can
+  # move the current app aside and promote its own bundle at a time.
+  lock_path="$app_parent/.Regressify.lock"
+  lock_wait="${REGRESSIFY_LOCK_TIMEOUT:-30}"
+  case "$lock_wait" in ''|*[!0-9]*) lock_wait=30 ;; esac
+  until mkdir "$lock_path" 2>/dev/null; do
+    lock_wait=$((lock_wait - 1))
+    [ "$lock_wait" -ge 0 ] || fail "Another Regressify install is replacing '$destination'; if none is running, remove '$lock_path' and retry"
+    sleep 1
+  done
+  lock_dir="$lock_path"
+
   [ ! -L "$destination" ] || fail "Refusing to replace symlink '$destination'"
 
   stage_dir="$(mktemp -d "$app_parent/.Regressify.XXXXXX")" || fail "Cannot write to '$app_parent'"
