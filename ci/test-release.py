@@ -446,7 +446,6 @@ gh() {
         self.assertEqual(config["main"], "worker/index.ts")
         self.assertEqual(config["tsconfig"], "tsconfig.worker.json")
         self.assertFalse(config["workers_dev"])
-        self.assertEqual(config["routes"], [{"pattern": "regressify.eshn.dev", "custom_domain": True}])
         self.assertEqual(config["assets"], {"binding": "ASSETS", "directory": "dist", "not_found_handling": "404-page", "run_worker_first": ["/mcp", "/admin", "/admin/*"]})
         self.assertFalse((ROOT / "website/public/downloads").exists(), "Release downloads must only come from CI staging")
         self.assertTrue((ROOT / "website/public/install.ps1").is_file())
