@@ -1539,6 +1539,7 @@ class ReleaseFeedTests(unittest.TestCase):
             ]:
                 install_dir = root / f"bin-{os_name}-{arch}-{libc}"
                 share_dir = root / f"share-{os_name}-{arch}-{libc}"
+                app_dir = root / f"apps-{os_name}-{arch}-{libc}"
                 env = dict(
                     os.environ,
                     REGRESSIFY_OS=os_name,
@@ -1548,6 +1549,7 @@ class ReleaseFeedTests(unittest.TestCase):
                     REGRESSIFY_ASSETS_DIR=assets.as_posix(),
                     REGRESSIFY_INSTALL_DIR=install_dir.as_posix(),
                     REGRESSIFY_SHARE_DIR=share_dir.as_posix(),
+                    REGRESSIFY_APP_DIR=app_dir.as_posix(),
                     REGRESSIFY_SKIP_CHROMIUM="1",
                 )
                 script = (
@@ -1556,6 +1558,7 @@ class ReleaseFeedTests(unittest.TestCase):
                     '  REGRESSIFY_ASSETS_DIR="$(cygpath -u "$REGRESSIFY_ASSETS_DIR")"\n'
                     '  REGRESSIFY_INSTALL_DIR="$(cygpath -u "$REGRESSIFY_INSTALL_DIR")"\n'
                     '  REGRESSIFY_SHARE_DIR="$(cygpath -u "$REGRESSIFY_SHARE_DIR")"\n'
+                    '  REGRESSIFY_APP_DIR="$(cygpath -u "$REGRESSIFY_APP_DIR")"\n'
                     'fi\n'
                     'sh website/public/install.sh'
                 )
@@ -1563,6 +1566,23 @@ class ReleaseFeedTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertTrue((install_dir / "regressify").is_file())
                 self.assertEqual((install_dir / "regressify-desktop").is_file(), expects_desktop)
+                app_binary = app_dir / "Regressify.app/Contents/MacOS/regressify-desktop"
+                self.assertEqual(app_binary.is_file(), os_name == "Darwin")
+                if os_name == "Darwin":
+                    self.assertTrue(os.access(app_binary, os.X_OK))
+                    plist = (app_dir / "Regressify.app/Contents/Info.plist").read_text(encoding="utf-8")
+                    self.assertIn("<string>regressify-desktop</string>", plist)
+                    self.assertIn("<string>1.2.3.0</string>", plist)
+                    self.assertEqual([path.name for path in app_dir.iterdir()], ["Regressify.app"])
+                    # A second install replaces the bundle and leaves no staging debris.
+                    stale = app_dir / "Regressify.app/Contents/stale"
+                    stale.write_text("old", encoding="utf-8")
+                    result = subprocess.run([bash, "-c", script], cwd=ROOT, env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(stale.exists())
+                    self.assertEqual([path.name for path in app_dir.iterdir()], ["Regressify.app"])
+                else:
+                    self.assertFalse(app_dir.exists())
                 self.assertTrue((share_dir / "LICENSE").is_file())
                 self.assertTrue((share_dir / "LICENSING.md").is_file())
             original = manifest_path.read_text(encoding="utf-8")
@@ -1581,6 +1601,63 @@ class ReleaseFeedTests(unittest.TestCase):
             result = subprocess.run([bash, "-c", script], cwd=ROOT, env=env, capture_output=True, text=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(existing.read_text(encoding="utf-8"), "keep installed binary")
+
+    def test_unix_install_script_keeps_previous_app_when_replacement_fails(self):
+        bash = os.environ.get("BASH_PATH") or shutil.which("bash")
+        real_mv = shutil.which("mv")
+        if not bash or not real_mv:
+            self.skipTest("Bash and mv are required for install.sh checks")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets = root / "assets"
+            assets.mkdir()
+            archives = []
+            for app, binary in [("cli", "regressify"), ("desktop", "regressify-desktop")]:
+                archive_name = f"regressify-{app}-aarch64-apple-darwin.zip"
+                with zipfile.ZipFile(assets / archive_name, "w") as zf:
+                    zf.writestr(binary, "#!/bin/sh\nexit 0\n")
+                    zf.writestr("LICENSE", "AGPL")
+                    zf.writestr("LICENSING.md", "Exception")
+                data = (assets / archive_name).read_bytes()
+                archives.append((archive_name, len(data), hashlib.sha256(data).hexdigest()))
+            manifest_path = root / "latest.txt"
+            manifest_path.write_text(
+                release_feed.manifest_text("v1.2.3", "1.2.3.0", 22, "a" * 64, archives), encoding="utf-8")
+            # Fake mv that fails when promoting the staged bundle, and optionally the rollback too.
+            shim_dir = root / "shim"
+            shim_dir.mkdir()
+            shim = shim_dir / "mv"
+            shim.write_text(
+                "#!/bin/sh\n"
+                'for arg in "$@"; do last="$arg"; done\n'
+                'case "$1" in\n'
+                '  */.Regressify.*/Regressify.app) exit 1 ;;\n'
+                f'  */previous.app) [ -n "$FAIL_ROLLBACK" ] && exit 1 ;;\n'
+                "esac\n"
+                f'exec {real_mv} "$@"\n',
+                encoding="utf-8")
+            shim.chmod(0o755)
+            for fail_rollback in ("", "1"):
+                with self.subTest(fail_rollback=bool(fail_rollback)):
+                    app_dir = root / f"apps-{bool(fail_rollback)}"
+                    marker = app_dir / "Regressify.app/Contents/marker"
+                    marker.parent.mkdir(parents=True)
+                    marker.write_text("previous", encoding="utf-8")
+                    env = dict(
+                        os.environ, PATH=f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+                        FAIL_ROLLBACK=fail_rollback, REGRESSIFY_OS="Darwin", REGRESSIFY_ARCH="arm64",
+                        REGRESSIFY_MANIFEST_FILE=manifest_path.as_posix(), REGRESSIFY_ASSETS_DIR=assets.as_posix(),
+                        REGRESSIFY_INSTALL_DIR=(root / "bin").as_posix(), REGRESSIFY_SHARE_DIR=(root / "share").as_posix(),
+                        REGRESSIFY_APP_DIR=app_dir.as_posix(), REGRESSIFY_SKIP_CHROMIUM="1")
+                    result = subprocess.run([bash, "website/public/install.sh"], cwd=ROOT, env=env,
+                                            capture_output=True, text=True, check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    if not fail_rollback:
+                        self.assertEqual(marker.read_text(encoding="utf-8"), "previous")
+                        self.assertEqual([path.name for path in app_dir.iterdir()], ["Regressify.app"])
+                    else:
+                        self.assertIn("kept at", result.stderr)
+                        self.assertEqual(len(list(app_dir.glob(".Regressify.*/previous.app/Contents/marker"))), 1)
 
     def test_unix_installer_rejects_unsupported_linux_before_reading_manifest(self):
         bash = os.environ.get("BASH_PATH") or shutil.which("bash")
