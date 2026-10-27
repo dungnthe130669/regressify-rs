@@ -1,5 +1,7 @@
 #!/bin/sh
 # Install the Regressify CLI and desktop app (where supported) on macOS and Linux.
+# On macOS the desktop app is also installed as Regressify.app in /Applications
+# (or ~/Applications when /Applications is not writable).
 # Usage: curl -fsSL https://regressify.eshn.dev/install.sh | sh
 regressify_install() (
 set -eu
@@ -90,8 +92,30 @@ fetch_file() {
 
 command -v curl >/dev/null 2>&1 || fail "curl is required to download Regressify"
 tmp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t regressify-install)"
+stage_dir=""
+backup_app=""
+backup_dest=""
+lock_dir=""
 cleanup() {
-  rm -rf "$tmp_dir"
+  # Removals are best effort so a failure never skips restoring the backup or releasing the lock.
+  rm -rf "$tmp_dir" || true
+  keep_stage=0
+  # A replaced app that was never swapped back in is restored before cleanup;
+  # if that fails the backup is kept and its location is reported.
+  if [ -n "$backup_app" ] && [ -e "$backup_app" ] && [ ! -e "$backup_dest" ]; then
+    if ! mv "$backup_app" "$backup_dest"; then
+      printf 'warning: could not restore the previous app; it is kept at %s\n' "$backup_app" >&2
+      keep_stage=1
+    fi
+  fi
+  if [ -n "$stage_dir" ] && [ "$keep_stage" = "0" ]; then
+    if ! rm -rf "$stage_dir"; then
+      printf 'warning: could not remove staging directory %s; you can delete it manually\n' "$stage_dir" >&2
+    fi
+  fi
+  if [ -n "$lock_dir" ]; then
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
 }
 trap cleanup 0
 trap 'exit 1' INT TERM
@@ -222,6 +246,121 @@ for license_file in LICENSE LICENSING.md; do
   install_file "$tmp_dir/extract-regressify/$license_file" "$share_dir/$license_file"
 done
 
+app_path=""
+# Wrap the desktop binary in a Regressify.app bundle so it shows up in Finder,
+# Launchpad and Spotlight. The bundle is staged next to its destination and
+# swapped in last, so a failure leaves any existing app untouched.
+install_macos_app() {
+  app_parent="${REGRESSIFY_APP_DIR:-/Applications}"
+  if [ -z "${REGRESSIFY_APP_DIR:-}" ] && [ ! -w "$app_parent" ]; then
+    app_parent="$HOME/Applications"
+  fi
+  mkdir -p "$app_parent" || fail "Cannot create '$app_parent'"
+  destination="$app_parent/Regressify.app"
+
+  # Serialize installs per destination: mkdir is atomic, so only one installer can
+  # move the current app aside and promote its own bundle at a time.
+  lock_path="$app_parent/.Regressify.lock"
+  lock_wait="${REGRESSIFY_LOCK_TIMEOUT:-30}"
+  case "$lock_wait" in ''|*[!0-9]*) lock_wait=30 ;; esac
+  until mkdir "$lock_path" 2>/dev/null; do
+    lock_wait=$((lock_wait - 1))
+    [ "$lock_wait" -ge 0 ] || fail "Another Regressify install is replacing '$destination'; if none is running, remove '$lock_path' and retry"
+    sleep 1
+  done
+  lock_dir="$lock_path"
+
+  [ ! -L "$destination" ] || fail "Refusing to replace symlink '$destination'"
+
+  stage_dir="$(mktemp -d "$app_parent/.Regressify.XXXXXX")" || fail "Cannot write to '$app_parent'"
+  staged_app="$stage_dir/Regressify.app"
+  mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
+  cp -p "$tmp_dir/extract-regressify-desktop/regressify-desktop" "$staged_app/Contents/MacOS/regressify-desktop" \
+    || { rm -rf "$stage_dir"; fail "Cannot stage Regressify.app"; }
+
+  icon_plist=""
+  icon_png="$tmp_dir/icon.png"
+  if [ -n "${REGRESSIFY_ICON_FILE:-}" ]; then
+    cp "$REGRESSIFY_ICON_FILE" "$icon_png" 2>/dev/null || true
+  elif [ -z "${REGRESSIFY_ASSETS_DIR:-}" ]; then
+    fetch_file "$origin/icon.png" "$icon_png" 1048576 2>/dev/null || true
+  fi
+  # Best effort: a missing icon must never fail the install.
+  if [ -s "$icon_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+    iconset="$tmp_dir/Regressify.iconset"
+    mkdir -p "$iconset"
+    if sips -z 16 16 "$icon_png" --out "$iconset/icon_16x16.png" >/dev/null 2>&1 &&
+       sips -z 32 32 "$icon_png" --out "$iconset/icon_16x16@2x.png" >/dev/null 2>&1 &&
+       sips -z 32 32 "$icon_png" --out "$iconset/icon_32x32.png" >/dev/null 2>&1 &&
+       sips -z 64 64 "$icon_png" --out "$iconset/icon_32x32@2x.png" >/dev/null 2>&1 &&
+       sips -z 128 128 "$icon_png" --out "$iconset/icon_128x128.png" >/dev/null 2>&1 &&
+       sips -z 256 256 "$icon_png" --out "$iconset/icon_128x128@2x.png" >/dev/null 2>&1 &&
+       sips -z 256 256 "$icon_png" --out "$iconset/icon_256x256.png" >/dev/null 2>&1 &&
+       iconutil -c icns "$iconset" -o "$staged_app/Contents/Resources/Regressify.icns" >/dev/null 2>&1; then
+      icon_plist='  <key>CFBundleIconFile</key>
+  <string>Regressify</string>
+'
+    fi
+  fi
+
+  cat > "$staged_app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Regressify</string>
+  <key>CFBundleDisplayName</key>
+  <string>Regressify</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.eshn.regressify</string>
+  <key>CFBundleExecutable</key>
+  <string>regressify-desktop</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>$version</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$version</string>
+${icon_plist}  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+</dict>
+</plist>
+PLIST
+
+  # Ad-hoc sign the bundle so Apple Silicon accepts it; warn instead of failing
+  # because the binary already carries its own ad-hoc signature from the linker.
+  if command -v codesign >/dev/null 2>&1; then
+    if ! codesign --force --deep --sign - "$staged_app" >/dev/null 2>&1; then
+      printf 'warning: could not ad-hoc sign Regressify.app; macOS may ask you to allow it in System Settings.\n' >&2
+    fi
+  fi
+
+  # Move the current app aside first so a failed swap can be rolled back.
+  if [ -e "$destination" ]; then
+    backup_dest="$destination"
+    backup_app="$stage_dir/previous.app"
+    mv "$destination" "$backup_app" || fail "Cannot replace '$destination'"
+  fi
+  # On failure or interruption from here, the exit trap restores the backup.
+  mv "$staged_app" "$destination" || fail "Cannot install '$destination'"
+  backup_app=""
+  app_path="$destination"
+  # The swap is complete: drop the old app and release the lock now, not at exit, so a
+  # long Chromium download does not block other installers.
+  if ! rm -rf "$stage_dir"; then
+    printf 'warning: could not remove staging directory %s; you can delete it manually\n' "$stage_dir" >&2
+  fi
+  stage_dir=""
+  rmdir "$lock_dir" 2>/dev/null || true
+  lock_dir=""
+}
+if [ "$install_desktop" = "1" ] && [ "$os_name" = "Darwin" ]; then
+  install_macos_app
+fi
+
 if [ "${REGRESSIFY_SKIP_CHROMIUM:-0}" != "1" ]; then
   printf 'Preparing managed Chromium build...\n'
   if ! "$install_dir/regressify" install; then
@@ -231,6 +370,9 @@ fi
 
 if [ "$install_desktop" = "1" ]; then
   printf 'Installed Regressify %s (regressify and regressify-desktop) to %s\n' "$version" "$install_dir"
+  if [ -n "$app_path" ]; then
+    printf 'Installed Regressify.app to %s (open it from Finder, Launchpad or Spotlight)\n' "$app_path"
+  fi
 else
   printf 'Installed Regressify %s (regressify CLI) to %s\n' "$version" "$install_dir"
 fi

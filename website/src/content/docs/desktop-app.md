@@ -18,6 +18,10 @@ You can install Regressify on Windows, macOS, and Linux from the [download page]
 - **Windows (PowerShell)**: `irm https://regressify.eshn.dev/install.ps1 | iex` or download `Regressify-Setup-N.N.N.N-x64.exe`
 - **macOS and Linux**: `curl -fsSL https://regressify.eshn.dev/install.sh | sh`
 
+On macOS the install command also creates `Regressify.app` in `/Applications` (or `~/Applications` if
+`/Applications` isn't writable by your user), so you can open it from Finder, Launchpad or Spotlight. The
+`regressify` and `regressify-desktop` commands are still installed to `~/.local/bin`.
+
 On Windows, setup installs to `%LOCALAPPDATA%\Programs\Regressify` without administrator rights and:
 
 - adds desktop and Start-menu shortcuts;
@@ -488,15 +492,15 @@ In the Source editor:
 
 ## Troubleshooting
 
-**Windows or macOS says it can't verify the app.** Regressify isn't code-signed yet, so the operating system can't
-confirm who published it. First check that the file's SHA-256 matches the one on the [download page](/download/)
+**Windows or macOS says it can't verify the app.** Regressify isn't signed with a publisher certificate yet (on macOS the installer only ad-hoc signs
+`Regressify.app`), so the operating system can't confirm who published it. First check that the file's SHA-256 matches the one on the [download page](/download/)
 (**Archives & checksums**). The install scripts check this for you. Then:
 
 - **Windows** ("Windows protected your PC"): click **More info**, then **Run anyway**. The PowerShell install command
   usually doesn't trigger this warning.
 - **macOS** ("Apple could not verify … is free of malware"): click **Done**, open **System Settings** > **Privacy &
   Security**, scroll to **Security**, click **Open Anyway** next to the blocked file, and confirm with your password.
-  Do this once for `regressify` and once for `regressify-desktop`. Or clear the download flag in Terminal:
+  Do this once for `regressify` and once for `regressify-desktop` (or `Regressify.app` if you opened it from Finder). Or clear the download flag in Terminal:
   `xattr -d com.apple.quarantine regressify regressify-desktop`. The `curl` install command usually doesn't trigger
   this warning.
 
