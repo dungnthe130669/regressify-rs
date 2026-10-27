@@ -1,5 +1,5 @@
 ---
-import { NAV_LINKS, SITE } from '../config/site';
+import { FOOTER_LINKS, SITE } from '../config/site';
 ---
 
 <footer class="site-footer">
@@ -12,7 +12,7 @@ import { NAV_LINKS, SITE } from '../config/site';
     <nav aria-label="Footer">
       <ul>
         {
-          NAV_LINKS.map((link) => (
+          FOOTER_LINKS.map((link) => (
             <li>
               <a href={link.href}>{link.label}</a>
             </li>

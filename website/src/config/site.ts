@@ -31,4 +31,9 @@ export const HEADER_LINKS = [
   { href: '/admin', label: 'Login' },
 ] as const;
 
+export const FOOTER_LINKS = [
+  ...NAV_LINKS,
+  { href: '/about/', label: 'About' },
+] as const;
+
 export const THEME_STORAGE_KEY = 'regressify-theme';

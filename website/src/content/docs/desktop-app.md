@@ -452,7 +452,7 @@ deployment sends one anonymous event; set `DO_NOT_TRACK=1` to disable it.
 
 ![The Commands box filtered by "run", with Commands, the search text, and the Run Test result numbered.](../../assets/docs/desktop/command-search.png)
 
-Unavailable commands are disabled. **Help** > **About** shows the version.
+Unavailable commands are disabled. **Help** > **About** shows the version, contributors, website (`https://regressify.eshn.dev/`), and license details.
 
 ## Keyboard shortcuts
 

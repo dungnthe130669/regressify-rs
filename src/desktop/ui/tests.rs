@@ -10561,11 +10561,23 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
         );
         assert_eq!(
             window.find("about-author").label(),
-            Some("Author: Tuyen Pham")
+            Some("Author and lead developer: Tuyen Pham")
+        );
+        assert_eq!(
+            window.find("about-docs-maintainer").label(),
+            Some("Developer and docs maintainer: Dinh Pham")
+        );
+        assert_eq!(
+            window.find("about-developer").label(),
+            Some("Developer: Hung Le")
+        );
+        assert_eq!(
+            window.find("about-advisors").label(),
+            Some("Advisors (QA): Nga Nguyen, Hanh Nguyen, Duyen Pham")
         );
         assert_eq!(
             window.find("about-website").label(),
-            Some("https://tuyen.blog/")
+            Some("https://regressify.eshn.dev/")
         );
         let copyright = env!("REGRESSIFY_COPYRIGHT");
         assert!(copyright.starts_with("Copyright © 2023-") && copyright.ends_with(" Tuyen Pham"));

@@ -523,17 +523,41 @@ impl Workbench {
                     div()
                         .id("about-author")
                         .role(Role::Status)
-                        .aria_label("Author: Tuyen Pham")
+                        .aria_label("Author and lead developer: Tuyen Pham")
                         .test_support()
-                        .child("Author: Tuyen Pham"),
+                        .child("Author and lead developer: Tuyen Pham"),
+                )
+                .child(
+                    div()
+                        .id("about-docs-maintainer")
+                        .role(Role::Status)
+                        .aria_label("Developer and docs maintainer: Dinh Pham")
+                        .test_support()
+                        .child("Developer and docs maintainer: Dinh Pham"),
+                )
+                .child(
+                    div()
+                        .id("about-developer")
+                        .role(Role::Status)
+                        .aria_label("Developer: Hung Le")
+                        .test_support()
+                        .child("Developer: Hung Le"),
+                )
+                .child(
+                    div()
+                        .id("about-advisors")
+                        .role(Role::Status)
+                        .aria_label("Advisors (QA): Nga Nguyen, Hanh Nguyen, Duyen Pham")
+                        .test_support()
+                        .child("Advisors (QA): Nga Nguyen, Hanh Nguyen, Duyen Pham"),
                 )
                 .child(
                     div().flex().items_center().gap_1().child("Website:").child(
                         Button::new("about-website")
                             .ghost()
-                            .label("https://tuyen.blog/")
-                            .accessibility_label("https://tuyen.blog/")
-                            .on_click(|_, _, cx| cx.open_url("https://tuyen.blog/")),
+                            .label("https://regressify.eshn.dev/")
+                            .accessibility_label("https://regressify.eshn.dev/")
+                            .on_click(|_, _, cx| cx.open_url("https://regressify.eshn.dev/")),
                     ),
                 )
                 .child(

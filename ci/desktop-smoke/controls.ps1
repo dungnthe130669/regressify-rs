@@ -279,8 +279,11 @@ function Test-ApplicationMenus {
     Invoke-Control 'About' -Pointer
     Wait-Control 'Regressify Desktop' | Out-Null
     Wait-Control "Version: $version" | Out-Null
-    Wait-Control 'Author: Tuyen Pham' | Out-Null
-    if (-not (Test-ControlInvokable 'https://tuyen.blog/')) { throw 'About website must be an external link.' }
+    Wait-Control 'Author and lead developer: Tuyen Pham' | Out-Null
+    Wait-Control 'Developer and docs maintainer: Dinh Pham' | Out-Null
+    Wait-Control 'Developer: Hung Le' | Out-Null
+    Wait-Control 'Advisors (QA): Nga Nguyen, Hanh Nguyen, Duyen Pham' | Out-Null
+    if (-not (Test-ControlInvokable 'https://regressify.eshn.dev/')) { throw 'About website must be an external link.' }
     Wait-Control 'This program comes with ABSOLUTELY NO WARRANTY. It is free software; you may redistribute it under the terms of the license below.' | Out-Null
     if (-not (Test-ControlInvokable 'GNU AGPL v3 or later')) { throw 'About license must be an external link.' }
     if (-not (Test-ControlInvokable 'https://github.com/precise-alloy/regressify-rs')) { throw 'About source must be an external link.' }

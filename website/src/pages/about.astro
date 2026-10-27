@@ -1,0 +1,178 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Card from '../components/Card.astro';
+import { SITE } from '../config/site';
+
+const repoUrl = SITE.repoUrl;
+const licensingUrl = repoUrl ? `${repoUrl}/blob/master/LICENSING.md` : null;
+
+const developers = [
+  {
+    role: 'Author and lead developer',
+    name: 'Tuyen Pham',
+    href: 'https://github.com/tuyen-at-work',
+  },
+  {
+    role: 'Developer and docs maintainer',
+    name: 'Dinh Pham',
+    href: 'https://github.com/dinh-pham-optimizely',
+  },
+  {
+    role: 'Developer',
+    name: 'Hung Le',
+    href: 'https://github.com/lehung1109',
+  },
+] as const;
+
+const advisors = ['Nga Nguyen', 'Hanh Nguyen', 'Duyen Pham'] as const;
+---
+
+<BaseLayout
+  title="About"
+  description="Learn about Regressify, the team and QA advisors behind it, and its open-source licensing."
+>
+  <div class="container page">
+    <header class="heading">
+      <h1>About Regressify</h1>
+      <p class="lead muted">
+        Visual regression testing for web pages, built in Rust for both the desktop and the command line.
+      </p>
+    </header>
+
+    <section class="section" aria-labelledby="overview-heading">
+      <h2 id="overview-heading">Overview</h2>
+      <div class="prose">
+        <p>
+          Regressify helps QA and engineering teams catch unintended visual changes before they reach production. It combines a standalone CLI (<code>regressify</code>) for scripts and CI pipelines with a native desktop workbench (<code>regressify-desktop</code>) for authoring suites, running captures, reviewing visual diffs, managing Git changes, and publishing reports.
+        </p>
+        <p>
+          Both interfaces share the same Rust engine and drive a managed Chromium build directly over the Chrome DevTools Protocol—with no Node.js or Playwright runtime to install.
+        </p>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="contributors-heading">
+      <h2 id="contributors-heading">Contributors</h2>
+      <div class="contributors-grid">
+        {
+          developers.map((person) => (
+            <Card as="div" class="contributor-card">
+              <span class="role muted">{person.role}</span>
+              <a href={person.href} class="person-name" rel="noopener noreferrer">
+                {person.name}
+              </a>
+            </Card>
+          ))
+        }
+        <Card as="div" class="contributor-card advisors-card">
+          <span class="role muted">Advisors (QA)</span>
+          <p class="person-name">{advisors.join(', ')}</p>
+          <p class="advisor-note muted">
+            QA engineers who use Regressify in practice, provide feedback, and report bugs so developers can improve the tool.
+          </p>
+        </Card>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="license-heading">
+      <h2 id="license-heading">License &amp; Source</h2>
+      <div class="prose">
+        <p>
+          Copyright &copy; 2023–2026 Tuyen Pham. Regressify is free software licensed under the{' '}
+          <strong>GNU Affero General Public License v3.0 or later</strong> and comes with ABSOLUTELY NO WARRANTY.
+        </p>
+        <p>
+          An additional permission lets you use Regressify output—such as generated reports,{' '}
+          <code>regressify mcp</code> exports, <code>regressify init</code> starter files, and documentation samples—under terms of your choice.
+          {
+            licensingUrl && (
+              <>
+                {' '}See <a href={licensingUrl} rel="noopener noreferrer">LICENSING.md</a> for the exact scope and third-party notices.
+              </>
+            )
+          }
+        </p>
+        {
+          repoUrl && (
+            <p>
+              Source code is available on <a href={repoUrl} rel="noopener noreferrer">GitHub</a>.
+            </p>
+          )
+        }
+      </div>
+    </section>
+  </div>
+</BaseLayout>
+
+<style>
+  .page {
+    padding-block: var(--space-xxl);
+    display: grid;
+    gap: var(--space-xxl);
+  }
+
+  .heading {
+    display: grid;
+    gap: var(--space-sm);
+    padding-bottom: var(--space-xl);
+    border-bottom: var(--border-width) solid var(--border);
+  }
+
+  h1 {
+    font-size: var(--text-xxl);
+    line-height: var(--leading-xxl);
+  }
+
+  .lead {
+    max-width: 64ch;
+    font-size: var(--text-lg);
+    line-height: var(--leading-lg);
+  }
+
+  .section {
+    display: grid;
+    gap: var(--space-lg);
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    line-height: var(--leading-xl);
+  }
+
+  .prose {
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .contributors-grid {
+    display: grid;
+    gap: var(--space-lg);
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+
+  .contributor-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+
+  .advisors-card {
+    grid-column: 1 / -1;
+  }
+
+  .role {
+    font-size: var(--text-xs);
+    line-height: var(--leading-xs);
+  }
+
+  .person-name {
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+  }
+
+  .advisor-note {
+    margin-top: var(--space-xs);
+    font-size: var(--text-sm);
+    line-height: var(--leading-sm);
+  }
+</style>

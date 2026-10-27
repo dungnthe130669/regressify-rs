@@ -23,22 +23,23 @@ bun run dev
 
 ## Layout
 
-| Path                        | Contents                                                          |
-| --------------------------- | ----------------------------------------------------------------- |
-| `src/config/site.ts`        | Site name, description, repository URL, and navigation.           |
-| `src/styles/tokens.css`     | Design tokens mirrored from the desktop theme (light and dark).   |
-| `src/styles/global.css`     | Base element styles and Markdown `.prose` styles.                 |
-| `src/components/`           | Button, Card, CodeBlock, Header, Footer, ThemeToggle, and others. |
-| `src/layouts/`              | `BaseLayout`, `DocsLayout`, and `BlogLayout`.                     |
-| `src/pages/`                | Routes: `/`, `/download/`, `/docs/`, `/blog/`, `/rss.xml`, 404.   |
-| `src/content/docs`, `/blog` | Markdown content collections.                                     |
-| `src/lib/release.ts`        | Build-time installer resolution and validation.                   |
-| `public/`                   | Logo and favicons copied from [assets](../assets).                |
+| Path                        | Contents                                                                   |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `src/config/site.ts`        | Site name, description, repository URL, and navigation.                    |
+| `src/styles/tokens.css`     | Design tokens mirrored from the desktop theme (light and dark).            |
+| `src/styles/global.css`     | Base element styles and Markdown `.prose` styles.                          |
+| `src/components/`           | Button, Card, CodeBlock, Header, Footer, ThemeToggle, and others.          |
+| `src/layouts/`              | `BaseLayout`, `DocsLayout`, and `BlogLayout`.                              |
+| `src/pages/`                | Routes: `/`, `/download/`, `/docs/`, `/blog/`, `/about/`, `/rss.xml`, 404. |
+| `src/content/docs`, `/blog` | Markdown content collections.                                              |
+| `src/lib/release.ts`        | Build-time installer resolution and validation.                            |
+| `public/`                   | Logo and favicons copied from [assets](../assets).                         |
 
 Header navigation uses `HEADER_LINKS` in [src/config/site.ts](src/config/site.ts).
 It includes shared `NAV_LINKS` plus a header-only Login link to `/admin`, where
-Cloudflare Access handles authentication. Add future header-only links to
-`HEADER_LINKS`; add links to `NAV_LINKS` when they should also appear in the footer.
+Cloudflare Access handles authentication. Footer navigation uses `FOOTER_LINKS`,
+which includes `NAV_LINKS` plus `/about/`. Add future header-only links to
+`HEADER_LINKS`; add links to `NAV_LINKS` when they should appear in both header and footer.
 Below 640px all header links sit in a native hamburger dropdown, keeping the
 header one row tall even when open. Navigation works without JavaScript; scripts
 add Escape, outside-click, focus-leave, and desktop-resize dismissal.
