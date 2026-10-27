@@ -1280,7 +1280,8 @@ client widths of 1080px or wider; narrower windows hide the title-bar version.
 The workspace name uses the same text size as the menus, with a small gap after
 Results. Help > About always shows Regressify Desktop, its version, contributors
 (author and lead developer Tuyen Pham, developer and docs maintainer Dinh Pham,
-developer Hung Le, and QA advisors Nga Nguyen, Hanh Nguyen, and Duyen Pham), and
+developers Hung Le and Dung Nguyen Tien, and QA advisors Nga Nguyen, Hanh
+Nguyen, and Duyen Pham), and
 the clickable website `https://regressify.eshn.dev/`, which opens in the external
 default browser. It also shows the copyright and no-warranty notices, a
 **GNU AGPL v3 or later** link to the licensing terms, and a link to the public

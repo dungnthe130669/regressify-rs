@@ -281,7 +281,7 @@ function Test-ApplicationMenus {
     Wait-Control "Version: $version" | Out-Null
     Wait-Control 'Author and lead developer: Tuyen Pham' | Out-Null
     Wait-Control 'Developer and docs maintainer: Dinh Pham' | Out-Null
-    Wait-Control 'Developer: Hung Le' | Out-Null
+    Wait-Control 'Developers: Hung Le, Dung Nguyen Tien' | Out-Null
     Wait-Control 'Advisors (QA): Nga Nguyen, Hanh Nguyen, Duyen Pham' | Out-Null
     if (-not (Test-ControlInvokable 'https://regressify.eshn.dev/')) { throw 'About website must be an external link.' }
     Wait-Control 'This program comes with ABSOLUTELY NO WARRANTY. It is free software; you may redistribute it under the terms of the license below.' | Out-Null

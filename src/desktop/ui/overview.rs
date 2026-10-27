@@ -539,9 +539,9 @@ impl Workbench {
                     div()
                         .id("about-developer")
                         .role(Role::Status)
-                        .aria_label("Developer: Hung Le")
+                        .aria_label("Developers: Hung Le, Dung Nguyen Tien")
                         .test_support()
-                        .child("Developer: Hung Le"),
+                        .child("Developers: Hung Le, Dung Nguyen Tien"),
                 )
                 .child(
                     div()

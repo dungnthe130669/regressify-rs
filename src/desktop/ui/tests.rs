@@ -10569,7 +10569,7 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
         );
         assert_eq!(
             window.find("about-developer").label(),
-            Some("Developer: Hung Le")
+            Some("Developers: Hung Le, Dung Nguyen Tien")
         );
         assert_eq!(
             window.find("about-advisors").label(),

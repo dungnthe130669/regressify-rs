@@ -128,7 +128,7 @@ In this repository, use `bun run deploy:check` to validate MCP templates and `bu
 
 - Author and lead developer: [Tuyen Pham](https://github.com/tuyen-at-work)
 - Developer and docs maintainer: [Dinh Pham](https://github.com/dinh-pham-optimizely)
-- Developer: [Hung Le](https://github.com/lehung1109)
+- Developers: [Hung Le](https://github.com/lehung1109), [Dung Nguyen Tien](https://github.com/dungnthe130669)
 - Advisors (QA): Nga Nguyen, Hanh Nguyen, Duyen Pham — use the tool, provide feedback, and report bugs to help improve Regressify
 
 ## License
