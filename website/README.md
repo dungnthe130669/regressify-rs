@@ -36,7 +36,7 @@ bun run dev
 | `public/`                   | Logo and favicons copied from [assets](../assets).                         |
 
 Header navigation uses `HEADER_LINKS` in [src/config/site.ts](src/config/site.ts).
-It includes shared `NAV_LINKS` plus a header-only Login link to `/admin`, where
+It includes shared `NAV_LINKS` plus a header-only Login link to `/admin/`, where
 Cloudflare Access handles authentication. Footer navigation uses `FOOTER_LINKS`,
 which includes `NAV_LINKS` plus `/about/`. Add future header-only links to
 `HEADER_LINKS`; add links to `NAV_LINKS` when they should appear in both header and footer.

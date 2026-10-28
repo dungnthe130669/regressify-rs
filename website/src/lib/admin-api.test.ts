@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test';
+import { HEADER_LINKS } from '../config/site';
 import { parseSites, serveSites, type AdminFetch } from './admin-api';
 import { routeWebsite } from './website-handler';
 
@@ -88,6 +89,7 @@ describe('admin site feed', () => {
   });
 
   test('routes the protected feed, uncached admin assets, public assets and MCP independently', async () => {
+    expect(HEADER_LINKS.find(link => link.label === 'Login')?.href).toBe('/admin/');
     let assetCalls = 0;
     let mcpCalls = 0;
     const bindings = { ASSETS: { async fetch() { assetCalls++; return new Response('asset', { headers: { 'Cache-Control': 'public, max-age=3600' } }); } } };

@@ -28,7 +28,7 @@ export const NAV_LINKS = [
 
 export const HEADER_LINKS = [
   ...NAV_LINKS,
-  { href: '/admin', label: 'Login' },
+  { href: '/admin/', label: 'Login' },
 ] as const;
 
 export const FOOTER_LINKS = [
