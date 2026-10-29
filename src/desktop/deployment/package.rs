@@ -192,7 +192,7 @@ mod tests {
         let archive = zip::ZipArchive::new(package.file.reopen().unwrap()).unwrap();
         let names = archive
             .file_names()
-            .map(str::to_owned)
+            .map(|name| name.expect("ZIP entry name must be readable").into_owned())
             .collect::<std::collections::BTreeSet<_>>();
         let inventory = crate::snapshot::artifact_paths(&output, &["chosen".into()])
             .unwrap()

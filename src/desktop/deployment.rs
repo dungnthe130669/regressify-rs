@@ -2535,7 +2535,7 @@ mod tests {
         assert_eq!(
             archive
                 .file_names()
-                .map(str::to_owned)
+                .map(|name| name.expect("ZIP entry name must be readable").into_owned())
                 .collect::<BTreeSet<_>>(),
             expected
         );

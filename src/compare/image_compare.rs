@@ -2990,10 +2990,10 @@ mod tests {
 
     #[test]
     #[ignore = "manual 1440x10000 quality/timing benchmark; run with --release --ignored --nocapture"]
+    // A const assertion would prevent even ignored tests from compiling in debug builds.
+    #[allow(clippy::assertions_on_constants)]
     fn full_page_comparison_quality_and_timing() {
-        const {
-            assert!(!cfg!(debug_assertions), "Run this benchmark with --release");
-        }
+        assert!(!cfg!(debug_assertions), "Run this benchmark with --release");
         let dir = tempfile::tempdir().unwrap();
         let reference_path = dir.path().join("reference.png");
         let test_path = dir.path().join("test.png");
