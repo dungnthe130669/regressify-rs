@@ -37,12 +37,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Test release selection, publication, and install scripts
+        run: |
+          python -m pip install PyYAML==6.0.3
+          python ci/test-release.py
+
       # Reusing the live manifest keeps the update feed unchanged; the website
       # build still validates it (RELEASE_REQUIRED=1).
       - name: Download deployed release manifest
         run: |
-          curl --fail --silent --show-error --create-dirs -o "$RUNNER_TEMP/downloads/latest.txt" \
-            "$SITE_ORIGIN/downloads/latest.txt"
+          curl --fail --silent --show-error --proto '=https' --max-redirs 0 \
+            --connect-timeout 10 --max-time 30 --max-filesize 16384 \
+            -H 'Cache-Control: no-cache' --create-dirs \
+            -o "$RUNNER_TEMP/downloads/latest.txt" "$SITE_ORIGIN/downloads/latest.txt"
 
       # website/mcp-worker is git-ignored and bundled into the same Worker, so
       # every deploy regenerates /mcp with the CLI of the deployed release.
@@ -52,10 +63,17 @@ jobs:
           manifest="$RUNNER_TEMP/downloads/latest.txt"
           tag="$(sed -n 's/^tag=//p' "$manifest" | tr -d '\r')"
           entry="$(awk -F= -v key="archive.$CLI_ARCHIVE" '$1 == key { print $2 }' "$manifest" | tr -d '\r')"
-          # Without a tag, gh would silently download GitHub's latest release.
-          [ -n "$tag" ] || { echo "error: deployed latest.txt has no tag" >&2; exit 1; }
+          # Without a validated tag, gh could treat a flag as an option and download GitHub's latest release.
+          [[ "$tag" =~ ^v[0-9]{1,4}(\.[0-9]{1,4}){2,3}$ ]] || {
+            echo "error: deployed latest.txt has no valid tag" >&2
+            exit 1
+          }
+          [[ "$entry" =~ ^[0-9]+:([0-9a-fA-F]{64})$ ]] || {
+            echo "error: deployed latest.txt has no valid $CLI_ARCHIVE checksum" >&2
+            exit 1
+          }
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "cli-sha256=${entry#*:}" >> "$GITHUB_OUTPUT"
+          echo "cli-sha256=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
 
       - name: Download the deployed release's Linux CLI
         env:
@@ -94,5 +112,8 @@ jobs:
 
       - name: Verify update feed is unchanged
         run: |
-          curl --fail --silent --show-error -o "$RUNNER_TEMP/live-latest.txt" "$SITE_ORIGIN/downloads/latest.txt"
+          curl --fail --silent --show-error --proto '=https' --max-redirs 0 \
+            --connect-timeout 10 --max-time 30 --max-filesize 16384 \
+            --retry 4 --retry-delay 2 -H 'Cache-Control: no-cache' \
+            -o "$RUNNER_TEMP/live-latest.txt" "$SITE_ORIGIN/downloads/latest.txt"
           cmp "$RUNNER_TEMP/downloads/latest.txt" "$RUNNER_TEMP/live-latest.txt"

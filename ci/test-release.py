@@ -566,7 +566,8 @@ gh() {
 
     def test_website_workflow_redeploys_the_deployed_release(self):
         self.assertEqual(WEBSITE_WORKFLOW["on"]["push"]["branches"], ["master"])
-        self.assertIn("website/**", WEBSITE_WORKFLOW["on"]["push"]["paths"])
+        self.assertEqual(WEBSITE_WORKFLOW["on"]["push"]["paths"], [
+            "website/**", "ci/deploy-cloudflare.sh", ".github/workflows/website-deploy.yml"])
         self.assertIn("workflow_dispatch", WEBSITE_WORKFLOW["on"])
         self.assertEqual(WEBSITE_WORKFLOW["permissions"], {"contents": "read"})
         self.assertEqual(WEBSITE_WORKFLOW["defaults"], {"run": {"shell": "bash"}})
@@ -577,21 +578,37 @@ gh() {
                                          "CLI_ARCHIVE": "regressify-cli-x86_64-unknown-linux-gnu.zip"})
         steps = deploy["steps"]
         self.assertEqual(steps[0]["with"], {"persist-credentials": "false"})
+        release_node = next(step for step in WORKFLOW["jobs"]["deploy"]["steps"]
+                            if step.get("uses", "").startswith("actions/setup-node@"))
+        website_node = next(step for step in steps if step.get("uses", "").startswith("actions/setup-node@"))
+        self.assertEqual(website_node["with"]["node-version"], release_node["with"]["node-version"])
+        website_bun = next(step for step in steps if step.get("uses", "").startswith("oven-sh/setup-bun@"))
+        self.assertEqual(website_bun["with"]["bun-version-file"], "website/.bun-version")
         by_name = {step.get("name"): step for step in steps}
-        names = WEBSITE_CLI_STEPS + ["Deploy Cloudflare Worker", "Verify update feed is unchanged"]
+        names = ["Test release selection, publication, and install scripts", *WEBSITE_CLI_STEPS,
+                 "Deploy Cloudflare Worker", "Verify update feed is unchanged"]
         indexes = [steps.index(by_name[name]) for name in names]
         self.assertEqual(indexes, sorted(indexes))
+        self.assertIn("python ci/test-release.py",
+                      by_name["Test release selection, publication, and install scripts"]["run"])
+        self.assertIn("--max-redirs 0", by_name[WEBSITE_CLI_STEPS[0]]["run"])
+        self.assertIn("Cache-Control: no-cache", by_name[WEBSITE_CLI_STEPS[0]]["run"])
         self.assertEqual(by_name[WEBSITE_CLI_STEPS[1]]["id"], "release")
         self.assertEqual(by_name[WEBSITE_CLI_STEPS[2]]["env"], {
             "GH_TOKEN": "${{ github.token }}", "TAG": "${{ steps.release.outputs.tag }}"})
         self.assertEqual(by_name[WEBSITE_CLI_STEPS[3]]["env"], {"SHA256": "${{ steps.release.outputs.cli-sha256 }}"})
         self.assertIn("sha256sum --check --strict", by_name[WEBSITE_CLI_STEPS[3]]["run"])
         run = by_name["Deploy Cloudflare Worker"]
+        self.assertLess(steps.index(website_node), steps.index(run))
+        self.assertLess(steps.index(website_bun), steps.index(run))
         self.assertEqual(run["run"], "bash ci/deploy-cloudflare.sh")
         self.assertEqual(run["env"]["CLOUDFLARE_ACCOUNT_ID"], "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}")
         self.assertEqual(run["env"]["CLOUDFLARE_API_TOKEN"], "${{ secrets.CLOUDFLARE_API_TOKEN }}")
         self.assertEqual(run["env"]["DOWNLOADS_DIR"], "${{ runner.temp }}/downloads")
         self.assertEqual(run["env"]["REGRESSIFY_BIN"], "${{ runner.temp }}/cli/regressify")
+        self.assertEqual(run["env"]["REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE"], "true")
+        self.assertIn("--max-redirs 0", by_name["Verify update feed is unchanged"]["run"])
+        self.assertIn("Cache-Control: no-cache", by_name["Verify update feed is unchanged"]["run"])
         self.assertIn('cmp "$RUNNER_TEMP/downloads/latest.txt"', by_name["Verify update feed is unchanged"]["run"])
         for step in steps:
             self.assertNotIn("continue-on-error", step)
@@ -662,9 +679,11 @@ gh() {
             "valid": None,
             "crlf": None,
             "missing-tag": WEBSITE_CLI_STEPS[1],
+            "flag-tag": WEBSITE_CLI_STEPS[1],
+            "duplicate-tag": WEBSITE_CLI_STEPS[1],
+            "missing-archive": WEBSITE_CLI_STEPS[1],
             "unknown-tag": WEBSITE_CLI_STEPS[2],
             "bad-digest": WEBSITE_CLI_STEPS[3],
-            "missing-archive": WEBSITE_CLI_STEPS[3],
         }
         for case, failing_step in cases.items():
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
@@ -688,6 +707,10 @@ gh() {
                     manifest = manifest.replace("\n", "\r\n")
                 elif case == "missing-tag":
                     manifest = manifest.replace("tag=v1.2.3\n", "")
+                elif case == "flag-tag":
+                    manifest = manifest.replace("tag=v1.2.3", "tag=--clobber")
+                elif case == "duplicate-tag":
+                    manifest = manifest.replace("tag=v1.2.3\n", "tag=v1.2.3\ntag=cli-sha256=" + "0" * 64 + "\n")
                 elif case == "unknown-tag":
                     manifest = manifest.replace("tag=v1.2.3", "tag=v9.9.9")
                 (fixtures / "latest.txt").write_bytes(manifest.encode("utf-8"))
@@ -712,10 +735,10 @@ gh() {
                 self.assertEqual(ran[-1], failing_step, result.stderr)
                 # A rejected CLI is never extracted, so it can never run.
                 self.assertFalse((runner / "cli").exists())
-                if case == "missing-tag":
-                    # Never fall back to gh's implicit "latest release" download.
+                if failing_step == WEBSITE_CLI_STEPS[1]:
+                    # Never fall back to gh's implicit "latest release" download or fetch an unrecorded archive.
                     self.assertEqual(len(calls), 1)
-                    self.assertIn("has no tag", result.stderr)
+                    self.assertIn("has no valid", result.stderr)
 
     def test_website_step_bash_requires_bash_4_and_gnu_tools(self):
         # "3" is macOS Bash 3.2; "missing" means sha256sum or unzip is absent.
@@ -732,6 +755,12 @@ gh() {
         bash = website_step_bash()
         if not bash:
             self.skipTest("Website deploy steps need Bash 4+ with sha256sum and unzip (ubuntu-latest)")
+        # Git for Windows's bin/bash.exe wrapper prepends /mingw64/bin:/usr/bin on startup;
+        # resolve the underlying usr/bin/bash binary so PATH overrides isolate tool lookup.
+        real_bash = subprocess.run(
+            [bash, "-c", 'if command -v cygpath >/dev/null; then cygpath -w "$(command -v bash)"; else command -v bash; fi'],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
         for tools in [(), ("sha256sum",), ("unzip",), ("sha256sum", "unzip")]:
             with self.subTest(tools=tools), tempfile.TemporaryDirectory() as directory:
                 # Stubs only need to resolve through `command -v`; the probe never runs them.
@@ -739,8 +768,8 @@ gh() {
                     stub = Path(directory) / name
                     stub.write_text("#!/bin/sh\n", encoding="utf-8", newline="\n")
                     stub.chmod(0o755)
-                with mock.patch.dict(os.environ, {"BASH_PATH": bash, "PATH": directory}):
-                    expected = bash if len(tools) == 2 else None
+                with mock.patch.dict(os.environ, {"BASH_PATH": real_bash, "PATH": directory}):
+                    expected = real_bash if len(tools) == 2 else None
                     self.assertEqual(website_step_bash(), expected)
 
     def test_release_build_arguments(self):

@@ -40,11 +40,13 @@ Verified: 2026-10-29
   first, rely on Cloudflare Access for `/admin` and `/admin/*`, and use server-only
   PostHog secrets. Combined typecheck and dry-run build precede deployment; see
   [local checks and setup](../../website/README.md#private-admin).
-- [Website-only deploys](../../.github/workflows/website-deploy.yml) skip the app
-  build. `website/mcp-worker` is git-ignored and bundled into the same Worker
-  script, so each deploy regenerates it with the live release's Linux CLI. The
-  zip must match the live feed's `archive.` SHA-256: only the release pipeline
-  writes that feed, while `gh release download` verifies nothing.
+- [Website-only deploys](../../.github/workflows/website-deploy.yml) run
+  `python ci/test-release.py` and skip the app build. `website/mcp-worker` is
+  git-ignored and bundled into the same Worker script, so each deploy
+  regenerates it with the live release's Linux CLI. The workflow fetches
+  `latest.txt` with `no-cache` and redirect refusal, validates a single canonical
+  `tag` and `archive.` entry before calling `gh release download`, verifies the
+  zip's SHA-256, and re-checks the live feed bytes after deploy.
   Docs deploys and release deploys share no concurrency group; that overlap risk
   was accepted on 2026-10-29.
 - Workerd rejects `fetch` with `redirect: 'error'`; the admin feed uses `manual`
@@ -54,7 +56,9 @@ Verified: 2026-10-29
   full inventories and mocked publication, all supported Unix target scripts,
   and mocked Windows script execution. Set `BASH_PATH` to Git Bash on Windows.
   Release checks also run on `macos-15` (Bash 3.2 only, no GNU `sha256sum`),
-  so tests that run ubuntu-only workflow steps skip there (`website_step_bash`).
+  so tests that run ubuntu-only workflow steps skip there (`website_step_bash`);
+  the `PATH`-isolation check resolves the underlying `usr/bin/bash` binary so
+  Git for Windows's `bin/bash.exe` wrapper cannot re-prepend `/usr/bin`.
 - Build jobs use GitHub Actions' default timeout, without `timeout-minutes` or a
   matrix `timeout` field. v2.0.3 failed offline checks because a stale desktop
   assertion still indexed that field; matrix regressions now assert its absence.

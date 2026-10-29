@@ -6,14 +6,16 @@ are historical evidence, not open implementation tasks.
 ## Website-Only Deploys (2026-10-29)
 
 - Open: the [website deploy workflow](.github/workflows/website-deploy.yml) has
-  not run on GitHub yet. It reuses the live `latest.txt` and regenerates `/mcp`
-  with that release's Linux CLI, so docs changes ship without an app release.
+  not run on GitHub yet. It runs `python ci/test-release.py`, reuses the live
+  `latest.txt`, and regenerates `/mcp` with that release's Linux CLI, so docs
+  changes ship without an app release.
 - Offline evidence: [release tests](ci/test-release.py) check the workflow's
-  triggers, read-only permissions, and secret scope. They also run its download
-  steps with stubbed `curl` and `gh`: valid and CRLF manifests, a missing tag, a
-  tag with no GitHub release, and a CLI zip whose SHA-256 is wrong or missing.
-  The step test needs Bash 4+ with `sha256sum` and `unzip`, so it runs in the
-  Ubuntu release checks and skips on `macos-15`, which has only Bash 3.2.
+  triggers, read-only permissions, Node/Bun setup, and secret scope. They also
+  run its download steps with stubbed `curl` and `gh`: valid and CRLF manifests,
+  missing, flag-shaped, or duplicate tags, a missing archive entry, a tag with no
+  GitHub release, and a CLI zip whose SHA-256 is wrong. The step test needs
+  Bash 4+ with `sha256sum` and `unzip`, so it runs in the Ubuntu release checks
+  and on Windows with Git Bash, and skips on `macos-15` (Bash 3.2 only).
 - Accepted risk: it shares no concurrency group with the release deploy. If a
   docs deploy reads the old feed and finishes after a release deploy, it restores
   the previous `latest.txt` until the next deploy.
