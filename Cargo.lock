@@ -1021,8 +1021,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26ed067eb6c1f660bdb87c05efb964421d2ca262bae0296cdfe38cf0cd949a3e"
+source = "git+https://github.com/precise-alloy/chromiumoxide?branch=genideas-secure-labs%2Fchromiumoxide#7d17d9fd39e8b97d2d25cc46328f80fb91739372"
 dependencies = [
  "async-tungstenite",
  "base64 0.22.1",
@@ -1049,8 +1048,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_cdp"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68a6a03a7ebac4ea85308f285d6959a3e6b2ce32a0c9465dc7a7b1db0144eec7"
+source = "git+https://github.com/precise-alloy/chromiumoxide?branch=genideas-secure-labs%2Fchromiumoxide#7d17d9fd39e8b97d2d25cc46328f80fb91739372"
 dependencies = [
  "chromiumoxide_pdl",
  "chromiumoxide_types",
@@ -1061,8 +1059,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_fetcher"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edd2cc8c9431726edce9f5ceb3ca1b711dde0f818cd6fb34808a00556ce73135"
+source = "git+https://github.com/precise-alloy/chromiumoxide?branch=genideas-secure-labs%2Fchromiumoxide#7d17d9fd39e8b97d2d25cc46328f80fb91739372"
 dependencies = [
  "anyhow",
  "directories",
@@ -1078,8 +1075,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_pdl"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c602dea92337bc4d824668d78c5b79c3b4ddb29b40dd7218282bbe8fd3fc2091"
+source = "git+https://github.com/precise-alloy/chromiumoxide?branch=genideas-secure-labs%2Fchromiumoxide#7d17d9fd39e8b97d2d25cc46328f80fb91739372"
 dependencies = [
  "chromiumoxide_types",
  "either",
@@ -1094,8 +1090,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_types"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "678d5146e74f16fc4a41978b275af572cd913de1f10270d2b93b6c276bc57d80"
+source = "git+https://github.com/precise-alloy/chromiumoxide?branch=genideas-secure-labs%2Fchromiumoxide#7d17d9fd39e8b97d2d25cc46328f80fb91739372"
 dependencies = [
  "serde",
  "serde_json",

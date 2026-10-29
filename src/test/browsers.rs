@@ -311,11 +311,11 @@ async fn launch_browser_inner(
         // viewport. These flags pin the remaining sources of pixel drift.
         //
         // IMPORTANT: Chrome honors only the LAST `--enable-features` /
-        // `--disable-features` switch on the command line; duplicates are not
-        // merged. chromiumoxide's DEFAULT_ARGS already pass
-        // `--enable-features=NetworkService,NetworkServiceInProcess` and
-        // `--disable-features=TranslateUI`, and our args are appended after
-        // them — so we must restate those values here or they get dropped.
+        // `--disable-features` switch on the command line when separate flags
+        // are emitted. Our chromiumoxide fork normalizes `--key=value` switches
+        // and unions `enable-features` / `disable-features` with DEFAULT_ARGS
+        // (`NetworkService,NetworkServiceInProcess` and `TranslateUI`) without
+        // duplicating shared entries.
         //
         // - CDPScreenshotNewSurface: Playwright's screenshot determinism feature
         //   — captures from a dedicated surface, independent of on-screen
@@ -355,6 +355,9 @@ async fn launch_browser_inner(
 
         // Chromiumoxide initializes every popup with this viewport as well as the
         // first page. Keep it aligned with the capture to avoid a first-load resize.
+        // Disable automatic session recovery so closing popup tabs or tearing down a
+        // scenario does not trigger background re-attach attempts against our own
+        // per-session CDP state.
         let mut config_builder = BrowserConfig::builder()
             .chrome_executable(&resolved)
             .user_data_dir(&user_data_dir)
@@ -368,6 +371,7 @@ async fn launch_browser_inner(
                 is_landscape: true,
             }))
             .launch_timeout(Duration::from_secs(45))
+            .disable_session_recovery()
             .args(args.clone());
 
         if debug {
@@ -582,5 +586,16 @@ mod tests {
         let executable = tempfile::NamedTempFile::new().unwrap();
         let path = executable.path().to_path_buf();
         assert_eq!(resolve_executable(&Some(path.clone())).unwrap(), path);
+    }
+
+    #[test]
+    fn browser_config_disables_automatic_session_recovery() {
+        let executable = tempfile::NamedTempFile::new().unwrap();
+        let config = chromiumoxide::BrowserConfig::builder()
+            .chrome_executable(executable.path())
+            .disable_session_recovery()
+            .build()
+            .unwrap();
+        assert!(!config.session_recovery);
     }
 }
