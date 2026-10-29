@@ -179,6 +179,7 @@ struct HistoryEntry {
     selection: Option<Range<usize>>,
 }
 
+#[cfg_attr(not(any(feature = "gui", test)), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SourceEditKind {
     Insert,
@@ -300,6 +301,7 @@ impl Document {
     }
 
     /// Native drafts may exceed the save limit; keep them dirty and undoable.
+    #[cfg_attr(not(any(feature = "gui", test)), allow(dead_code))]
     pub(crate) fn set_source_draft(
         &mut self,
         source: String,
@@ -320,10 +322,12 @@ impl Document {
         Ok(())
     }
 
+    #[cfg_attr(not(any(feature = "gui", test)), allow(dead_code))]
     pub(crate) fn source_selection(&self) -> Option<Range<usize>> {
         self.source_selection.clone()
     }
 
+    #[cfg_attr(not(any(feature = "gui", test)), allow(dead_code))]
     pub(crate) fn set_source_selection(&mut self, selection: Range<usize>) {
         if self.source_selection.as_ref() != Some(&selection) {
             self.break_source_history();
@@ -335,6 +339,7 @@ impl Document {
         self.source_edit_kind = None;
     }
 
+    #[cfg_attr(not(any(feature = "gui", test)), allow(dead_code))]
     fn source_edit_kind(&self, source: &str, selection: &Range<usize>) -> Option<SourceEditKind> {
         let previous = self.source_selection.as_ref()?;
         if !previous.is_empty() || !selection.is_empty() {
