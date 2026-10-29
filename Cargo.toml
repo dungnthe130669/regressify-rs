@@ -26,7 +26,7 @@ gui-tests = ["gui", "gpui-kit/test-support"]
 [dependencies]
 anyhow = "1.0.100"
 base64 = "0.22.1"
-chromiumoxide = { git = "https://github.com/precise-alloy/chromiumoxide", branch = "genideas-secure-labs/chromiumoxide", features = ["bytes", "fetcher", "rustls" ] }
+chromiumoxide = { git = "https://github.com/precise-alloy/chromiumoxide", features = ["bytes", "fetcher", "rustls" ] }
 chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
