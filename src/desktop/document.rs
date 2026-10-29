@@ -551,18 +551,24 @@ fn apply_yaml(source: &str, edit: &Edit) -> Result<String> {
     let (mut protected, originals) = protect_plain_scalars(source)?;
     // Keep the stream wrapper: leading comments can belong to it, not the document.
     let mut file = YamlFile::from_str(&protected)?;
-    if file.document().is_none()
-        && matches!(edit, Edit::Set { value: Some(_), .. })
-        && !protected.is_empty()
-        && !protected.ends_with('\n')
-    {
-        // A new setting must not become part of an unterminated leading comment.
-        protected.push_str(if protected.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        });
-        file = YamlFile::from_str(&protected)?;
+    if file.document().is_none() {
+        if matches!(edit, Edit::Set { parent, value: None, .. } if parent.is_empty()) {
+            // yaml-edit 0.3.5 terminates non-empty documentless streams in
+            // ensure_document(); resetting an absent root key must stay a no-op.
+            return Ok(source.to_string());
+        }
+        if matches!(edit, Edit::Set { value: Some(_), .. })
+            && !protected.is_empty()
+            && !protected.ends_with('\n')
+        {
+            // A new setting must not become part of an unterminated leading comment.
+            protected.push_str(if protected.contains("\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            });
+            file = YamlFile::from_str(&protected)?;
+        }
     }
     let document = file.ensure_document();
     let root = root_node(&document)?;
