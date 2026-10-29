@@ -228,6 +228,7 @@ pub async fn exec_single_scenario(
     if !browser_closed {
         let _ = browser.kill().await;
     }
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), browser.wait()).await;
     drop(browser);
     let _ = std::fs::remove_dir_all(&user_data_dir);
 

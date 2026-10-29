@@ -89,6 +89,11 @@ pub(crate) fn collect_needs_scenarios<'a>(
     visited: &mut Vec<String>,
 ) -> Vec<&'a TestScenario> {
     let mut sources = Vec::new();
+    if let Some(own_id) = scenario.id.as_deref()
+        && !visited.iter().any(|v| v.eq_ignore_ascii_case(own_id))
+    {
+        visited.push(own_id.to_ascii_lowercase());
+    }
 
     let needed_ids = match &scenario.needs {
         Some(Needs::String(id)) => vec![id.as_str()],
@@ -97,7 +102,7 @@ pub(crate) fn collect_needs_scenarios<'a>(
     };
 
     for needed_id in needed_ids {
-        if visited.contains(&needed_id.to_string()) {
+        if visited.iter().any(|v| v.eq_ignore_ascii_case(needed_id)) {
             continue; // Already processed — avoid cycles
         }
 
@@ -106,7 +111,7 @@ pub(crate) fn collect_needs_scenarios<'a>(
                 .map(|id| id.eq_ignore_ascii_case(needed_id))
                 .unwrap_or(false)
         }) {
-            visited.push(needed_id.to_string());
+            visited.push(needed_id.to_ascii_lowercase());
             // Recursively collect dependencies of this dependency first
             sources.extend(collect_needs_scenarios(
                 dep_scenario,
@@ -1126,6 +1131,18 @@ mod tests {
             &suite.scenarios,
             Some("mobile")
         ));
+    }
+
+    #[test]
+    fn collect_needs_scenarios_deduplicates_case_insensitively_and_skips_self_cycles() {
+        let suite: TestSuite = serde_yaml::from_str(
+            "scenarios:\n- id: base\n  url: /\n  needs: BASE\n- id: left\n  url: /\n  needs: base\n- id: right\n  url: /\n  needs: BASE\n- id: consumer\n  url: /\n  needs: [left, RIGHT]\n",
+        )
+        .unwrap();
+        let collected =
+            super::collect_needs_scenarios(&suite.scenarios[3], &suite.scenarios, &mut Vec::new());
+        let ids: Vec<&str> = collected.iter().filter_map(|s| s.id.as_deref()).collect();
+        assert_eq!(ids, vec!["base", "left", "right"]);
     }
 
     use super::*;
