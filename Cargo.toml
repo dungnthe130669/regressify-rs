@@ -10,6 +10,11 @@ name = "regressify-desktop"
 path = "src/bin/desktop.rs"
 required-features = ["gui"]
 
+[[bin]]
+name = "regressify-mcp-catalog"
+path = "src/bin/mcp_catalog.rs"
+required-features = ["mcp-catalog"]
+
 [[test]]
 name = "desktop_worker"
 path = "tests/desktop_worker.rs"
@@ -19,6 +24,7 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
+mcp-catalog = []
 desktop = ["local", "dep:yaml-edit", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:keyring", "dep:zeroize", "dep:imagequant", "dep:jsonschema", "dep:strsim", "dep:sha1", "dep:tiny_http", "dep:similar", "reqwest/blocking", "reqwest/multipart"]
 gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows", "dep:webbrowser", "dep:raw-window-handle"]
 gui-tests = ["gui", "gpui-kit/test-support"]

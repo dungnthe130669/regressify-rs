@@ -31,13 +31,6 @@ impl std::fmt::Display for ScenarioFilter {
 }
 
 #[derive(clap::Args)]
-pub struct McpArgs {
-    /// New directory for the self-contained Cloudflare MCP Worker (parent must exist)
-    #[clap(long)]
-    pub output: std::path::PathBuf,
-}
-
-#[derive(clap::Args)]
 pub struct OptimizeArgs {
     /// Compression speed (1 = smallest files, 10 = fastest)
     #[clap(long, visible_alias = "sp", default_value_t = 8, value_parser = speed_parser)]
@@ -293,16 +286,12 @@ mod tests {
     }
 
     #[test]
-    fn mcp_generation_requires_an_explicit_output_directory() {
+    fn mcp_worker_generation_is_not_a_cli_command() {
         use crate::cli::Cli;
         use clap::Parser;
 
         assert!(Cli::try_parse_from(["regressify", "mcp"]).is_err());
-        assert!(Cli::try_parse_from(["regressify", "mcp", "--output", "worker-export"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["regressify", "mcp", "--output", "worker-export", "--force"])
-                .is_err()
-        );
+        assert!(Cli::try_parse_from(["regressify", "mcp", "--output", "worker-export"]).is_err());
     }
 
     #[test]

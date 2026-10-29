@@ -12,9 +12,9 @@
     "preview": "astro preview",
     "check": "astro check && bun run test",
     "test": "bun test ./src",
-    "worker:check": "node mcp-worker/node_modules/typescript/bin/tsc --project tsconfig.worker.json",
-    "worker:build": "mcp-worker/node_modules/.bin/wrangler deploy --dry-run --config wrangler.jsonc",
-    "worker:dev": "mcp-worker/node_modules/.bin/wrangler dev --config wrangler.jsonc --env-file ../.env.local",
+    "worker:check": "node mcp/node_modules/typescript/bin/tsc --project tsconfig.worker.json",
+    "worker:build": "mcp/node_modules/.bin/wrangler deploy --dry-run --config wrangler.jsonc",
+    "worker:dev": "mcp/node_modules/.bin/wrangler dev --config wrangler.jsonc --env-file ../.env.local",
     "astro": "astro"
   },
   "dependencies": {

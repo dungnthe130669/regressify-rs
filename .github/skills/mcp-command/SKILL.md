@@ -1,19 +1,18 @@
 ---
 name: mcp-command
-description: 'Use when changing regressify mcp, standalone authoring or troubleshooting guides, generated schemas/examples, Cloudflare MCP Worker templates, protocol compatibility, or safe export destinations.'
+description: 'Use when changing hosted MCP authoring or troubleshooting guides, generated schemas/examples, the website MCP Worker, catalog versioning, or protocol compatibility.'
 ---
 
 # MCP Authoring Export
 
 ## Start Here
 
-[Generator](../../../src/mcp/mod.rs), [catalog](../../../src/mcp/catalog.rs), [guides](../../../src/mcp/guides), [Worker template](../../../src/mcp/worker), [command reference](../../../docs/commands.md#mcp-authoring-worker), and [CI](../../workflows/mcp-checks.yml).
+[Catalog](../../../src/mcp/catalog.rs), [guides](../../../src/mcp/guides), [website Worker](../../../website/mcp), [command reference](../../../docs/commands.md#mcp-authoring-worker), and [CI](../../workflows/mcp-checks.yml).
 
 ## Procedure and Invariants
 
-1. Keep `regressify mcp --output <new-directory>` in the default CLI feature set. Embed all templates/guides with the binary; generation must not read workspace content, fetch dependencies, start Chromium, or require a source checkout.
-1. Separate generation from publication. No Cloudflare API calls, credentials, automatic installs, or deployment subprocesses belong in the Rust command. The official endpoint (https://regressify.eshn.dev/mcp, REGRESSIFY_MCP_URL in init) is deployed by the [release pipeline](../release-pipeline/SKILL.md) inside the website Worker; template changes to compatibility settings must also update website/wrangler.jsonc.
-1. Require an existing parent and a new output directory. Reserve it with `create_dir`, validate embedded paths/directories, and use no-clobber temporary file publication. Preserve existing files and competing writes. A failed export may remain partial; do not recursively delete a directory another process could have edited. Do not claim protection from every ancestor race.
+1. The CLI has no MCP generation command. The feature-gated repository-only catalog binary derives content from Rust types; it must not read workspace content, fetch dependencies, start Chromium, or deploy. The official endpoint (https://regressify.eshn.dev/mcp, REGRESSIFY_MCP_URL in init) runs inside the website Worker.
+1. Preserve release-matched catalog generation and the legacy fallback for releases predating the catalog binary. Match catalog versions to the release manifest before deployment; see the [release pipeline](../release-pipeline/SKILL.md). Keep website and MCP test compatibility settings aligned.
 1. Derive schemas from real Rust types. Keep viewport schema metadata available without desktop features. Cookie format guidance uses the real runtime parser in tests instead of introducing a second cookie schema.
    Cover local constraints negatively as well as valid examples: positive workspace
    timeouts and nonempty capture selectors must not reject documented zero
@@ -57,9 +56,8 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
    cover delivery and guard against header-only default examples.
 1. The Worker serves public read-only tools, resources, and prompts at `/mcp`. Use the pinned SDK handler for discovery/transport. Retain Origin validation, request byte limits, no arbitrary path/URL inputs, no user data storage, and generic failure responses. Authentication is a separate deployment concern.
 1. Preserve both current stateless and legacy-client tests. Current HTTP requests need protocol/method metadata headers as well as body metadata. Stateless `tools/call` also requires `Mcp-Name` matching `params.name`; missing or mismatched metadata is a client error. Invalid tool arguments may return `isError: true` rather than throw at the client. A plain GET returning 405 is not an MCP health failure; verify with an MCP HTTP client.
-1. Pin template dependencies and retain a matching npm lockfile. Use `--save-exact` for upgrades: caret/tilde ranges fail the export contract even when the manifest and lockfile agree. Keep manifest pins, lockfile root declarations, and resolved direct versions synchronized. Edit the template/catalog, regenerate a fresh package, then test that actual export; do not rely only on a hand-adjusted temporary package. The frontend log-value allowlist must match new typed command identities. Embedded code/config uses `.template` filenames; only exported files are a runnable TypeScript project with a generated catalog and installed dependencies.
-1. Keep `minify: true` and `upload_source_maps: false` in the Wrangler template so a deployment uploads one minified module and no source maps; Wrangler generates maps whenever uploads are unset. The package test inspects a dry-run bundle; only the worker's imports, such as `content/catalog.json`, enter it.
-1. Gate generated `deploy` through `verify`: high/critical dependency audit (including dev tools), typecheck, tests, and dry-run build, all fail-closed. Root `deploy:check` covers Rust formatting/MCP tests/locked CLI build; root deploy exports current Cargo source without Git pulls or installed-CLI lookup. Never run its sibling-directory cleanup or real publication as validation. Exercise each failed gate with mocked npm/Wrangler; audit failures are blockers, not permission to force upgrades.
+1. Pin website MCP dependencies and keep the npm lockfile synchronized. Typecheck and exercise the real Worker using a freshly generated catalog; test the combined website Worker too. Dependency advisories and audit-service failures must be reported, not suppressed or force-fixed.
+1. Keep `minify: true` and `upload_source_maps: false` in both Wrangler configurations. The MCP test inspects the dry-run bundle; the website build must also pass before deployment.
 
 ## Checks
 
@@ -67,21 +65,19 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
 cargo test --locked --lib mcp
 cargo test --locked --features desktop --lib desktop::schema::tests
 cargo fmt --all -- --check
-cargo build --locked --bin regressify
+cargo run --locked --features mcp-catalog --bin regressify-mcp-catalog > website/mcp/content/catalog.json
 ```
 
-Run the built binary from an empty temporary directory and export to a new path. In that package, with Node 22.12+ and npm:
+Create `website/mcp/content` first. In `website/mcp`, with Node 22.12+ and npm:
 
 ```sh
 npm ci
 npm run check
 npm test
 npm run build
-npm run verify
 ```
 
-Worker tests start/stop a local runtime; `build` is a Wrangler dry run. Neither requires publishing credentials. Cover complete/default-feature export, version and dependency consistency, deterministic bytes, self-contained schema refs, every action/example, invalid destinations, file conflicts, concurrent exports, and symlinks where the platform permits. Unix symlink checks run in Linux CI.
-`verify` also needs the npm audit service; report dependency advisories or lookup failures explicitly. Only `deploy` publishes after all gates succeed.
+Worker tests start/stop a local runtime; `build` is a Wrangler dry run. Neither requires publishing credentials. Cover version and dependency consistency, self-contained schema refs, and every action/example. Run `npm audit --audit-level=high` and report advisories or lookup failures explicitly.
 Catalog checks also require direct/referenced property help and standalone
 diagnostic/hook contracts. Script-stub checks do not replace live hook fixtures.
 Check consumer memory guidance through startup instructions, the overview tool
@@ -91,4 +87,4 @@ including the installed CLI/PATH, intended captures, reference writes, and block
 
 ## Maintain
 
-Update [CLI docs](../../../docs/commands.md), [README](../../../README.md), the template's standalone README, affected domain skills, and [shared notes](../../../.ai/memory/mcp-authoring.md). Keep the generated-project CI triggered by types, runtime semantics, and templates.
+Update [CLI docs](../../../docs/commands.md), [README](../../../README.md), [website README](../../../website/README.md), affected domain skills, and [shared notes](../../../.ai/memory/mcp-authoring.md). Keep MCP CI triggered by types, runtime semantics, and Worker changes.

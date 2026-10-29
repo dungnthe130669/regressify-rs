@@ -241,8 +241,8 @@ are historical evidence, not open implementation tasks.
   website-selected version. See [Bridge Rollout](docs/desktop.md#bridge-rollout).
 - The previously hosted `regressify-mcp` workers.dev Worker is no longer deployed
   by CI. `regressify init` migrates workspaces to `https://regressify.eshn.dev/mcp`;
-  retire the old Worker once clients have moved. The root `bun run deploy` still
-  targets that standalone Worker.
+  retire the old Worker once clients have moved. The root standalone deploy
+  shortcut has been removed; publication now uses the website workflow.
 
 ## Third-Party Notices In Distributions (2026-10-22)
 
@@ -528,21 +528,15 @@ are historical evidence, not open implementation tasks.
 
 ## MCP Deployment Verification (2026-10-14)
 
-- Resolved missing gates: generated [Worker deployment](src/mcp/worker/package.json)
-  now requires a high/critical dependency audit, typecheck, tests, and dry-run
-  build. [Root deployment](package.json) additionally requires Rust
-  formatting/MCP tests/locked CLI build and exports the checked local source,
-  without implicit Git pulls or installed-CLI lookup.
-- [Package tests](src/mcp/worker/tests/worker.test.mjs.template) mock npm and
-  Wrangler to prove every failed command stops publication. The six prior
-  high-severity audit findings are resolved by the upgraded dependencies:
-  fresh export verification passes with zero reported vulnerabilities,
-  TypeScript checks, all 12 Worker tests, and the dry-run build.
-- Dependency upgrades initially introduced caret ranges, failing the export
-  contract despite a matching lockfile. Exact pins now preserve those upgraded
-  versions, and the export test names invalid pins and checks resolved direct
-  versions. No advisory exceptions were applied; audit-service failures still
-  block deployment.
+- The old standalone Worker export and its gated deploy shortcut have been
+  removed. [Website deployment](ci/deploy-cloudflare.sh) checks the catalog
+  version, MCP types and tests, and the combined Worker dry run before deploy.
+- Open: `npm audit --audit-level=high` in [website/mcp](website/mcp/package.json)
+  reports high advisories for `body-parser` and `undici` as of 2026-10-29. The
+  website deploy currently does not gate on audit; review dependency fixes and
+  restore a fail-closed audit gate without forcing unreviewed upgrades.
+- [Worker tests](website/mcp/tests/worker.test.mjs) enforce exact direct pins and
+  matching lockfile versions and exercise protocol behavior and bundle output.
 
 ## MCP Related-State Capture Coverage (2026-10-14)
 
@@ -595,7 +589,7 @@ are historical evidence, not open implementation tasks.
   lines, with a compact linked index. Agents split/update notes and exclude private
   data; initialization and the public MCP server do not manage the memory files.
 - [Initialization](src/init.rs) and [catalog regressions](src/mcp/catalog.rs) check
-  the policy; [Worker tests](src/mcp/worker/tests/worker.test.mjs.template) exercise
+  the policy; [Worker tests](website/mcp/tests/worker.test.mjs) exercise
   startup instructions, tools, resources, and prompts. Existing projects need
   initialization with an updated CLI or desktop build; hosted MCP content needs
   regeneration and redeployment.

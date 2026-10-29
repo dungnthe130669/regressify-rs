@@ -429,7 +429,7 @@ Use `window.location.href` for the current URL.
 
 Existing Node/Playwright hooks must be rewritten as DOM code. Module exports,
 `require`, `process.env`, filesystem APIs, and Playwright `page` objects are not
-available. There is no Node fallback. The standalone MCP `hooks` topic and
+available. There is no Node fallback. The hosted MCP `hooks` topic and
 `before-script`, `scenario-ready-script`, and `hooked-suite` examples cover the
 full lifecycle.
 

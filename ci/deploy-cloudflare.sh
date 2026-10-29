@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the website from the staged release manifest and archives, copies
-# /downloads/latest.txt into dist/downloads/, generates and verifies the MCP
-# Worker with the released CLI, then deploys both as one Cloudflare Worker
+# /downloads/latest.txt into dist/downloads/, verifies the release-matched MCP
+# catalog and Worker, then deploys both as one Cloudflare Worker
 # (website/wrangler.jsonc). Binary archives and the Windows installer are hosted
 # on GitHub Releases; the website serves latest.txt, install.ps1, install.sh,
 # and the /mcp endpoint.
@@ -12,20 +12,26 @@ fail() {
   exit 1
 }
 
-[ -n "${REGRESSIFY_BIN:-}" ] || fail "REGRESSIFY_BIN must name the released Regressify CLI"
-[ -x "$REGRESSIFY_BIN" ] || fail "REGRESSIFY_BIN '$REGRESSIFY_BIN' is not executable"
+[ -n "${MCP_CATALOG:-}" ] || fail "MCP_CATALOG must name the release-matched catalog"
+[ -f "$MCP_CATALOG" ] || fail "MCP_CATALOG '$MCP_CATALOG' does not exist"
 [ -n "${DOWNLOADS_DIR:-}" ] || fail "DOWNLOADS_DIR must name the staged release downloads"
 [ -f "$DOWNLOADS_DIR/latest.txt" ] || fail "DOWNLOADS_DIR '$DOWNLOADS_DIR' has no latest.txt"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 website="$root/website"
-worker="$website/mcp-worker"
+worker="$website/mcp"
 downloads="$(cd "$DOWNLOADS_DIR" && pwd)"
 
-# The export refuses existing destinations, so always start from a clean copy.
-rm -rf "$worker"
-# Check and build the site before generating the Worker so `bun test` and
-# `astro check` never pick up the generated project's files.
+python - "$root/ci" "$downloads/latest.txt" "$MCP_CATALOG" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from release_feed import validate_mcp_catalog_version
+manifest = Path(sys.argv[2]).read_text(encoding="utf-8")
+catalog = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+validate_mcp_catalog_version(manifest, catalog)
+PY
+
 (
   cd "$website"
   bun install --frozen-lockfile
@@ -37,7 +43,8 @@ rm -rf "$worker"
 mkdir -p "$website/dist/downloads"
 cp "$downloads/latest.txt" "$website/dist/downloads/latest.txt"
 
-"$REGRESSIFY_BIN" mcp --output "$worker"
+mkdir -p "$worker/content"
+cp "$MCP_CATALOG" "$worker/content/catalog.json"
 (
   cd "$worker"
   npm ci

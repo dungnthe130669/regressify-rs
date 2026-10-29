@@ -370,7 +370,8 @@ gh() {
         verify = by_name["Verify GitHub release before building website"]
         self.assertIn("ci/release_feed.py verify-github", verify["run"])
         self.assertLess(steps.index(verify), steps.index(by_name["Deploy Cloudflare Worker"]))
-        self.assertIn("$RUNNER_TEMP/downloads/regressify-cli-x86_64-unknown-linux-gnu.zip", by_name["Extract released Linux CLI"]["run"])
+        self.assertIn("--features mcp-catalog --bin regressify-mcp-catalog", by_name["Build release MCP catalog"]["run"])
+        self.assertLess(steps.index(by_name["Build release MCP catalog"]), steps.index(by_name["Deploy Cloudflare Worker"]))
         run = by_name["Deploy Cloudflare Worker"]
         self.assertEqual(run["run"], "bash ci/deploy-cloudflare.sh")
         self.assertEqual(run["env"]["CLOUDFLARE_ACCOUNT_ID"], "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}")
@@ -463,17 +464,17 @@ gh() {
         self.assertGreaterEqual(release_feed.version_parts(node_version),
                                 release_feed.version_parts(minimum_node.removeprefix(">=")))
         script = (ROOT / "ci/deploy-cloudflare.sh").read_text(encoding="utf-8")
-        order = ['[ -f "$DOWNLOADS_DIR/latest.txt" ]', "bun install --frozen-lockfile", "bun run check",
+        order = ['[ -f "$DOWNLOADS_DIR/latest.txt" ]', 'validate_mcp_catalog_version(manifest, catalog)', "bun install --frozen-lockfile", "bun run check",
                  'RELEASE_REQUIRED=1 RELEASE_MANIFEST_FILE="$downloads/latest.txt" bun run build',
                  '[ ! -e "$website/dist/downloads" ]', 'cp "$downloads/latest.txt" "$website/dist/downloads/latest.txt"',
-                 '"$REGRESSIFY_BIN" mcp --output "$worker"', "npm ci", "npm run check", "npm test",
+                 'cp "$MCP_CATALOG" "$worker/content/catalog.json"', "npm ci", "npm run check", "npm test",
                  "bun run worker:check", "bun run worker:build",
                  "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", 'wrangler" deploy --config wrangler.jsonc']
         indexes = [script.index(item) for item in order]
         self.assertEqual(indexes, sorted(indexes))
         self.assertNotIn("set -x", script)
         config = json.loads((ROOT / "website/wrangler.jsonc").read_text(encoding="utf-8"))
-        template = json.loads((ROOT / "src/mcp/worker/wrangler.jsonc.template").read_text(encoding="utf-8"))
+        template = json.loads((ROOT / "website/mcp/wrangler.jsonc").read_text(encoding="utf-8"))
         for key in ("compatibility_date", "compatibility_flags", "minify", "upload_source_maps"):
             self.assertEqual(config[key], template[key], key)
         self.assertEqual(config["name"], "regressify")
@@ -567,7 +568,7 @@ gh() {
     def test_website_workflow_redeploys_the_deployed_release(self):
         self.assertEqual(WEBSITE_WORKFLOW["on"]["push"]["branches"], ["master"])
         self.assertEqual(WEBSITE_WORKFLOW["on"]["push"]["paths"], [
-            "website/**", "ci/deploy-cloudflare.sh", ".github/workflows/website-deploy.yml"])
+            "website/**", "ci/deploy-cloudflare.sh", "ci/release_feed.py", ".github/workflows/website-deploy.yml"])
         self.assertIn("workflow_dispatch", WEBSITE_WORKFLOW["on"])
         self.assertEqual(WEBSITE_WORKFLOW["permissions"], {"contents": "read"})
         self.assertEqual(WEBSITE_WORKFLOW["defaults"], {"run": {"shell": "bash"}})
@@ -585,7 +586,9 @@ gh() {
         website_bun = next(step for step in steps if step.get("uses", "").startswith("oven-sh/setup-bun@"))
         self.assertEqual(website_bun["with"]["bun-version-file"], "website/.bun-version")
         by_name = {step.get("name"): step for step in steps}
-        names = ["Test release selection, publication, and install scripts", *WEBSITE_CLI_STEPS,
+        names = ["Test release selection, publication, and install scripts", *WEBSITE_CLI_STEPS[:2],
+             "Detect legacy release", *WEBSITE_CLI_STEPS[2:],
+             "Build catalog from the deployed release",
                  "Deploy Cloudflare Worker", "Verify update feed is unchanged"]
         indexes = [steps.index(by_name[name]) for name in names]
         self.assertEqual(indexes, sorted(indexes))
@@ -598,6 +601,15 @@ gh() {
             "GH_TOKEN": "${{ github.token }}", "TAG": "${{ steps.release.outputs.tag }}"})
         self.assertEqual(by_name[WEBSITE_CLI_STEPS[3]]["env"], {"SHA256": "${{ steps.release.outputs.cli-sha256 }}"})
         self.assertIn("sha256sum --check --strict", by_name[WEBSITE_CLI_STEPS[3]]["run"])
+        release_checkout = next(step for step in steps if step.get("with", {}).get("path") == "release-source")
+        self.assertEqual(release_checkout["with"]["ref"], "${{ steps.release.outputs.tag }}")
+        self.assertEqual(release_checkout["with"]["persist-credentials"], "false")
+        self.assertLess(steps.index(release_checkout), steps.index(by_name["Detect legacy release"]))
+        for name in WEBSITE_CLI_STEPS[2:]:
+            self.assertEqual(by_name[name]["if"], "steps.catalog-source.outputs.legacy == 'true'")
+        catalog_step = by_name["Build catalog from the deployed release"]["run"]
+        self.assertIn("cd release-source && cargo run --locked --features mcp-catalog", catalog_step)
+        self.assertIn('"$RUNNER_TEMP/cli/regressify" mcp --output', catalog_step)
         run = by_name["Deploy Cloudflare Worker"]
         self.assertLess(steps.index(website_node), steps.index(run))
         self.assertLess(steps.index(website_bun), steps.index(run))
@@ -605,7 +617,7 @@ gh() {
         self.assertEqual(run["env"]["CLOUDFLARE_ACCOUNT_ID"], "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}")
         self.assertEqual(run["env"]["CLOUDFLARE_API_TOKEN"], "${{ secrets.CLOUDFLARE_API_TOKEN }}")
         self.assertEqual(run["env"]["DOWNLOADS_DIR"], "${{ runner.temp }}/downloads")
-        self.assertEqual(run["env"]["REGRESSIFY_BIN"], "${{ runner.temp }}/cli/regressify")
+        self.assertEqual(run["env"]["MCP_CATALOG"], "${{ runner.temp }}/mcp-catalog.json")
         self.assertEqual(run["env"]["REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE"], "true")
         self.assertIn("--max-redirs 0", by_name["Verify update feed is unchanged"]["run"])
         self.assertIn("Cache-Control: no-cache", by_name["Verify update feed is unchanged"]["run"])
@@ -652,6 +664,62 @@ gh() {
                 lines = output.read_text(encoding="utf-8").splitlines()
                 outputs[step["id"]] = dict(line.split("=", 1) for line in lines)
         return ran, outputs, result
+
+    def test_website_catalog_build_uses_release_source_or_legacy_cli(self):
+        bash = website_step_bash()
+        if not bash:
+            self.skipTest("Website deploy steps need Bash 4+ with sha256sum and unzip (ubuntu-latest)")
+        step = next(step for step in WEBSITE_WORKFLOW["jobs"]["deploy"]["steps"]
+                    if step.get("name") == "Build catalog from the deployed release")
+        for legacy, fail in [(False, False), (False, True), (True, False), (True, True)]:
+            with self.subTest(legacy=legacy, fail=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                runner = root / "runner"
+                stubs = root / "stubs"
+                source = root / "release-source"
+                (runner / "cli").mkdir(parents=True)
+                stubs.mkdir()
+                source.mkdir()
+                if not legacy:
+                    (source / "src/bin").mkdir(parents=True)
+                    (source / "src/bin/mcp_catalog.rs").write_text("", encoding="utf-8")
+                cargo = stubs / "cargo"
+                cargo.write_text('#!/usr/bin/env bash\n[ "$FAIL_BUILD" = 0 ] || exit 7\nprintf "builder"\n', encoding="utf-8", newline="\n")
+                cargo.chmod(0o755)
+                cli = runner / "cli/regressify"
+                cli.write_text('#!/usr/bin/env bash\n[ "$FAIL_BUILD" = 0 ] || exit 7\nmkdir -p "$3/content"\nprintf "legacy" > "$3/content/catalog.json"\n', encoding="utf-8", newline="\n")
+                cli.chmod(0o755)
+                env = {**os.environ, "RUNNER_TEMP": runner.as_posix(), "STUB_DIR": stubs.as_posix(),
+                       "FAIL_BUILD": "1" if fail else "0"}
+                command = 'if command -v cygpath >/dev/null; then STUB_DIR="$(cygpath -u "$STUB_DIR")"; RUNNER_TEMP="$(cygpath -u "$RUNNER_TEMP")"; fi\nexport PATH="$STUB_DIR:$PATH" RUNNER_TEMP\n' + step["run"]
+                result = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", command],
+                                        cwd=root, env=env, capture_output=True, text=True, check=False)
+                if fail:
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual((runner / "mcp-catalog.json").read_text(encoding="utf-8"),
+                                     "legacy" if legacy else "builder")
+
+    def test_website_catalog_detection_selects_legacy_only_when_needed(self):
+        bash = website_step_bash()
+        if not bash:
+            self.skipTest("Website deploy steps need Bash 4+ with sha256sum and unzip (ubuntu-latest)")
+        step = next(step for step in WEBSITE_WORKFLOW["jobs"]["deploy"]["steps"]
+                    if step.get("name") == "Detect legacy release")
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                if not legacy:
+                    (root / "release-source/src/bin").mkdir(parents=True)
+                    (root / "release-source/src/bin/mcp_catalog.rs").write_text("", encoding="utf-8")
+                output = root / "output"
+                env = {**os.environ, "GITHUB_OUTPUT": output.as_posix()}
+                command = 'if command -v cygpath >/dev/null; then GITHUB_OUTPUT="$(cygpath -u "$GITHUB_OUTPUT")"; fi\nexport GITHUB_OUTPUT\n' + step["run"]
+                result = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", command],
+                                        cwd=root, env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_text(encoding="utf-8").strip(), f"legacy={str(legacy).lower()}")
 
     def test_website_workflow_extracts_the_deployed_release_cli(self):
         bash = website_step_bash()
@@ -1335,6 +1403,21 @@ try {
 
 class ReleaseFeedTests(unittest.TestCase):
     ORIGIN = "https://regressify.eshn.dev"
+
+    def test_mcp_catalog_must_match_exactly_one_valid_release_version(self):
+        release_feed.validate_mcp_catalog_version("version=2.1.0.0\n", {"regressifyVersion": "2.1.0"})
+        for manifest, catalog in [
+            ("version=2.1.0.0\n", {"regressifyVersion": "2.1.1"}),
+            ("version=2.1.0\nversion=2.1.0\n", {"regressifyVersion": "2.1.0"}),
+            ("", {"regressifyVersion": "2.1.0"}),
+            ("version=2.1.0\n", {}),
+            ("version=2.1.0\n", {"regressifyVersion": None}),
+            ("version=2.1.0\n", {"regressifyVersion": "invalid"}),
+            ("version=invalid\n", {"regressifyVersion": "2.1.0"}),
+            ("version=2.1.0\n", []),
+        ]:
+            with self.subTest(manifest=manifest, catalog=catalog), self.assertRaises(ValueError):
+                release_feed.validate_mcp_catalog_version(manifest, catalog)
 
     def test_partial_platform_inventory_is_rejected_before_staging(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,10 +1,12 @@
-name: MCP Export Checks
+name: MCP Checks
 
 on:
   push:
     branches: [master]
     paths:
       - 'src/**'
+      - 'website/mcp/**'
+      - 'website/worker/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
@@ -14,6 +16,8 @@ on:
     branches: [master]
     paths:
       - 'src/**'
+      - 'website/mcp/**'
+      - 'website/worker/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
@@ -34,7 +38,7 @@ env:
   WRANGLER_SEND_METRICS: 'false'
 
 jobs:
-  standalone-worker:
+  website-worker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -44,19 +48,15 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: src/mcp/worker/package-lock.json
-      - name: Catalog and export safety
+          cache-dependency-path: website/mcp/package-lock.json
+      - name: Catalog validation
         run: cargo test --locked --lib mcp
-      - name: Build default CLI
-        run: cargo build --locked --bin regressify
-      - name: Generate without a source workspace
+      - name: Build catalog
         run: |
-          mkdir "$RUNNER_TEMP/mcp-empty-workspace"
-          cp target/debug/regressify "$RUNNER_TEMP/mcp-empty-workspace/regressify"
-          cd "$RUNNER_TEMP/mcp-empty-workspace"
-          ./regressify mcp --output "$RUNNER_TEMP/regressify-mcp"
-      - name: Validate standalone Worker without publishing
-        working-directory: ${{ runner.temp }}/regressify-mcp
+          mkdir -p website/mcp/content
+          cargo run --locked --features mcp-catalog --bin regressify-mcp-catalog > website/mcp/content/catalog.json
+      - name: Validate MCP Worker without publishing
+        working-directory: website/mcp
         run: |
           npm ci
           npm run check

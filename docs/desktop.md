@@ -1001,16 +1001,17 @@ Windows packaging job prevents publication.
    treated as permission to create a new release.
 1. `deploy` depends on successful publication. It downloads the verified inputs
    and checks the published GitHub inventory again **before building the site**.
-   It extracts the released Linux CLI, builds the website from the same manifest,
-   exports and tests the MCP Worker, and deploys one `regressify` Cloudflare Worker.
+   It builds the MCP catalog from release source, tests the website-owned Worker,
+   and deploys one `regressify` Cloudflare Worker using the same manifest.
    Only `latest.txt`, installation scripts, website assets, and `/mcp` are hosted
    there. The final credential-free feed check verifies the installer metadata.
 
 Website-only changes do not need a release. The
 [website deploy workflow](../.github/workflows/website-deploy.yml) runs on `master`
 pushes that touch `website/**` (or manually). It reads the live `latest.txt`,
-downloads the Linux CLI of its `tag` with `gh release download`, checks it against
-the feed's SHA-256, and runs the same deploy script. The update feed and `/mcp` keep the deployed release; a final check
+checks out that release tag, builds its MCP catalog, and runs the same deploy
+script. Older releases use their checksum-verified CLI's legacy export as a
+transition. The update feed and `/mcp` keep the deployed release; a final check
 confirms the live feed is byte-for-byte unchanged.
 
 Previous release binaries remain downloadable from GitHub. The website/feed

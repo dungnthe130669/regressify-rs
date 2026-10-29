@@ -5,9 +5,7 @@
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "ver": "bun ver.ts",
-    "sync": "git add .istari -f",
-    "deploy:check": "cargo fmt --all -- --check && cargo test --locked --lib mcp && cargo build --locked --bin regressify",
-    "deploy": "bun run deploy:check && tuyen rm -rf ../regressify-mcp-worker && cargo run --locked --bin regressify -- mcp --output ../regressify-mcp-worker && bun ci --cwd ../regressify-mcp-worker && bun run --cwd ../regressify-mcp-worker deploy"
+    "sync": "git add .istari -f"
   },
   "devDependencies": {
     "@types/bun": "latest"

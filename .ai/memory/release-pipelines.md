@@ -35,23 +35,23 @@ Verified: 2026-10-29
   `archive.<filename>=<size>:<sha256>`; Rust additionally requires Windows ZIPs.
   Binary limits are 1 GiB, manifest 16 KiB. Cloudflare's binary size limit is no
   longer part of application distribution.
-- The [website Worker](../../website/worker/index.ts) wraps the generated MCP
-  handler without changing its export template. Admin page/API routes run Worker
+- The [website Worker](../../website/worker/index.ts) wraps the website-owned MCP
+  handler. Admin page/API routes run Worker
   first, rely on Cloudflare Access for `/admin` and `/admin/*`, and use server-only
   PostHog secrets. Combined typecheck and dry-run build precede deployment; see
   [local checks and setup](../../website/README.md#private-admin).
 - [Website-only deploys](../../.github/workflows/website-deploy.yml) run
-  `python ci/test-release.py` and skip the app build. `website/mcp-worker` is
-  git-ignored and bundled into the same Worker script, so each deploy
-  regenerates it with the live release's Linux CLI. The workflow fetches
-  `latest.txt` with `no-cache` and redirect refusal, validates a single canonical
-  `tag` and `archive.` entry before calling `gh release download`, verifies the
-  zip's SHA-256, and re-checks the live feed bytes after deploy.
+  `python ci/test-release.py`, fetch the live manifest with `no-cache` and
+  redirect refusal, validate its tag and CLI checksum, and build the catalog
+  from that tag. Only older releases download the checksum-verified CLI for its
+  legacy export.
+  The deploy script checks catalog and manifest versions; the workflow re-checks
+  the live feed bytes after deploy.
   Docs deploys and release deploys share no concurrency group; that overlap risk
   was accepted on 2026-10-29.
 - Workerd rejects `fetch` with `redirect: 'error'`; the admin feed uses `manual`
   and rejects non-2xx responses without forwarding bearer credentials. Website
-  tests are scoped to `src` so an ignored MCP export cannot pollute discovery.
+  tests are scoped to `src` so MCP test files cannot pollute discovery.
 - [Offline tests](../../ci/test-release.py) exercise all 48 GitHub selections,
   full inventories and mocked publication, all supported Unix target scripts,
   and mocked Windows script execution. Set `BASH_PATH` to Git Bash on Windows.

@@ -9,6 +9,7 @@ on:
     paths:
       - 'website/**'
       - 'ci/deploy-cloudflare.sh'
+      - 'ci/release_feed.py'
       - '.github/workflows/website-deploy.yml'
   workflow_dispatch:
 
@@ -55,8 +56,6 @@ jobs:
             -H 'Cache-Control: no-cache' --create-dirs \
             -o "$RUNNER_TEMP/downloads/latest.txt" "$SITE_ORIGIN/downloads/latest.txt"
 
-      # website/mcp-worker is git-ignored and bundled into the same Worker, so
-      # every deploy regenerates /mcp with the CLI of the deployed release.
       - name: Read deployed release tag and CLI checksum
         id: release
         run: |
@@ -75,7 +74,23 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "cli-sha256=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Detect legacy release
+        id: catalog-source
+        run: |
+          if [ -f release-source/src/bin/mcp_catalog.rs ]; then
+            echo 'legacy=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'legacy=true' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download the deployed release's Linux CLI
+        if: steps.catalog-source.outputs.legacy == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
@@ -84,14 +99,28 @@ jobs:
       # Only the release pipeline writes the live feed, after verifying every
       # asset, so this ties the zip to those bytes, not just to the asset name.
       - name: Verify the Linux CLI against the deployed feed
+        if: steps.catalog-source.outputs.legacy == 'true'
         env:
           SHA256: ${{ steps.release.outputs.cli-sha256 }}
         run: echo "${SHA256,,}  $RUNNER_TEMP/$CLI_ARCHIVE" | sha256sum --check --strict
 
       - name: Extract the Linux CLI
+        if: steps.catalog-source.outputs.legacy == 'true'
         run: |
           unzip -o -j "$RUNNER_TEMP/$CLI_ARCHIVE" regressify -d "$RUNNER_TEMP/cli"
           chmod +x "$RUNNER_TEMP/cli/regressify"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build catalog from the deployed release
+        run: |
+          if [ -f release-source/src/bin/mcp_catalog.rs ]; then
+            (cd release-source && cargo run --locked --features mcp-catalog --bin regressify-mcp-catalog) > "$RUNNER_TEMP/mcp-catalog.json"
+          else
+            # Releases predating the catalog builder only provide the old export.
+            "$RUNNER_TEMP/cli/regressify" mcp --output "$RUNNER_TEMP/legacy-mcp"
+            cp "$RUNNER_TEMP/legacy-mcp/content/catalog.json" "$RUNNER_TEMP/mcp-catalog.json"
+          fi
 
       - uses: actions/setup-node@v6
         with:
@@ -105,7 +134,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          REGRESSIFY_BIN: ${{ runner.temp }}/cli/regressify
+          MCP_CATALOG: ${{ runner.temp }}/mcp-catalog.json
           DOWNLOADS_DIR: ${{ runner.temp }}/downloads
           REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE: 'true'
         run: bash ci/deploy-cloudflare.sh

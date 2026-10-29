@@ -45,6 +45,14 @@ def version_parts(value):
     return parts + (0,) * (4 - len(parts))
 
 
+def validate_mcp_catalog_version(manifest, catalog):
+    versions = [line.partition("=")[2].strip() for line in manifest.splitlines() if line.startswith("version=")]
+    if len(versions) != 1 or not isinstance(catalog, dict) or not isinstance(catalog.get("regressifyVersion"), str):
+        raise ValueError("MCP catalog version must match the release manifest")
+    if version_parts(catalog["regressifyVersion"]) != version_parts(versions[0]):
+        raise ValueError("MCP catalog version must match the release manifest")
+
+
 def tag_version(ref_type, ref_name):
     if ref_type != "tag":
         return ""

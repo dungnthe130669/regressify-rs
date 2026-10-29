@@ -1,5 +1,5 @@
 {
-  "$schema": "mcp-worker/node_modules/wrangler/config-schema.json",
+  "$schema": "mcp/node_modules/wrangler/config-schema.json",
   "name": "regressify",
   "main": "worker/index.ts",
   "tsconfig": "tsconfig.worker.json",

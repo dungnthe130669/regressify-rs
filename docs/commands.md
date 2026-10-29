@@ -175,7 +175,6 @@ integrity hashes remain unchanged. See [desktop Capture Log](desktop.md#reviewin
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `init`     | Create missing starter files, schemas, and VS Code associations; add or refresh the Regressify MCP endpoint while preserving other settings. Copy missing legacy `data/` files without deleting their sources. |
 | `install`  | Fetch managed Chromium into the per-user cache shared by all CLI and Desktop workspaces.                                                                                                                       |
-| `mcp`      | Generate a standalone Cloudflare MCP Worker containing versioned public authoring guidance, schemas, and examples. Does not deploy or export workspace data.                                                   |
 | `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                                                                               |
 | `ref`      | Capture baseline screenshots, promote successful captures to references, and record them as self-approved in the report. Failed page captures are skipped and existing references are preserved.               |
 | `test`     | Capture screenshots and stage comparisons unless `--skip-compare` is set. Finalize each suite independently after its jobs finish; generate the snapshot after compared tests complete.                        |
@@ -331,32 +330,12 @@ CLI `init` retains those editor assets and non-destructive legacy-file migration
 
 ## MCP Authoring Worker
 
-```sh
-regressify mcp --output ./regressify-mcp-worker
-cd regressify-mcp-worker
-npm ci
-npm run check
-npm test
-npm run build
-```
+The hosted MCP endpoint is <https://regressify.eshn.dev/mcp>. `regressify init`
+configures it for VS Code; other clients can connect using Streamable HTTP.
+The website hosts the Worker and its catalog, derived from the published release's
+Rust types. The CLI no longer generates standalone Worker projects.
 
-`--output` is required. It names a new directory whose parent already exists;
-relative paths resolve from the CLI root. Absolute destinations outside the
-workspace are allowed. Existing directories, files, and symlink destinations are
-never replaced, and there is no `--force` option. Individual files are published
-without clobbering concurrent edits. A write failure is a command error and may
-leave an incomplete export; retry into a new directory rather than merging it.
-
-Generation works with the ordinary installed CLI, without desktop/GUI features
-or a source checkout. It uses embedded templates and schemas derived from the
-CLI's Rust types. It does not inspect or export the current workspace's suites,
-cookies, credentials, scripts, reports, or saved state. No browser, Node runtime,
-network connection, or Cloudflare credential is needed to generate the package.
-Normal CLI startup/command diagnostics still follow the diagnostic settings.
-
-The generated project contains a Worker entry point, Wrangler configuration,
-package and lockfile, TypeScript configuration, tests, README, and a versioned
-content catalog with standalone guides, JSON Schemas, and synthetic examples.
+The catalog contains self-contained guides, JSON Schemas, and synthetic examples.
 Guides cover suite discovery/identity, the scenario capture lifecycle and
 screenshot naming, capture targets for opened menus and overlays, every action
 and selector engine, configuration scopes, precedence, and defaults, predefined
@@ -371,24 +350,7 @@ in the guides is parsed and schema-checked by the catalog tests. Cookie/CSS/JS
 formats use explicit guidance; JSON Schemas do not replace runtime cross-file,
 filesystem, authentication, or browser validation.
 
-Use Node.js 22.12 or newer with npm to install and validate the result. `npm test`
-starts and stops a local Worker and exercises tools, resources, prompts, current
-stateless requests, and legacy-compatible clients. It also executes the exported
-hook examples with stub browser globals; this does not launch Chromium. `npm run build` is a Wrangler
-dry run, not a deployment; it writes the single minified module that `npm run deploy`
-uploads, without source maps. `npm run dev` starts the local `/mcp` endpoint.
-
-Review the Worker name in the generated Wrangler configuration to avoid replacing
-an unrelated deployment. Authenticate Wrangler locally or through your own CI
-secret setup, then deploy separately:
-
-```sh
-npm run deploy
-```
-
-Connect an HTTP MCP client to the resulting
-`https://<worker>.<account-subdomain>.workers.dev/mcp` URL. The generated README
-includes a VS Code connection example. Start by calling `get_authoring_guide`
+Start by calling `get_authoring_guide`
 with `topic: overview`; use `get_schema` for exact fields and `get_example` for
 synthetic templates. Select `topic: recipes` for complete common-page suites,
 `topic: troubleshooting` for failures and local evidence,
@@ -420,25 +382,8 @@ the suite verified. `ref` updates successful references, so target-page and
 baseline-write authorization remain required. Missing permissions or execution
 prerequisites must be reported as incomplete verification, not silently skipped.
 
-In the generated Worker, `npm run verify` performs `npm audit --audit-level=high`,
-`npm run check`, `npm test`, and `npm run build` in order without publishing.
-High/critical advisories (including development dependencies), audit lookup
-failures, type errors, failed tests, or a failed dry-run build block publication.
-`npm run deploy` always runs this verification chain before live Wrangler
-deployment. Calling `wrangler deploy` directly bypasses these package gates.
-Review dependency fixes rather than automatically forcing upgrades or ignoring
-advisories.
-
-For maintainers in the source repository, `bun run deploy:check` runs Rust
-formatting checks, the MCP tests, and a locked default CLI build. Root
-`bun run deploy` runs those checks before replacing `../regressify-mcp-worker`,
-exports with `cargo run --locked --bin regressify -- mcp`, installs dependencies
-with the frozen lockfile, and calls the generated Worker's gated deploy.
-It no longer pulls Git changes or uses a potentially stale installed CLI.
-This shortcut requires Bun, Node/npm, Cargo, Tuyen for its existing directory
-cleanup, and Cloudflare authorization; the sibling generated directory must
-not contain manual edits. Running source checks alone does not authorize
-publication or verify Cloudflare account permissions.
+Maintainer development and non-publishing checks are documented in the
+[website README](../website/README.md#private-admin).
 
 Startup instructions, the overview guide/resource, and the authoring prompt carry
 the same [small site-memory policy](#workspace-initialization) as generated agent

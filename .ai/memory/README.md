@@ -40,7 +40,7 @@ assistant's private memory store. Keep this directory out of ignore rules.
   out-of-process iframe session routing.
 - [Workspace initialization](workspace-initialization.md): shared CLI/desktop
   runtime defaults, automatic folder-open setup, and preservation boundaries.
-- [MCP authoring](mcp-authoring.md): standalone CLI export, generated knowledge,
+- [MCP authoring](mcp-authoring.md): website-owned Worker, release-matched knowledge,
   and credential-free Worker verification.
 - [Results review](desktop-results.md): report-versus-activity counts and in-place
   viewport approval.

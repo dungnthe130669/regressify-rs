@@ -1,6 +1,6 @@
-# MCP Authoring Export
+# MCP Authoring
 
-Verified: 2026-10-15
+Verified: 2026-10-29
 
 - Live verification on 2026-10-23: `https://regressify.eshn.dev/mcp` served
   `regressify-authoring` v2.0.8. The pinned SDK read all 3 tools, 9 guides,
@@ -8,10 +8,10 @@ Verified: 2026-10-15
   Protocol `2026-07-28` discovery/list/tool calls also passed. Invalid tool input,
   untrusted origins (403), oversized bodies (413), and malformed JSON (400) were
   rejected. A plain GET returns 405 by design; use an MCP HTTP client.
-- [The CLI exporter](../../src/mcp/mod.rs) embeds its guides and Worker template;
-  it does not scan the current workspace or need a source checkout. Output is a
-  new directory under an existing parent, with no-clobber file publication.
-  Failures may leave a partial export; there is no automatic recursive cleanup.
+- The CLI no longer exports Workers. The feature-gated
+  [catalog builder](../../src/bin/mcp_catalog.rs) uses Rust types and guides
+  without reading a consumer workspace; [the website](../../website/mcp) owns
+  the Worker. Deployments match the catalog to the published release manifest.
 - [The catalog](../../src/mcp/catalog.rs) derives six schemas from real Rust
   types, embeds nine guides (including `recipes`), and includes synthetic
   examples. The overview lists every example task name by category, and the
@@ -65,8 +65,8 @@ Verified: 2026-10-15
   when blocked. [Reference execution](../../src/test/test_suites.rs) preserves
   old references on capture failure and can exit zero after page failures.
 - Hook examples and a companion suite use classic browser scripts at `.js` target
-  paths. [Worker tests](../../src/mcp/worker/tests/worker.test.mjs.template) evaluate
-  the exported scripts with DOM stubs; this is not browser coverage or a capture
+  paths. [Worker tests](../../website/mcp/tests/worker.test.mjs) evaluate
+  the catalog scripts with DOM stubs; this is not browser coverage or a capture
   dependency. Browser-only lifecycle order and timeout sources are explained in
   [the hooks guide](../../src/mcp/guides/hooks.md).
 - The overview and hooks guide explicitly prohibit CommonJS `module.exports`
@@ -82,30 +82,24 @@ Verified: 2026-10-15
 - [Viewport schema metadata](../../src/config/viewports.rs) is available in the
   default CLI feature set, not just desktop. Cookies retain runtime-validated
   prose/examples instead of a separately maintained typed schema.
-- [The Worker](../../src/mcp/worker/src/index.ts.template) uses the pinned Cloudflare
+- [The Worker](../../website/mcp/src/index.ts) uses the pinned Cloudflare
   stateless MCP handler, with read-only tools/resources/prompts, Origin checks,
   bounded bodies, and no bindings. Public guidance is not authorization to read
   local files, execute captures, or approve baselines.
-- [Protocol tests](../../src/mcp/worker/tests/worker.test.mjs.template) cover SDK legacy
+- [Protocol tests](../../website/mcp/tests/worker.test.mjs) cover SDK legacy
   compatibility and current HTTP metadata. Invalid tool arguments are tool-error
   results; stateless tests provide `MCP-Protocol-Version` and `Mcp-Method` headers.
   Stateless `tools/call` also needs `Mcp-Name` matching `params.name`; a live probe
   omitting it received HTTP 400/code -32020, then passed with the header present.
-- [CI](../../.github/workflows/mcp-checks.yml) builds the default CLI, copies it
-  into an empty directory, exports a package, and runs npm installation,
-  typechecking, local MCP tests, and a Wrangler dry run. No publishing is implied.
+- [CI](../../.github/workflows/mcp-checks.yml) builds a catalog from source and
+  runs npm installation, typechecking, local MCP tests, and a Wrangler dry run.
+  No publishing is implied.
 - Wrangler 4.147 passes `upload_source_maps` to esbuild as `sourcemap`, and an
   unset value means `true`: maps were written to `dist` (not uploaded) and the
-  bundle was unminified. The template now sets `minify: true` and
+  bundle was unminified. The Worker config sets `minify: true` and
   `upload_source_maps: false`; a package test checks the dry-run output.
-- Generated `deploy` runs `verify` first: high/critical npm audit including
-  development tools, TypeScript, Worker tests, and dry-run build. Every failed
-  command blocks publication; package tests mock npm/Wrangler for all gates.
-  Root `deploy:check` covers formatting/MCP tests/locked CLI build, and root
-  deployment exports current Cargo source rather than pulling Git or resolving
-  an installed CLI. The shortcut still replaces its sibling generated directory.
-- The export test requires exact dependency pins, not caret/tilde ranges, even
-  with a synchronized npm lockfile. It checks root declarations and resolved
-  direct versions and names the offending dependency when a pin drifts.
+- MCP deployment is part of the website deployment; there is no standalone
+  publishing shortcut. The MCP package retains exact dependency pins and an npm
+  lockfile. Run and report the npm audit separately.
 - See [the task skill](../../.github/skills/mcp-command/SKILL.md) for maintenance
   gates. Keep schema/runtime changes synchronized with the self-contained prose.

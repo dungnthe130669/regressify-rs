@@ -1,4 +1,4 @@
-import mcp from '../mcp-worker/src/index';
+import mcp from '../mcp/src/index';
 import { routeWebsite, type WebsiteEnv } from '../src/lib/website-handler';
 
 export default {

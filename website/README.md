@@ -127,26 +127,28 @@ packaging. A complete draft GitHub Release is uploaded and verified before
 publication. The separate deploy job checks all 34 published assets again before
 building this site (see the [release pipeline](../docs/desktop.md#release-pipeline)).
 [ci/deploy-cloudflare.sh](../ci/deploy-cloudflare.sh) builds from the verified
-manifest, copies only `latest.txt` into `dist/downloads/`, generates the MCP Worker
-into ignored `mcp-worker/` with the released CLI, verifies it, and deploys with
+manifest, copies only `latest.txt` into `dist/downloads/`, checks the MCP catalog
+version against the manifest, verifies the website-owned Worker, and deploys with
 [wrangler.jsonc](wrangler.jsonc).
 
 Docs and site changes deploy without a release. Pushing website changes to
 `master` (or running it manually) starts the
 [website deploy workflow](../.github/workflows/website-deploy.yml). It fetches the
-live `/downloads/latest.txt`, downloads the Linux CLI of that release tag from
-GitHub, checks it against the feed's SHA-256, and runs the same deploy script.
-The update feed and `/mcp` stay on the deployed release; only pages change.
+live `/downloads/latest.txt`, checks out the corresponding release tag, builds
+its catalog, and runs the same deploy script. For older releases without the
+catalog builder it uses the release CLI's legacy export, after verifying the CLI
+against the feed's SHA-256. The update feed and MCP catalog stay on the deployed
+release; website and Worker code can change.
 
 That configuration deploys one Worker, `regressify`, on the custom domain
 `regressify.eshn.dev` with `workers.dev` and preview URLs disabled. `dist/` serves
 static assets with `404.html` for unknown paths. The website-owned
-[Worker entry point](worker/index.ts) routes `/mcp` to the generated MCP handler
+[Worker entry point](worker/index.ts) routes `/mcp` to the website-owned MCP handler
 and `/admin` plus `/admin/*` to the private admin handler. The `ASSETS` binding
-serves the admin page with no-store headers. Both the generated package and the
+serves the admin page with no-store headers. Both the MCP package and the
 combined Worker are checked before deployment; `worker:build` is a dry run.
 Keep compatibility settings aligned with
-[the MCP Worker template](../src/mcp/worker/wrangler.jsonc.template);
+[the MCP test configuration](mcp/wrangler.jsonc);
 `python ci/test-release.py` checks this. Deployment needs `CLOUDFLARE_ACCOUNT_ID`
 and `CLOUDFLARE_API_TOKEN`, and the `eshn.dev` zone must belong to that account.
 
@@ -181,13 +183,13 @@ Size is binary MiB; relative dates have full local timestamp tooltips. Metrics
 blend green/neutral/red over each complete returned column; values at or above
 75% of its maximum are bold. Only HTTP(S) URLs without credentials become links.
 
-For local end-to-end development, generate the ignored MCP package from the
-repository root using the locally built CLI (this does not deploy):
+For local end-to-end development, generate the ignored MCP catalog from the
+repository root (this does not deploy):
 
 ```sh
-cargo build --locked --bin regressify
-target/debug/regressify mcp --output website/mcp-worker
-cd website/mcp-worker
+mkdir -p website/mcp/content
+cargo run --locked --features mcp-catalog --bin regressify-mcp-catalog > website/mcp/content/catalog.json
+cd website/mcp
 npm ci
 cd ..
 bun run check
@@ -197,8 +199,6 @@ bun run worker:build
 bun run worker:dev
 ```
 
-On Windows the binary is `target/debug/regressify.exe`. Export requires a new
-directory; reuse an existing generated package only if it matches your source.
 `worker:dev` uses Wrangler's local runtime and reads the two keys from the
 repository-root `.env.local` into Worker bindings without sending them to the
 browser. Open the localhost URL Wrangler prints, then `/admin/`. Never bind this

@@ -1,16 +1,16 @@
 {
-  "extends": "./mcp-worker/tsconfig.json",
+  "extends": "./mcp/tsconfig.json",
   "compilerOptions": {
     "typeRoots": [
-      "./mcp-worker/node_modules/@types",
-      "./mcp-worker/node_modules"
+      "./mcp/node_modules/@types",
+      "./mcp/node_modules"
     ]
   },
   "include": [
     "worker/**/*.ts",
     "src/lib/admin-api.ts",
     "src/lib/website-handler.ts",
-    "mcp-worker/src/**/*.ts"
+    "mcp/src/**/*.ts"
   ],
   "exclude": [
     "dist",

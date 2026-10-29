@@ -57,7 +57,6 @@ The default Cargo build produces the standalone CLI binary (`regressify`).
 | `snapshot` | Generate the static HTML snapshot SPA from existing comparison reports, with optional `--test-suite` glob filters.                                          |
 | `optimize` | Losslessly or lossily compress PNG files across the project output tree.                                                                                    |
 | `clean`    | Preview and delete old completed test runs and unreferenced logs (`--keep-runs`, `--yes`) while protecting active baselines.                                |
-| `mcp`      | Export a standalone Cloudflare Worker containing versioned authoring guides, schemas, and synthetic examples.                                               |
 | `version`  | Print the CLI version and Git commit hash.                                                                                                                  |
 
 Key engine capabilities shared by CLI and Desktop:
@@ -107,16 +106,7 @@ to verify real windows, screenshot rendering, and GUI-to-CLI execution. See [doc
 
 ## MCP Authoring Guidance
 
-Export a standalone, read-only Cloudflare MCP Worker containing versioned authoring guides, schemas, and synthetic examples so AI clients can author and troubleshoot Regressify suites:
-
-```sh
-regressify mcp --output ./regressify-mcp-worker
-cd regressify-mcp-worker
-npm ci
-npm run verify
-```
-
-In this repository, use `bun run deploy:check` to validate MCP templates and `bun run deploy` to export and publish the Worker. See [docs/commands.md](docs/commands.md#mcp-authoring-worker) for details.
+The hosted, read-only MCP service at <https://regressify.eshn.dev/mcp> provides versioned authoring guides, schemas, and synthetic examples. `regressify init` configures the endpoint for VS Code. See [docs/commands.md](docs/commands.md#mcp-authoring-worker) for details.
 
 ## Snapshot Frontend and Website
 
@@ -138,7 +128,7 @@ Copyright (C) 2023-2026 Tuyen Pham. Regressify is free software under the
 ABSOLUTELY NO WARRANTY.
 
 An additional permission lets you use Regressify output, such as generated
-reports, `regressify mcp` exports, `regressify init` files, and documentation
+reports, historical `regressify mcp` exports, `regressify init` files, and documentation
 samples, under terms of your choice. See [LICENSING.md](LICENSING.md) for its
 exact scope and for third-party components that keep their own licenses.
 
