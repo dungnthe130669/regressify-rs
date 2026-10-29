@@ -26,6 +26,7 @@
 *.scss text eol=lf
 *.sh text eol=lf
 *.sql text eol=lf
+*.svg text eol=lf
 *.toml text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf
