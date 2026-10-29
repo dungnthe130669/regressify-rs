@@ -29,7 +29,7 @@ reviews:
     auto_pause_after_reviewed_commits: 0
     drafts: false
     base_branches:
-      - release
+      - master
   tools:
     clippy:
       enabled: true
