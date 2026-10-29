@@ -269,22 +269,13 @@ impl Tabs {
                 .cloned()
                 .ok_or_else(|| anyhow!("switchTab: previous has no previously selected tab"))?,
         };
-        let current_targets = self
-            .client
-            .call(None, "Target.getTargets", json!({}))
+        let page = self
+            .acquire_page(
+                browser,
+                &target,
+                "The requested tab is closed or unavailable",
+            )
             .await?;
-        ensure!(
-            current_targets["targetInfos"]
-                .as_array()
-                .is_some_and(|targets| targets
-                    .iter()
-                    .any(|info| info["targetId"].as_str() == Some(target.as_str()))),
-            "The requested tab is closed or unavailable"
-        );
-        let page = browser
-            .get_page(target.clone().into())
-            .await
-            .map_err(|_| anyhow!("The requested tab is closed or unavailable"))?;
         let runtime = Runtime::with_client(self.client.clone(), &page)
             .await
             .map_err(|error| {
@@ -363,22 +354,13 @@ impl Tabs {
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            let current_targets = self
-                .client
-                .call(None, "Target.getTargets", json!({}))
+            let page = self
+                .acquire_page(
+                    browser,
+                    &previous,
+                    "The previous tab is closed or unavailable",
+                )
                 .await?;
-            ensure!(
-                current_targets["targetInfos"]
-                    .as_array()
-                    .is_some_and(|targets| targets
-                        .iter()
-                        .any(|info| info["targetId"].as_str() == Some(previous.as_str()))),
-                "The previous tab is closed or unavailable"
-            );
-            let page = browser
-                .get_page(previous.clone().into())
-                .await
-                .map_err(|_| anyhow!("The previous tab is closed or unavailable"))?;
             let next_runtime = Runtime::with_client(self.client.clone(), &page)
                 .await
                 .map_err(|error| {
@@ -404,6 +386,32 @@ impl Tabs {
                 timeout.as_millis()
             )
         })?
+    }
+
+    async fn acquire_page(
+        &self,
+        browser: &Browser,
+        target: &str,
+        missing_error: &'static str,
+    ) -> Result<Page> {
+        loop {
+            let current_targets = self
+                .client
+                .call(None, "Target.getTargets", json!({}))
+                .await?;
+            ensure!(
+                current_targets["targetInfos"]
+                    .as_array()
+                    .is_some_and(|targets| targets
+                        .iter()
+                        .any(|info| info["targetId"].as_str() == Some(target))),
+                "{missing_error}"
+            );
+            if let Ok(page) = browser.get_page(target.to_string().into()).await {
+                return Ok(page);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     async fn wait_for_new(&self, matcher: Option<&UrlMatcher>) -> Result<String> {

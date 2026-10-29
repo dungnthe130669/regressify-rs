@@ -355,9 +355,9 @@ async fn launch_browser_inner(
 
         // Chromiumoxide initializes every popup with this viewport as well as the
         // first page. Keep it aligned with the capture to avoid a first-load resize.
-        // Disable automatic session recovery so closing popup tabs or tearing down a
-        // scenario does not trigger background re-attach attempts against our own
-        // per-session CDP state.
+        // Disable automatic session recovery and child-target domain initialization
+        // so closing popup tabs or loading cross-origin iframes does not trigger
+        // background CDP sessions against our own per-session CDP state.
         let mut config_builder = BrowserConfig::builder()
             .chrome_executable(&resolved)
             .user_data_dir(&user_data_dir)
@@ -372,6 +372,7 @@ async fn launch_browser_inner(
             }))
             .launch_timeout(Duration::from_secs(45))
             .disable_session_recovery()
+            .disable_child_target_init()
             .args(args.clone());
 
         if debug {
@@ -594,8 +595,10 @@ mod tests {
         let config = chromiumoxide::BrowserConfig::builder()
             .chrome_executable(executable.path())
             .disable_session_recovery()
+            .disable_child_target_init()
             .build()
             .unwrap();
         assert!(!config.session_recovery);
+        assert!(!config.initialize_child_targets);
     }
 }
