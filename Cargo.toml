@@ -19,14 +19,14 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
-desktop = ["local", "dep:yaml-edit", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:keyring", "dep:zeroize", "dep:imagequant", "dep:jsonschema", "dep:strsim", "dep:sha1", "dep:tiny_http", "dep:similar"]
+desktop = ["local", "dep:yaml-edit", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:keyring", "dep:zeroize", "dep:imagequant", "dep:jsonschema", "dep:strsim", "dep:sha1", "dep:tiny_http", "dep:similar", "reqwest/multipart"]
 gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows", "dep:webbrowser", "dep:raw-window-handle"]
 gui-tests = ["gui", "gpui-kit/test-support"]
 
 [dependencies]
 anyhow = "1.0.100"
 base64 = "0.22.1"
-chromiumoxide = { git = "https://github.com/precise-alloy/chromiumoxide", features = ["bytes", "fetcher", "rustls" ] }
+chromiumoxide = { git = "https://github.com/precise-alloy/chromiumoxide", features = ["bytes", "fetcher" ] }
 chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
@@ -51,7 +51,7 @@ posthog-rs = { version = "0.30", default-features = false, features = ["async-cl
 pulldown-cmark = "0.13.0"
 rayon = "1.11.0"
 regex = "1"
-reqwest = { version = "0.13", features = ["blocking", "json", "stream", "multipart", "query", "form" ] }
+reqwest = { version = "0.13", features = ["json", "stream" ] }
 rgb = "0.8"
 rfd = { version = "0.15", optional = true }
 saphyr-parser = { version = "0.0.12", optional = true }

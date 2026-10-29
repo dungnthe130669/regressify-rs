@@ -115,13 +115,18 @@ impl Drop for LandingPreview {
 mod tests {
     use super::*;
 
-    #[test]
-    fn preview_exposes_only_generated_html_and_exact_versioned_assets() {
+    #[tokio::test]
+    async fn preview_exposes_only_generated_html_and_exact_versioned_assets() {
         let preview = LandingPreview::start(&LandingApp::default()).unwrap();
-        let client = reqwest::blocking::Client::new();
-        let page = client.get(&preview.url).send().unwrap();
+        let client = reqwest::Client::new();
+        let page = client.get(&preview.url).send().await.unwrap();
         assert_eq!(page.status(), 200);
-        assert!(page.text().unwrap().contains("data-regressify-landing"));
+        assert!(
+            page.text()
+                .await
+                .unwrap()
+                .contains("data-regressify-landing")
+        );
         for path in [
             "regressify.yaml",
             "deployment-tokens.json",
@@ -133,6 +138,7 @@ mod tests {
                 client
                     .get(format!("{}{path}", preview.url))
                     .send()
+                    .await
                     .unwrap()
                     .status(),
                 404
@@ -143,6 +149,7 @@ mod tests {
                 .get(&preview.url)
                 .header("Host", "untrusted.example")
                 .send()
+                .await
                 .unwrap()
                 .status(),
             404
@@ -158,8 +165,9 @@ mod tests {
                 crate::snapshot::get_asset_version(bytes, 20)
             ))
             .send()
+            .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        assert_eq!(response.bytes().unwrap().as_ref(), *bytes);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), *bytes);
     }
 }
