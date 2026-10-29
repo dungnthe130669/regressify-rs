@@ -1021,7 +1021,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide"
 version = "0.9.1"
-source = "git+https://github.com/precise-alloy/chromiumoxide#691db87ac13294ff78b9c7c7f9ae77e595527596"
+source = "git+https://github.com/precise-alloy/chromiumoxide#c8f7003a2419629d4ce5c1994db748837ad404a1"
 dependencies = [
  "async-tungstenite",
  "base64 0.22.1",
@@ -1032,7 +1032,6 @@ dependencies = [
  "dunce",
  "fnv",
  "futures",
- "futures-timer",
  "pin-project-lite",
  "reqwest",
  "serde",
@@ -1048,7 +1047,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_cdp"
 version = "0.9.1"
-source = "git+https://github.com/precise-alloy/chromiumoxide#691db87ac13294ff78b9c7c7f9ae77e595527596"
+source = "git+https://github.com/precise-alloy/chromiumoxide#c8f7003a2419629d4ce5c1994db748837ad404a1"
 dependencies = [
  "chromiumoxide_pdl",
  "chromiumoxide_types",
@@ -1059,7 +1058,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_fetcher"
 version = "0.9.1"
-source = "git+https://github.com/precise-alloy/chromiumoxide#691db87ac13294ff78b9c7c7f9ae77e595527596"
+source = "git+https://github.com/precise-alloy/chromiumoxide#c8f7003a2419629d4ce5c1994db748837ad404a1"
 dependencies = [
  "anyhow",
  "directories",
@@ -1075,7 +1074,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_pdl"
 version = "0.9.1"
-source = "git+https://github.com/precise-alloy/chromiumoxide#691db87ac13294ff78b9c7c7f9ae77e595527596"
+source = "git+https://github.com/precise-alloy/chromiumoxide#c8f7003a2419629d4ce5c1994db748837ad404a1"
 dependencies = [
  "chromiumoxide_types",
  "either",
@@ -1090,7 +1089,7 @@ dependencies = [
 [[package]]
 name = "chromiumoxide_types"
 version = "0.9.1"
-source = "git+https://github.com/precise-alloy/chromiumoxide#691db87ac13294ff78b9c7c7f9ae77e595527596"
+source = "git+https://github.com/precise-alloy/chromiumoxide#c8f7003a2419629d4ce5c1994db748837ad404a1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2504,12 +2503,6 @@ name = "futures-task"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
-
-[[package]]
-name = "futures-timer"
-version = "3.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
 
 [[package]]
 name = "futures-util"

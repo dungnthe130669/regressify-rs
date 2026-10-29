@@ -74,10 +74,15 @@ impl LandingPreview {
                     if stop.load(Ordering::Acquire) {
                         break;
                     }
+                    let mut host_headers = request
+                        .headers()
+                        .iter()
+                        .filter(|header| header.field.equiv("Host"));
                     let permitted = matches!(request.method(), Method::Get | Method::Head)
-                        && request.headers().iter().any(|header| {
-                            header.field.equiv("Host") && header.value.as_str() == host
-                        });
+                        && host_headers
+                            .next()
+                            .is_some_and(|header| header.value.as_str() == host)
+                        && host_headers.next().is_none();
                     let response = if let Some((bytes, mime)) =
                         permitted.then(|| files.get(request.url())).flatten()
                     {
