@@ -2991,7 +2991,9 @@ mod tests {
     #[test]
     #[ignore = "manual 1440x10000 quality/timing benchmark; run with --release --ignored --nocapture"]
     fn full_page_comparison_quality_and_timing() {
-        assert!(!cfg!(debug_assertions), "Run this benchmark with --release");
+        const {
+            assert!(!cfg!(debug_assertions), "Run this benchmark with --release");
+        }
         let dir = tempfile::tempdir().unwrap();
         let reference_path = dir.path().join("reference.png");
         let test_path = dir.path().join("test.png");
