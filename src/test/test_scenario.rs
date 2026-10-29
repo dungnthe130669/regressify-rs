@@ -704,12 +704,13 @@ async fn run_scenario_capture_inner(
     apply_viewport(&page, viewport).await?;
     let has_touch = scenario_uses_touch(scenario, all_scenarios, viewport_label);
     if has_touch {
-        page.execute(
-            chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::new(
-                true,
-            ),
-        )
-        .await?;
+        let cmd =
+            chromiumoxide::cdp::browser_protocol::emulation::SetTouchEmulationEnabledParams::builder()
+                .enabled(true)
+                .max_touch_points(5)
+                .build()
+                .map_err(|e| anyhow::anyhow!("Failed to build SetTouchEmulationEnabledParams: {}", e))?;
+        page.execute(cmd).await?;
     }
     let storage = super::storage_state::StorageState::install_with_client(
         runtime.client(),
