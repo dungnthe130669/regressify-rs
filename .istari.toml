@@ -8,8 +8,8 @@ provider = "github"
 provider = "github"
 
 [github]
-owner = "tuyen-foundation"
-repo = "regressify-cli"
+owner = "precise-alloy"
+repo = "regressify-rs"
 
 [commands]
 build = "cargo build"
