@@ -10,7 +10,7 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
@@ -30,10 +30,12 @@ const BACKUP_NAME: &str = "Regressify.app.previous";
 /// Each install stages in its own uniquely named directory (this prefix plus a random suffix),
 /// so one process never touches another's stage.
 const STAGE_PREFIX: &str = ".Regressify.app.update-stage-";
-/// Install-scoped lock and high-water mark live beside the app, so every user and window that
-/// can replace the same bundle shares them.
-const LOCK_NAME: &str = ".Regressify.app.update-lock";
-const VERSION_MARK_NAME: &str = ".Regressify.app.installed-version";
+/// Install-scoped lock beside the app: the same `mkdir` lock directory `install.sh` takes, so
+/// the terminal installer and the in-app updater exclude each other (and every window/user).
+const LOCK_NAME: &str = ".Regressify.lock";
+/// Written beside the app when a failed swap could not put the previous app back; it names
+/// where that only good copy is and blocks every later install until a human clears it.
+const RECOVERY_MARK_NAME: &str = ".Regressify.app.recovery-needed";
 const WORK_DIR: &str = "macos-install";
 
 /// Archive name for a CPU architecture, as published next to the installer.
@@ -154,11 +156,14 @@ pub fn installable_bundle() -> Option<PathBuf> {
     bundle_replaceable(&bundle).then_some(bundle)
 }
 
-/// Exclusive install lock beside the app; released when dropped or when the process exits.
-/// Per bundle, not per user cache, so it covers every writer of the shared stage/backup paths.
+/// Exclusive install lock beside the app, held as a `mkdir` lock directory exactly like
+/// `install.sh` (`.Regressify.lock`); removed when dropped. Per bundle, not per user cache, so
+/// it covers every writer of the shared stage/backup paths, terminal installer included.
+/// A process killed while holding it leaves the directory behind; like `install.sh`, the error
+/// names the path to remove.
 #[derive(Debug)]
 pub struct InstallLock {
-    _file: File,
+    path: PathBuf,
 }
 
 impl InstallLock {
@@ -166,44 +171,31 @@ impl InstallLock {
         let parent = bundle
             .parent()
             .context("Application has no parent folder")?;
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options
-            .open(parent.join(LOCK_NAME))
-            .context("Cannot open the update install lock")?;
-        match file.try_lock() {
-            Ok(()) => Ok(Self { _file: file }),
-            Err(TryLockError::WouldBlock) => {
-                bail!("Another Regressify window is already installing an update")
-            }
-            Err(TryLockError::Error(error)) => Err(error).context("Cannot lock the update install"),
+        let path = parent.join(LOCK_NAME);
+        match fs::create_dir(&path) {
+            Ok(()) => Ok(Self { path }),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => bail!(
+                "Another Regressify install is replacing the app; if none is running, remove '{}' and retry",
+                path.display()
+            ),
+            Err(error) => Err(error).context("Cannot take the update install lock"),
         }
     }
 }
 
-/// Version of the newest build installed into `bundle` by this feature, written under the
-/// lock after a successful swap. `None` when never written or unreadable.
-pub fn read_installed_mark(bundle: &Path) -> Option<String> {
-    let text = fs::read_to_string(bundle.parent()?.join(VERSION_MARK_NAME)).ok()?;
-    Some(text.trim().to_owned())
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
+    }
 }
 
-pub fn write_installed_mark(_lock: &InstallLock, bundle: &Path, version: &str) -> Result<()> {
-    let parent = bundle
-        .parent()
-        .context("Application has no parent folder")?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".Regressify.mark")
-        .tempfile_in(parent)?;
-    temp.write_all(version.as_bytes())?;
-    temp.persist(parent.join(VERSION_MARK_NAME))
-        .map_err(|error| error.error)?;
-    Ok(())
+/// Version of the app currently installed in `bundle`, read from its `Info.plist`. The staged
+/// bundle is stamped before the swap, so this changes atomically with the swap and survives any
+/// crash or failed bookkeeping afterwards. `None` when absent or not recognisable.
+pub fn installed_version(bundle: &Path) -> Option<String> {
+    let text = fs::read_to_string(bundle.join("Contents").join("Info.plist")).ok()?;
+    let (start, end) = plist_string_span(&text, "CFBundleVersion")?;
+    Some(text[start..end].trim().to_owned())
 }
 
 /// Marker context on an error: the swap could not finish or undo itself, so the app needs a
@@ -217,19 +209,29 @@ impl std::fmt::Display for RecoveryNeeded {
     }
 }
 
-/// Finishes or undoes what a killed install left behind. Needs the lock, so no live install
-/// can own the paths removed here. A missing app with a backup (killed between the two
-/// renames of the fallback swap) gets its backup restored; leftover stages are deleted.
+/// Fails while a previous failed swap left the only good app outside the app path.
+fn ensure_no_recovery_pending(parent: &Path) -> Result<()> {
+    let mark = parent.join(RECOVERY_MARK_NAME);
+    if let Ok(kept) = fs::read_to_string(&mark) {
+        return Err(anyhow::anyhow!(
+            "A previous update could not restore the app; the previous copy is kept at {}. Restore it manually, then delete {}",
+            kept.trim(),
+            mark.display()
+        )
+        .context(RecoveryNeeded));
+    }
+    Ok(())
+}
+
+/// Removes what a killed install left behind. Needs the lock, so no live install can own the
+/// paths removed here. Refuses to touch anything while a recovery is pending, because a
+/// stage-prefixed directory may then be the only copy of the previous app. (The swap is a
+/// single atomic exchange, so a kill never leaves the app path empty.)
 pub fn recover_interrupted(_lock: &InstallLock, bundle: &Path) -> Result<()> {
     let parent = bundle
         .parent()
         .context("Application has no parent folder")?;
-    let backup = parent.join(BACKUP_NAME);
-    if matches!(fs::symlink_metadata(bundle), Err(error) if error.kind() == io::ErrorKind::NotFound)
-        && fs::symlink_metadata(&backup).is_ok_and(|meta| meta.file_type().is_dir())
-    {
-        fs::rename(&backup, bundle).context("Cannot restore the app from its backup")?;
-    }
+    ensure_no_recovery_pending(parent)?;
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
         if entry
@@ -411,8 +413,8 @@ fn stamp_version(plist: &Path, version: &str) {
     let _ = fs::write(plist, text);
 }
 
-/// Replaces the text of the `<string>` that directly follows `<key>{key}</key>`; `None` if absent.
-fn replace_plist_string(text: &str, key: &str, value: &str) -> Option<String> {
+/// Byte range of the text of the `<string>` that directly follows `<key>{key}</key>`.
+fn plist_string_span(text: &str, key: &str) -> Option<(usize, usize)> {
     let marker = format!("<key>{key}</key>");
     let after_key = text.find(&marker)? + marker.len();
     let rest = &text[after_key..];
@@ -422,6 +424,12 @@ fn replace_plist_string(text: &str, key: &str, value: &str) -> Option<String> {
     }
     let start = after_key + open + "<string>".len();
     let end = start + text[start..].find("</string>")?;
+    Some((start, end))
+}
+
+/// Replaces that text with `value`; `None` if the key is absent.
+fn replace_plist_string(text: &str, key: &str, value: &str) -> Option<String> {
+    let (start, end) = plist_string_span(text, key)?;
     Some(format!("{}{value}{}", &text[..start], &text[end..]))
 }
 
@@ -512,14 +520,25 @@ impl SwapOps for RealOps {
             Err(io::Error::last_os_error())
         }
     }
+
+    /// Not atomic: only so Linux unit tests can drive the real swap. The app that ships this
+    /// feature (macOS) uses `renamex_np` above.
+    #[cfg(not(target_os = "macos"))]
+    fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+        let scratch = a.with_extension("scratch");
+        fs::rename(a, &scratch)?;
+        fs::rename(b, a)?;
+        fs::rename(&scratch, b)
+    }
 }
 
 /// Replaces `bundle` with `staged`, keeping exactly one backup (`Regressify.app.previous`).
 ///
-/// Preferred path: one atomic exchange, so the app path always holds a whole app even if the
-/// process is killed. Where the volume cannot exchange, two renames are used and a kill
-/// between them leaves no app until `recover_interrupted` restores the backup. Any failure
-/// restores the old app; a failed restore is reported with `RecoveryNeeded`.
+/// Uses one atomic directory exchange, so the app path always holds a whole app even if the
+/// process is killed. Where the volume cannot exchange, the install is refused with nothing
+/// changed: a two-rename fallback could leave no app at all, and recovery would need that
+/// missing app to run. A bad update is rolled back by exchanging again; if that fails the
+/// previous app stays at `staged`, a recovery mark names it, and `RecoveryNeeded` is returned.
 pub fn swap_bundle(
     bundle: &Path,
     staged: &Path,
@@ -530,49 +549,39 @@ pub fn swap_bundle(
         !fs::symlink_metadata(bundle)?.file_type().is_symlink(),
         "Refusing to replace a symlinked app"
     );
-    let backup = bundle
+    let parent = bundle
         .parent()
-        .context("Application has no parent folder")?
-        .join(BACKUP_NAME);
-    // Older backup: this is the one we are about to supersede.
-    remove_own(&backup)?;
-    if ops.exchange(staged, bundle).is_ok() {
-        // The old app now sits at `staged`; the new one is live.
-        if let Err(error) = verify(bundle).context("The installed update failed verification") {
-            return match ops.exchange(staged, bundle) {
-                Ok(()) => Err(error.context("Update rolled back; the previous app is unchanged")),
-                Err(restore) => Err(error
+        .context("Application has no parent folder")?;
+    ensure_no_recovery_pending(parent)?;
+    let backup = parent.join(BACKUP_NAME);
+    if let Err(error) = ops.exchange(staged, bundle) {
+        bail!(
+            "This volume cannot swap the app in place ({error}); the in-app install is unavailable here, use the copy command instead"
+        );
+    }
+    // The old app now sits at `staged`; the new one is live.
+    if let Err(error) = verify(bundle).context("The installed update failed verification") {
+        return match ops.exchange(staged, bundle) {
+            Ok(()) => Err(error.context("Update rolled back; the previous app is unchanged")),
+            Err(restore) => {
+                // Best effort: the message below carries the path even if this write fails.
+                let _ = fs::write(
+                    parent.join(RECOVERY_MARK_NAME),
+                    staged.display().to_string(),
+                );
+                Err(error
                     .context(format!(
                         "Update failed and the previous app could not be restored ({restore}); it is kept at {}",
                         staged.display()
                     ))
-                    .context(RecoveryNeeded)),
-            };
-        }
-        if ops.rename(staged, &backup).is_err() {
-            // No backup this time; the update itself succeeded.
-            let _ = remove_own(staged);
-        }
-        return Ok(());
-    }
-    ops.rename(bundle, &backup)
-        .context("Cannot move the current app aside")?;
-    let installed = ops
-        .rename(staged, bundle)
-        .context("Cannot put the updated app in place")
-        .and_then(|()| verify(bundle).context("The installed update failed verification"));
-    if let Err(error) = installed {
-        // Drop whatever landed at the app path (ours) and restore the backup.
-        let _ = remove_own(bundle);
-        return match ops.rename(&backup, bundle) {
-            Ok(()) => Err(error.context("Update rolled back; the previous app is unchanged")),
-            Err(restore) => Err(error
-                .context(format!(
-                    "Update failed and the previous app could not be restored ({restore}); it is kept at {}",
-                    backup.display()
-                ))
-                .context(RecoveryNeeded)),
+                    .context(RecoveryNeeded))
+            }
         };
+    }
+    // Only now supersede the older backup, with the old app moving into its place.
+    if remove_own(&backup).is_err() || ops.rename(staged, &backup).is_err() {
+        // No backup this time; the update itself succeeded.
+        let _ = remove_own(staged);
     }
     Ok(())
 }
@@ -608,6 +617,11 @@ pub fn install(
         url.starts_with("https://"),
         "Update downloads must use HTTPS"
     );
+    ensure_no_recovery_pending(
+        bundle
+            .parent()
+            .context("Application has no parent folder")?,
+    )?;
     let dir = work_dir(cache)?;
     let archive = tempfile::Builder::new()
         .prefix("download-")
@@ -790,7 +804,7 @@ mod tests {
         let first = InstallLock::acquire(&app).unwrap();
         // A second user/window has its own cache but the same bundle: still excluded.
         let error = InstallLock::acquire(&app).unwrap_err();
-        assert!(error.to_string().contains("already installing"), "{error}");
+        assert!(error.to_string().contains("remove '"), "{error}");
         drop(first);
         assert!(InstallLock::acquire(&app).is_ok());
         let other = tempfile::tempdir().unwrap();
@@ -801,6 +815,30 @@ mod tests {
             "another bundle is independent"
         );
         drop(held);
+    }
+
+    #[test]
+    fn lock_is_the_directory_install_sh_takes() {
+        // install.sh does `mkdir <parent>/.Regressify.lock` and `rmdir`s it when done.
+        let dir = tempfile::tempdir().unwrap();
+        let app = fake_app(dir.path());
+        let script = fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/website/public/install.sh"
+        ))
+        .unwrap();
+        assert!(script.contains(&format!("\"$app_parent/{LOCK_NAME}\"")));
+        // The terminal installer holds it: the in-app updater is excluded, and leaves it alone.
+        let terminal = dir.path().join(".Regressify.lock");
+        fs::create_dir(&terminal).unwrap();
+        assert!(InstallLock::acquire(&app).is_err());
+        assert!(terminal.exists());
+        // The updater holds it: a terminal `mkdir` fails; it is released on drop.
+        fs::remove_dir(&terminal).unwrap();
+        let lock = InstallLock::acquire(&app).unwrap();
+        assert!(fs::create_dir(&terminal).is_err());
+        drop(lock);
+        assert!(!terminal.exists());
     }
 
     #[cfg(unix)]
@@ -1012,6 +1050,7 @@ mod tests {
         assert_eq!(String::from_utf8(out).unwrap(), expected);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_plist_is_stamped_before_signing_and_keeps_its_mode() {
         use std::os::unix::fs::PermissionsExt;
@@ -1186,20 +1225,25 @@ mod tests {
     }
 
     #[test]
-    fn swap_failure_at_each_step_restores_the_old_app() {
-        // Step 1 fails moving the app aside; step 2 fails moving the new app in.
-        for fail_at in [1, 2] {
-            let dir = tempfile::tempdir().unwrap();
-            let (app, staged) = staged_pair(dir.path());
-            let ops = FailNth {
-                calls: Cell::new(0),
-                fail_at,
-            };
-            let error = swap_bundle(&app, &staged, &ops, &ok_step).unwrap_err();
-            assert!(format!("{error:#}").contains("injected"), "{error:#}");
-            assert_eq!(binary_of(&app), b"old", "fail_at {fail_at}");
-            assert!(staged.exists(), "the caller removes its own stage");
-        }
+    fn swap_is_refused_untouched_where_the_volume_cannot_exchange() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        fs::create_dir_all(dir.path().join(BACKUP_NAME).join("older")).unwrap();
+        // `FailNth` only renames; exchange is unsupported, as on a volume without it.
+        let ops = FailNth {
+            calls: Cell::new(0),
+            fail_at: usize::MAX,
+        };
+        let error = swap_bundle(&app, &staged, &ops, &ok_step).unwrap_err();
+        assert!(format!("{error:#}").contains("copy command"), "{error:#}");
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_none());
+        assert_eq!(ops.calls.get(), 0, "no rename was attempted");
+        assert_eq!(binary_of(&app), b"old");
+        assert!(staged.exists(), "the caller removes its own stage");
+        assert!(
+            dir.path().join(BACKUP_NAME).join("older").exists(),
+            "the earlier backup survives a refused swap"
+        );
     }
 
     #[test]
@@ -1210,30 +1254,6 @@ mod tests {
         let error = swap_bundle(&app, &staged, &RealOps, &reject).unwrap_err();
         assert!(format!("{error:#}").contains("rolled back"), "{error:#}");
         assert_eq!(binary_of(&app), b"old");
-    }
-
-    #[test]
-    fn swap_reports_the_backup_when_the_rollback_itself_fails() {
-        let dir = tempfile::tempdir().unwrap();
-        let (app, staged) = staged_pair(dir.path());
-        // Calls: 1 aside (ok), 2 new in (fails), 3 restore (fails).
-        struct FailFrom(Cell<usize>);
-        impl SwapOps for FailFrom {
-            fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-                self.0.set(self.0.get() + 1);
-                if self.0.get() >= 2 {
-                    return Err(io::Error::other("disk gone"));
-                }
-                fs::rename(from, to)
-            }
-        }
-        let error = swap_bundle(&app, &staged, &FailFrom(Cell::new(0)), &ok_step).unwrap_err();
-        let text = format!("{error:#}");
-        assert!(
-            text.contains("could not be restored") && text.contains(BACKUP_NAME),
-            "{text}"
-        );
-        assert_eq!(binary_of(&dir.path().join(BACKUP_NAME)), b"old");
     }
 
     #[cfg(unix)]
@@ -1366,23 +1386,42 @@ mod tests {
         assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
         assert!(format!("{error:#}").contains(&staged.display().to_string()));
         assert_eq!(binary_of(&staged), b"old");
-    }
 
-    #[test]
-    fn a_kill_between_the_two_renames_is_recovered_from_the_backup() {
-        // Fallback path, killed before the second rename: no app at all, backup holds it.
-        let (dir, app, _staged) = killed_swap(false, 2);
-        assert!(!app.exists(), "this is the window the exchange removes");
-        let backup = dir.path().join(BACKUP_NAME);
-        assert_eq!(binary_of(&backup), b"old");
+        // Retrying (what "Update now" does) must neither delete nor overwrite that copy.
         let lock = InstallLock::acquire(&app).unwrap();
+        let error = recover_interrupted(&lock, &app).unwrap_err();
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
+        let cache = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(&[(BINARY_NAME, b"newer")]);
+        let meta = meta_for(&bytes);
+        let open =
+            |_: &str| -> Result<Box<dyn Read>> { Ok(Box::new(io::Cursor::new(bytes.clone()))) };
+        let error = install(
+            &app,
+            cache.path(),
+            "https://example.test/a.zip",
+            &meta,
+            "2.9.0.0",
+            &deps_for(&open, &RealOps),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(
+            error.downcast_ref::<RecoveryNeeded>().is_some(),
+            "{error:#}"
+        );
+        assert!(format!("{error:#}").contains(&staged.display().to_string()));
+        assert_eq!(binary_of(&staged), b"old", "the only good copy is kept");
+        assert_eq!(
+            binary_of(&app),
+            b"new",
+            "the app path is not touched either"
+        );
+        assert!(!dir.path().join(BACKUP_NAME).exists());
+        // Once a human restores the app and clears the mark, installs work again.
+        fs::remove_file(dir.path().join(RECOVERY_MARK_NAME)).unwrap();
         recover_interrupted(&lock, &app).unwrap();
-        assert_eq!(binary_of(&app), b"old");
-        assert!(!backup.exists());
-        assert!(stages_in(dir.path()).is_empty(), "leftover stage removed");
-        // Nothing to do on a healthy install, and an existing app is never replaced.
-        recover_interrupted(&lock, &app).unwrap();
-        assert_eq!(binary_of(&app), b"old");
+        assert!(!staged.exists());
     }
 
     #[test]
@@ -1433,14 +1472,30 @@ mod tests {
     }
 
     #[test]
-    fn installed_mark_round_trips_beside_the_app() {
+    fn installed_version_is_read_from_the_bundle_itself() {
         let dir = tempfile::tempdir().unwrap();
         let app = fake_app(dir.path());
-        assert_eq!(read_installed_mark(&app), None);
-        let lock = InstallLock::acquire(&app).unwrap();
-        write_installed_mark(&lock, &app, "2.3.0.0").unwrap();
-        write_installed_mark(&lock, &app, "2.4.0.0").unwrap();
-        assert_eq!(read_installed_mark(&app).as_deref(), Some("2.4.0.0"));
+        assert_eq!(installed_version(&app), None, "unrecognisable plist");
+        fs::write(app.join("Contents/Info.plist"), OLD_PLIST).unwrap();
+        assert_eq!(installed_version(&app).as_deref(), Some("2.1.0.0"));
+        assert_eq!(installed_version(&dir.path().join("absent.app")), None);
+        // The floor moves with the swap itself, so no bookkeeping step can be lost after it.
+        let cache = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(&[(BINARY_NAME, b"new-binary")]);
+        let meta = meta_for(&bytes);
+        let open =
+            |_: &str| -> Result<Box<dyn Read>> { Ok(Box::new(io::Cursor::new(bytes.clone()))) };
+        install(
+            &app,
+            cache.path(),
+            "https://example.test/a.zip",
+            &meta,
+            "2.4.0.0",
+            &deps_for(&open, &RealOps),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(installed_version(&app).as_deref(), Some("2.4.0.0"));
     }
 
     fn deps_for<'a>(

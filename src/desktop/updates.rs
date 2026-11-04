@@ -282,10 +282,10 @@ fn failure_reason(error: &anyhow::Error) -> String {
     }
 }
 
-/// Everything after the lock is held: recover a killed install, refuse to go backwards or
-/// repeat, install, then record the version. The newer-than check uses the installed-version
-/// mark as well as the running version, because another window may have installed since this
-/// process started.
+/// Everything after the lock is held: clean up a killed install, refuse to go backwards or
+/// repeat, install. The newer-than check uses the version stamped in the installed bundle as
+/// well as the running version, because another window (or the terminal installer) may have
+/// installed since this process started; the stamp swaps in with the app, so it cannot be lost.
 fn install_locked(
     lock: &macos_install::InstallLock,
     bundle: &Path,
@@ -296,18 +296,15 @@ fn install_locked(
     handle: &InstallHandle,
 ) -> Result<()> {
     macos_install::recover_interrupted(lock, bundle)?;
-    let installed = macos_install::read_installed_mark(bundle)
-        .and_then(|mark| mark.parse::<Version>().ok())
+    let installed = macos_install::installed_version(bundle)
+        .and_then(|version| version.parse::<Version>().ok())
         .unwrap_or(current);
     ensure!(
         plan.version > current.max(installed),
         "Regressify {} or newer is already installed; restart Regressify",
         current.max(installed).display_short()
     );
-    perform_install(bundle, cache, plan, deps, handle)?;
-    // The app is already replaced; a failed mark only weakens the downgrade guard.
-    let _ = macos_install::write_installed_mark(lock, bundle, &plan.version.to_string());
-    Ok(())
+    perform_install(bundle, cache, plan, deps, handle)
 }
 
 /// The whole click-to-installed flow with the real downloader and `codesign`. Blocking:
@@ -2999,6 +2996,12 @@ mod tests {
         let app = parent.join("Regressify.app");
         std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         std::fs::write(app.join("Contents/MacOS/regressify-desktop"), b"old").unwrap();
+        std::fs::write(
+            app.join("Contents/Info.plist"),
+            "<plist><dict><key>CFBundleVersion</key><string>1.0.0.0</string>\
+             <key>CFBundleShortVersionString</key><string>1.0.0.0</string></dict></plist>",
+        )
+        .unwrap();
         app
     }
 
@@ -3064,7 +3067,7 @@ mod tests {
         run(&plan_c, bytes_c.clone()).unwrap();
         assert_eq!(binary(), b"c");
         assert_eq!(
-            macos_install::read_installed_mark(&app).as_deref(),
+            macos_install::installed_version(&app).as_deref(),
             Some("2.5.0.0")
         );
         // The stale process sees 2.0.0 < 2.3.0 < 2.5.0 in a fresh feed: refused.
@@ -3088,7 +3091,7 @@ mod tests {
             .unwrap(),
             b"old"
         );
-        // Without any mark, the running version is still the floor.
+        // A bundle older than the running version leaves the running version as the floor.
         let fresh = tempfile::tempdir().unwrap();
         let fresh_app = fake_installed_app(fresh.path());
         let lock = macos_install::InstallLock::acquire(&fresh_app).unwrap();
@@ -3144,22 +3147,35 @@ mod tests {
                 .ends_with("The current app was not changed.")
         );
 
-        // Rollback failure: the message names the kept backup and must not claim "unchanged".
+        // Rollback failure: the message names the kept copy and must not claim "unchanged".
         struct NoRestore(std::cell::Cell<usize>);
         impl macos_install::SwapOps for NoRestore {
             fn rename(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+                std::fs::rename(from, to)
+            }
+            fn exchange(&self, a: &std::path::Path, b: &std::path::Path) -> std::io::Result<()> {
                 self.0.set(self.0.get() + 1);
                 if self.0.get() >= 2 {
                     return Err(std::io::Error::other("disk gone"));
                 }
-                std::fs::rename(from, to)
+                macos_install::SwapOps::exchange(&macos_install::RealOps, a, b)
             }
         }
         let ops = NoRestore(std::cell::Cell::new(0));
+        // Only the swapped-in app fails verification (stage checks pass), forcing a rollback.
+        let reject_live = |path: &std::path::Path| -> anyhow::Result<()> {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "Regressify.app")
+            {
+                anyhow::bail!("bad signature");
+            }
+            Ok(())
+        };
         let deps = macos_install::Deps {
             open: &open,
             sign: &ok,
-            verify: &ok,
+            verify: &reject_live,
             ops: &ops,
         };
         let handle = InstallHandle::new();
@@ -3168,7 +3184,8 @@ mod tests {
             panic!("expected a failure")
         };
         assert!(
-            text.contains("could not be restored") && text.contains("Regressify.app.previous"),
+            text.contains("could not be restored")
+                && text.contains(".Regressify.app.update-stage-"),
             "{text}"
         );
         assert!(!text.contains("was not changed"), "{text}");

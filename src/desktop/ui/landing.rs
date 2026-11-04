@@ -15,6 +15,8 @@ enum LandingAction {
     Open(PathBuf),
     Close,
     Quit,
+    /// Like `Quit`, but the continuation is the macOS "Restart to update" flow.
+    Restart,
     Remove,
 }
 
@@ -163,12 +165,31 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.guard_landing(LandingAction::Quit, window, cx)
+    }
+
+    /// Same guard for the macOS restart; Save/Discard then continues into the update restart
+    /// instead of a plain quit, and Keep editing drops it.
+    pub(super) fn guard_landing_restart(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.guard_landing(LandingAction::Restart, window, cx)
+    }
+
+    fn guard_landing(
+        &mut self,
+        action: LandingAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.landing.read(cx).dirty(cx) {
             return false;
         }
         window.close_dialog(cx);
         self.landing.update(cx, |state, cx| {
-            state.pending = Some(LandingAction::Quit);
+            state.pending = Some(action);
             state.visible = true;
             cx.notify();
         });
@@ -371,7 +392,7 @@ impl Workbench {
             LandingAction::New => self
                 .landing
                 .update(cx, |state, cx| state.set_app(None, window, cx)),
-            LandingAction::Close | LandingAction::Quit => {
+            LandingAction::Close | LandingAction::Quit | LandingAction::Restart => {
                 self.landing.update(cx, |state, cx| {
                     let open = state.open.clone();
                     state.set_app(open, window, cx);
@@ -379,8 +400,10 @@ impl Workbench {
                     cx.notify();
                 });
                 window.close_dialog(cx);
-                if matches!(action, LandingAction::Quit) {
-                    self.guard(files::Pending::Close, window, cx);
+                match action {
+                    LandingAction::Quit => self.guard(files::Pending::Close, window, cx),
+                    LandingAction::Restart => self.guard(files::Pending::Update, window, cx),
+                    _ => {}
                 }
             }
             LandingAction::Open(path) => self.load_landing_file(path, window, cx),

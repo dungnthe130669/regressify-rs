@@ -306,21 +306,33 @@ folder) only the copy-command flow is offered. Clicking it, and nothing earlier:
    256 MiB) and matches the SHA-256;
 3. extracts only `regressify-desktop` after checking every entry (only
    `regressify-desktop`, `LICENSE`, `LICENSING.md`; no paths, absolute names, or symlinks);
-4. copies the installed bundle beside it (`.Regressify.app.update-stage`), replaces only
-   `Contents/MacOS/regressify-desktop`, ad-hoc signs with `/usr/bin/codesign --force --deep --sign -`
+4. copies the installed bundle beside it (`.Regressify.app.update-stage-<random>`),
+   replaces only `Contents/MacOS/regressify-desktop`, stamps the new version into
+   `Info.plist`, ad-hoc signs with `/usr/bin/codesign --force --deep --sign -`
    and checks `codesign --verify`;
-5. renames the old app to `Regressify.app.previous` (the single backup; older backups are
-   removed) and the staged app into place, verifying again and rolling back on any failure;
-6. shows **Restart**. Restart uses the same unsaved-work guard as quitting, then runs
-   `/usr/bin/open -n <app>` and quits; unsaved work is never discarded silently.
+5. exchanges the staged and installed apps with one atomic `renamex_np(RENAME_SWAP)`, so the
+   app path always holds a whole app, then verifies again and exchanges back on failure. The
+   old app becomes `Regressify.app.previous` (the single backup; older backups are removed).
+   If the volume cannot exchange, the install is refused with nothing changed and the copy
+   command stays the way to update. If a bad update cannot be rolled back, the previous app
+   stays in its stage folder, `.Regressify.app.recovery-needed` records where, the Failed
+   message names the folder, and every later install is refused until you restore the app
+   and delete that file;
+6. shows **Restart**. Restart uses the same unsaved-work guards as quitting (including the
+   landing-app editor: Save or Discard continues into the restart, Keep editing cancels it),
+   then runs `/usr/bin/open -n <app>` and quits; unsaved work is never discarded silently.
+   The relaunched app starts without a workspace; reopen it from Recent workspaces.
 
 The banner shows Downloading n%, Verifying, Installing, Restart, or Failed with the
-reason (the install command is offered again after a failure). A per-user lock
-(`updates/macos-install/macos-install.lock`) allows one installer at a time. There is no
-shell, script execution, sudo, osascript, background download, or host other than the
-update origin and GitHub releases. `Info.plist` keeps the version it was installed with.
-The install steps are covered by Linux unit tests with injected downloader and signer;
-the macOS UI and real `codesign`/`open` behavior are unverified on real hardware.
+reason (the install command is offered again after a failure). The same lock directory
+as `install.sh` (`.Regressify.lock` beside the app) allows one installer at a time, so the
+terminal installer and the in-app updater exclude each other; if neither is running and it
+was left behind by a crash, remove it. The version already installed is read from the
+bundle's `Info.plist` under that lock, so a stale window cannot reinstall or downgrade it.
+There is no shell, script execution, sudo, osascript, background download, or host other
+than the update origin and GitHub releases. The install steps are covered by Linux unit
+tests with injected downloader and signer; the macOS UI and real `codesign`/`open`
+behavior are unverified on real hardware.
 
 ## Git
 

@@ -574,9 +574,10 @@ impl Workbench {
             cx.notify();
             return;
         }
-        // Same landing-editor guard as native close; after save/discard it quits, and the
-        // user relaunches the already-installed app.
-        if self.guard_landing_close(window, cx) {
+        // Same landing-editor guard as native close, but carrying the restart: after
+        // Save/Discard it continues into `Pending::Update` (relaunch), and Keep editing
+        // cancels it with nothing changed.
+        if self.guard_landing_restart(window, cx) {
             return;
         }
         window.close_dialog(cx);

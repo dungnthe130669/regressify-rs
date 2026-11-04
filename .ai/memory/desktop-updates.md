@@ -43,6 +43,10 @@ See the [updater skill](../../.github/skills/desktop-updates/SKILL.md) and
 
 - macOS also has an opt-in in-app install (click only; user-writable `Regressify.app`):
   [macos_install](../../src/desktop/updates/macos_install.rs) verifies size/SHA-256,
-  validates the ZIP, stages and ad-hoc signs a bundle copy, swaps atomically with one
-  `.previous` backup, then relaunches through the unsaved-work guard. Logic is unit
-  tested on Linux; the UI and real codesign/open are verified only on a Mac.
+  validates the ZIP, stages and ad-hoc signs a bundle copy, swaps with one atomic
+  directory exchange (refuses the install where unavailable) and one `.previous` backup,
+  then relaunches through the unsaved-work guards. It shares install.sh's
+  `.Regressify.lock` and reads the installed version from the bundle's `Info.plist`.
+  A failed rollback keeps the old app and blocks later installs via a recovery mark.
+  Logic is unit tested on Linux; the UI and real `codesign`/`open` behavior remain
+  unverified on real hardware.
