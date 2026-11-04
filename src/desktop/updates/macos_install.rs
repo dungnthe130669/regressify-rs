@@ -645,12 +645,16 @@ pub fn swap_bundle(
         )
         .context(RecoveryNeeded));
     }
-    fs::remove_file(&mark_path).with_context(|| {
-        format!(
-            "The update is installed, but {} could not be removed; delete it before the next update",
-            mark_path.display()
-        )
-    })?;
+    // The swap is complete, so the "current app was not changed" wording would be false:
+    // flag this as recovery-needed to keep the UI from appending it.
+    if let Err(error) = fs::remove_file(&mark_path) {
+        return Err(anyhow::Error::new(error)
+            .context(format!(
+                "The update is installed, but {} could not be removed; delete it before the next update",
+                mark_path.display()
+            ))
+            .context(RecoveryNeeded));
+    }
     Ok(())
 }
 
@@ -1649,6 +1653,34 @@ mod tests {
         let lock = InstallLock::acquire(&app).unwrap();
         assert!(recover_interrupted(&lock, &app).is_err());
         assert_eq!(binary_of(&staged), b"old");
+    }
+
+    #[test]
+    fn a_mark_that_cannot_be_removed_after_a_finished_swap_is_not_reported_as_unchanged() {
+        struct DirMark;
+        impl SwapOps for DirMark {
+            fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+                fs::rename(from, to)
+            }
+            fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+                let scratch = a.with_extension("scratch");
+                fs::rename(a, &scratch)?;
+                fs::rename(b, a)?;
+                fs::rename(&scratch, b)
+            }
+            // A directory in the mark's place makes `remove_file` fail after the swap.
+            fn write_mark(&self, path: &Path, _: &str) -> io::Result<()> {
+                fs::create_dir_all(path.join("keep"))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let error = swap_bundle(&app, &staged, &DirMark, &ok_step).unwrap_err();
+        assert_eq!(binary_of(&app), b"new");
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
+        let text = super::super::failure_reason(&error);
+        assert!(text.contains("The update is installed"), "{text}");
+        assert!(!text.contains("was not changed"), "{text}");
     }
 
     #[test]

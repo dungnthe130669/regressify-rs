@@ -275,9 +275,10 @@ and can install in place (see below).
 Official macOS builds (Intel and Apple silicon) check the same release feed at
 startup and then every eight hours. Checking never downloads or installs anything. When
 the feed's `version` is newer, a banner reads "Regressify <version> is available"
-that shows the install command (`curl -fsSL https://<update-origin>/install.sh | sh`,
-host taken from the build's update origin) with a **Copy command** button,
-**View release** (opens
+that offers **Update now** when the app can install in place (see below) and otherwise
+shows the install command (`curl -fsSL https://<update-origin>/install.sh | sh`, host
+taken from the build's update origin) with a **Copy command** button; after a failed
+install the command appears there too. It also has **View release** (opens
 `https://github.com/precise-alloy/regressify-rs/releases/tag/<tag>`), and a dismiss
 button. Dismissing hides the banner for that version and older ones; a newer release
 shows again, and the Software updates dialog keeps offering that release's controls.
@@ -297,7 +298,7 @@ update check. Versions are shown without a trailing `.0` (`2.2.2.0` reads `2.2.2
 The **Software updates** dialog uses the same state: running version, status (up to
 date, available, checking, or the error), an enabled **Check for updates** that forces
 the notice check (skipping only the eight-hour deadline), and the same **Update now**
-or **Copy command** controls as the banner. Linux builds have no update check.
+or **Copy command** controls as the banner.
 
 **Update now** appears only when the running binary is inside a `Regressify.app`
 whose folder the user can write to; otherwise (bare binary, `cargo run`, read-only

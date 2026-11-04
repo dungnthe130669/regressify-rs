@@ -681,13 +681,18 @@ impl Workbench {
                         Ok(NoticeOutcome::Available(notice)) => {
                             state.dismissed_notice = None;
                             state.notice = Some(notice);
-                            // A successful check clears an earlier failure message.
-                            state.notice_message.clear();
+                            // A successful check clears an earlier failure message; a cached
+                            // poll was not a check and must not touch it.
+                            if dispatched {
+                                state.notice_message.clear();
+                            }
                         }
                         Ok(NoticeOutcome::Current) => {
                             state.notice = None;
                             state.dismissed_notice = None;
-                            state.notice_message = "Regressify is up to date".into();
+                            if dispatched {
+                                state.notice_message = "Regressify is up to date".into();
+                            }
                         }
                         Ok(NoticeOutcome::Dismissed(notice)) => {
                             state.notice = None;
