@@ -424,7 +424,7 @@ impl Workbench {
                 Ok(current) => feed.check_notice_shared(current, &cache, startup, network_allowed),
                 Err(error) => NoticeAttempt {
                     dispatched: false,
-                    outcome: Err(error.into()),
+                    outcome: Err(error),
                 },
             }
         });
