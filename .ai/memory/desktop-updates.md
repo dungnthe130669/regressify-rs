@@ -40,6 +40,7 @@ Verified: 2026-10-22
 
 See the [updater skill](../../.github/skills/desktop-updates/SKILL.md) and
 [desktop docs](../../docs/desktop.md) for contracts and user-visible behavior.
+
 - macOS also has an opt-in in-app install (click only; user-writable `Regressify.app`):
   [macos_install](../../src/desktop/updates/macos_install.rs) verifies size/SHA-256,
   validates the ZIP, stages and ad-hoc signs a bundle copy, swaps atomically with one
