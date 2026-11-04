@@ -37,7 +37,11 @@ async function artifact(path: string, bytes: Uint8Array) {
 export async function createFixture() {
   await rm(join(fixtureRoot, "_snapshot"), { recursive: true, force: true });
   const html = await readFile(resolve(import.meta.dir, "../tests/fixtures/dashboard.html"), "utf8");
+  const errorIconBytes = await readFile(
+    resolve(import.meta.dir, "../../src/test/data/error-icon.png"),
+  );
   const browser = await chromium.launch({ executablePath: browserExecutable(), headless: true });
+  let errorThumbnailUrl = "";
   const captures: {
     reference: string;
     test: string;
@@ -51,6 +55,8 @@ export async function createFixture() {
       diff: string;
       gridReference: string;
       gridTest: string;
+      gridDiff: string;
+      gridError: string;
     };
   }[] = [];
   try {
@@ -75,45 +81,90 @@ export async function createFixture() {
         { threshold: 0.1 },
       );
       const diff = PNG.sync.write(difference);
-      const previews = await page.evaluate(
-        async (sources) => {
+      const { previews, errorGrid } = await page.evaluate(
+        async ({ sources, iconSource }) => {
           const results = [];
-          for (const source of sources) {
+          for (const [sourceIndex, source] of sources.entries()) {
             const image = new Image();
             image.src = `data:image/png;base64,${source}`;
             await image.decode();
-            const render = (grid: boolean) => {
-              const width = grid
-                ? Math.min(image.width, Math.floor((image.height * 8) / 5))
-                : image.width;
+            const render = (grid: boolean, cropDiff: boolean) => {
+              const width = image.width;
               const height = grid
-                ? Math.min(image.height, Math.floor((image.width * 5) / 8))
+                ? Math.min(image.height, Math.max(1, Math.floor((image.width * 5) / 8)))
                 : image.height;
+              let cropY = 0;
+              if (grid && cropDiff && image.height > height) {
+                const probe = document.createElement("canvas");
+                probe.width = image.width;
+                probe.height = image.height;
+                const probeCtx = probe.getContext("2d");
+                if (!probeCtx) throw new Error("Preview canvas is unavailable");
+                probeCtx.drawImage(image, 0, 0);
+                const { data } = probeCtx.getImageData(0, 0, image.width, image.height);
+                for (let offset = 0; offset < data.length; offset += 4) {
+                  if (
+                    (data[offset + 3] ?? 0) > 0 &&
+                    data[offset] === 255 &&
+                    data[offset + 1] === 0 &&
+                    (data[offset + 2] === 255 || data[offset + 2] === 0)
+                  ) {
+                    const row = Math.floor(offset / 4 / image.width);
+                    cropY = Math.min(
+                      image.height - height,
+                      Math.max(0, row - Math.floor(height / 8)),
+                    );
+                    break;
+                  }
+                }
+              }
               const scale = Math.min(1, 640 / width, (grid ? 400 : 480) / height);
               const canvas = document.createElement("canvas");
               canvas.width = Math.max(1, Math.round(width * scale));
               canvas.height = Math.max(1, Math.round(height * scale));
               const context = canvas.getContext("2d");
               if (!context) throw new Error("Preview canvas is unavailable");
-              context.drawImage(
-                image,
-                (image.width - width) / 2,
-                0,
-                width,
-                height,
-                0,
-                0,
-                canvas.width,
-                canvas.height,
-              );
+              context.drawImage(image, 0, cropY, width, height, 0, 0, canvas.width, canvas.height);
               return canvas.toDataURL("image/png").split(",")[1] || "";
             };
-            results.push({ preview: render(false), grid: render(true) });
+            results.push({ preview: render(false, false), grid: render(true, sourceIndex === 2) });
           }
-          return results;
+          const icon = new Image();
+          icon.src = `data:image/png;base64,${iconSource}`;
+          await icon.decode();
+          const iconScale = Math.min(1, 640 / icon.width, 400 / icon.height);
+          const iconCanvas = document.createElement("canvas");
+          iconCanvas.width = Math.max(1, Math.round(icon.width * iconScale));
+          iconCanvas.height = Math.max(1, Math.round(icon.height * iconScale));
+          const iconCtx = iconCanvas.getContext("2d");
+          if (!iconCtx) throw new Error("Preview canvas is unavailable");
+          iconCtx.drawImage(
+            icon,
+            0,
+            0,
+            icon.width,
+            icon.height,
+            0,
+            0,
+            iconCanvas.width,
+            iconCanvas.height,
+          );
+          return {
+            previews: results,
+            errorGrid: iconCanvas.toDataURL("image/png").split(",")[1] || "",
+          };
         },
-        [reference, changed, diff].map((bytes) => bytes.toString("base64")),
+        {
+          sources: [reference, changed, diff].map((bytes) => bytes.toString("base64")),
+          iconSource: errorIconBytes.toString("base64"),
+        },
       );
+      if (!errorThumbnailUrl) {
+        errorThumbnailUrl = await artifact(
+          "_snapshot/images/preview/error-thumbnail.png",
+          Buffer.from(errorGrid, "base64"),
+        );
+      }
       const previewUrls = [];
       for (const [index, role] of ["reference", "test", "diff"].entries()) {
         const preview = previews[index];
@@ -149,6 +200,8 @@ export async function createFixture() {
           diff: diffPreview.preview,
           gridReference: referencePreview.grid,
           gridTest: testPreview.grid,
+          gridDiff: diffPreview.grid,
+          gridError: errorThumbnailUrl,
         },
       });
       await page.close();
@@ -228,7 +281,11 @@ export async function createFixture() {
           reference: error ? null : images.previews.reference,
           test: failed ? images.previews.test : images.previews.reference,
           diff: failed && !error ? images.previews.diff : null,
-          grid: failed ? images.previews.gridTest : images.previews.gridReference,
+          grid: error
+            ? images.previews.gridError
+            : failed
+              ? images.previews.gridDiff
+              : images.previews.gridReference,
         },
         referenceUrl,
         testUrl: referenceUrl.replace("example.com", "staging.example.com"),
