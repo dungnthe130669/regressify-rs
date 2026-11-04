@@ -25,9 +25,6 @@ jobs:
       matrix:
         variant: [baseline, litedebug, nodefender]
     env:
-      # Only litedebug sets the debug-info profile overrides.
-      CARGO_PROFILE_TEST_DEBUG: ${{ matrix.variant == 'litedebug' && 'line-tables-only' || '' }}
-      CARGO_PROFILE_DEV_DEBUG: ${{ matrix.variant == 'litedebug' && 'line-tables-only' || '' }}
       # Set for compile AND run so cargo does not rebuild between the two steps.
       RUSTC_BOOTSTRAP: '1'
     defaults:
@@ -35,6 +32,13 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@v6
+
+      # Cargo rejects an empty CARGO_PROFILE_*_DEBUG, so these are only defined for litedebug.
+      - name: Debug-info overrides (litedebug only)
+        if: matrix.variant == 'litedebug'
+        run: |
+          "CARGO_PROFILE_TEST_DEBUG=line-tables-only" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "CARGO_PROFILE_DEV_DEBUG=line-tables-only" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
       - name: Defender exclusions (nodefender only)
         if: matrix.variant == 'nodefender'
