@@ -1,7 +1,8 @@
 use super::*;
 use crate::desktop::updates::{
-    CURRENT_VERSION, DownloadControl, PreparedUpdate, Release, RetryScheduled,
+    CURRENT_VERSION, DownloadControl, NoticeOutcome, PreparedUpdate, Release, RetryScheduled,
     SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateLease,
+    UpdateNotice, UpdatePlatform,
 };
 use futures::FutureExt;
 
@@ -19,11 +20,22 @@ pub(super) struct UpdatePanel {
     startup_check_pending: bool,
     lease: Option<UpdateLease>,
     pub(super) install_on_close: bool,
+    /// Notify-only feed (macOS). Never shares state with the installer flow above.
+    notice_feed: Option<UpdateFeed>,
+    notice: Option<UpdateNotice>,
+    notice_checking: bool,
+    notice_startup_pending: bool,
+    notice_task: Option<Task<()>>,
 }
 
 impl Default for UpdatePanel {
     fn default() -> Self {
-        let feed = UpdateFeed::configured();
+        let configured = UpdateFeed::configured();
+        let notice_feed = configured
+            .clone()
+            .filter(|feed| feed.platform() == UpdatePlatform::MacOs);
+        // The download/install machinery stays Windows-only.
+        let feed = configured.filter(|feed| feed.platform() == UpdatePlatform::WindowsX64);
         Self {
             message: if feed.is_some() {
                 "Ready to check for updates".into()
@@ -42,6 +54,11 @@ impl Default for UpdatePanel {
             startup_check_pending: true,
             lease: None,
             install_on_close: false,
+            notice_feed,
+            notice: None,
+            notice_checking: false,
+            notice_startup_pending: true,
+            notice_task: None,
         }
     }
 }
@@ -252,6 +269,202 @@ impl Workbench {
         )
     }
 
+    pub(super) fn render_update_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let update = self.updates.read(cx);
+        let notice = update.notice.as_ref()?;
+        let feed = update.notice_feed.as_ref()?;
+        let title = format!("Regressify {} is available", notice.version);
+        let detail =
+            "Run the install command in a terminal to update, or review the release notes.";
+        let command = feed.install_command();
+        let release_url = notice.release_url();
+        let version = notice.version;
+        let colors = update_banner_colors(cx);
+        Some(
+            div()
+                .id("update-notice")
+                .role(Role::Status)
+                .aria_label(format!("{title}. {detail}"))
+                .test_support()
+                .gap_3()
+                .w_full()
+                .flex_shrink_0()
+                .border_b_1()
+                .border_color(colors.border)
+                .bg(colors.background)
+                .child(
+                    gpui_kit::component::marker::Marker::new()
+                        .w_full()
+                        .min_h(px(64.))
+                        .items_center()
+                        .flex_wrap()
+                        .gap_3()
+                        .px_4()
+                        .py_3()
+                        .text_color(colors.title)
+                        .child(
+                            Icon::new(gpui_kit::assets::IconName::Download)
+                                .size_5()
+                                .flex_shrink_0(),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .id("update-notice-title")
+                                        .test_support()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .id("update-notice-detail")
+                                        .test_support()
+                                        .text_xs()
+                                        .text_color(colors.detail)
+                                        .whitespace_normal()
+                                        .child(detail),
+                                ),
+                        )
+                        .child(design::CopyText::new(
+                            "update-notice-copy",
+                            command,
+                            "Copy install command",
+                        ))
+                        .child(
+                            Button::new("update-notice-release")
+                                .flex_shrink_0()
+                                .icon(gpui_kit::assets::IconName::ExternalLink)
+                                .label("View release")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if let Err(error) = open::that_detached(&release_url) {
+                                        this.status = format!("Cannot open release page: {error}");
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new("update-notice-dismiss")
+                                .ghost()
+                                .flex_shrink_0()
+                                .icon(gpui_kit::assets::IconName::X)
+                                .accessibility_label("Dismiss update notice")
+                                .tooltip("Dismiss until a newer version")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.dismiss_update_notice(version, cx)
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn dismiss_update_notice(
+        &mut self,
+        version: crate::desktop::updates::Version,
+        cx: &mut Context<Self>,
+    ) {
+        self.updates.update(cx, |state, cx| {
+            state.notice = None;
+            cx.notify();
+        });
+        // Persist off the UI thread; a failed write only means the notice may return next check.
+        if let Some(cache) = self.update_cache_dir() {
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(error) = UpdateFeed::dismiss_notice(version, &cache) {
+                        crate::diagnostics::startup::warning(
+                            crate::diagnostics::record::SafeValue::Desktop,
+                            &error,
+                        );
+                    }
+                })
+                .detach();
+        }
+        cx.notify();
+    }
+
+    fn update_cache_dir(&self) -> Option<std::path::PathBuf> {
+        self.preferences_path
+            .as_ref()
+            .map(|path| path.with_file_name("updates"))
+    }
+
+    fn start_notice_check(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.updates.read(cx);
+        if state.notice_checking {
+            return;
+        }
+        let Some(feed) = state.notice_feed.clone() else {
+            return;
+        };
+        let startup = state.notice_startup_pending;
+        let Some(cache) = self.update_cache_dir() else {
+            return;
+        };
+        self.updates.update(cx, |state, _| {
+            state.notice_checking = true;
+            state.notice_startup_pending = false;
+        });
+        let task = cx.background_executor().spawn(async move {
+            let current = CURRENT_VERSION.parse()?;
+            feed.check_notice_shared(current, &cache, startup)
+        });
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let _ = view.update_in(cx, |this, _, cx| {
+                this.updates.update(cx, |state, cx| {
+                    state.notice_checking = false;
+                    match result {
+                        Ok(NoticeOutcome::NotDue) => {}
+                        Ok(NoticeOutcome::Available(notice)) => state.notice = Some(notice),
+                        Ok(NoticeOutcome::Current | NoticeOutcome::Dismissed) => {
+                            state.notice = None
+                        }
+                        // Silent in the UI; the next scheduled check retries.
+                        Err(error) => crate::diagnostics::startup::warning(
+                            crate::diagnostics::record::SafeValue::Desktop,
+                            &error,
+                        ),
+                    }
+                    cx.notify();
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn watch_update_notices(
+        &mut self,
+        interval: std::time::Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.updates.read(cx);
+        if state.notice_feed.is_none() || state.notice_task.is_some() {
+            return;
+        }
+        let task = cx.spawn_in(window, async move |view, cx| {
+            loop {
+                cx.background_executor().timer(interval).await;
+                if view
+                    .update_in(cx, |this, window, cx| this.start_notice_check(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.updates
+            .update(cx, |state, _| state.notice_task = Some(task));
+    }
+
     pub(super) fn open_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.entity();
         let updates = self.updates.clone();
@@ -346,6 +559,8 @@ impl Workbench {
     }
 
     pub(super) fn check_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_notice_check(window, cx);
+        self.watch_update_notices(SHARED_POLL_INTERVAL, window, cx);
         self.watch_shared_updates(SHARED_POLL_INTERVAL, window, cx);
         self.start_update_check(false, window, cx);
     }
