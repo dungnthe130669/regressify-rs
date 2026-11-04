@@ -209,13 +209,33 @@ impl std::fmt::Display for RecoveryNeeded {
     }
 }
 
-/// Fails while a previous failed swap left the only good app outside the app path.
+/// App folders (with the stage that holds the previous app) whose recovery mark could not be
+/// written in this process. The mark is the on-disk guard; this fallback still blocks retries
+/// until the app restarts.
+fn unmarked_recoveries() -> &'static std::sync::Mutex<Vec<(PathBuf, PathBuf)>> {
+    static SET: std::sync::OnceLock<std::sync::Mutex<Vec<(PathBuf, PathBuf)>>> =
+        std::sync::OnceLock::new();
+    SET.get_or_init(Default::default)
+}
+
+/// Fails while a previous failed swap left the only good app outside the app path. Fails closed:
+/// a mark that exists but cannot be read still counts as pending; only `NotFound` means none.
 fn ensure_no_recovery_pending(parent: &Path) -> Result<()> {
     let mark = parent.join(RECOVERY_MARK_NAME);
-    if let Ok(kept) = fs::read_to_string(&mark) {
+    let kept = match fs::read_to_string(&mark) {
+        Ok(kept) => Some(kept.trim().to_owned()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            unmarked_recoveries().lock().ok().and_then(|set| {
+                set.iter()
+                    .find(|(app_dir, _)| app_dir == parent)
+                    .map(|(_, kept)| kept.display().to_string())
+            })
+        }
+        Err(_) => Some("(unknown: the recovery mark cannot be read)".to_owned()),
+    };
+    if let Some(kept) = kept {
         return Err(anyhow::anyhow!(
-            "A previous update could not restore the app; the previous copy is kept at {}. Restore it manually, then delete {}",
-            kept.trim(),
+            "A previous update could not restore the app; the previous copy is kept at {kept}. Restore it manually, then delete {}",
             mark.display()
         )
         .context(RecoveryNeeded));
@@ -390,27 +410,35 @@ fn remove_own(path: &Path) -> Result<()> {
 }
 
 /// Rewrites the `<string>` after `CFBundleVersion` and `CFBundleShortVersionString` to `version`, as
-/// `install.sh` writes them, so the updated app reports what it is. Text-level and best effort: an
-/// invalid version, a missing key, or anything that is not recognisably a plist leaves the file
-/// untouched, and no other byte changes.
-fn stamp_version(plist: &Path, version: &str) {
-    if version.is_empty()
-        || !version
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || byte == b'.')
-    {
-        return;
-    }
-    let Ok(text) = fs::read_to_string(plist) else {
-        return;
-    };
-    let Some(text) = replace_plist_string(&text, "CFBundleVersion", version)
+/// `install.sh` writes them, so the updated app reports what it is. Text-level: no other byte
+/// changes. Strict: an invalid version, a missing key, an unrecognisable plist, or a failed write
+/// is an error, because a new binary that still reports an old version would let a stale window's
+/// downgrade check accept an intermediate release. The result is read back before returning.
+fn stamp_version(plist: &Path, version: &str) -> Result<()> {
+    ensure!(
+        !version.is_empty()
+            && version
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.'),
+        "The update version is not a plain dotted number"
+    );
+    let text = fs::read_to_string(plist).context("Cannot read the app's Info.plist")?;
+    let text = replace_plist_string(&text, "CFBundleVersion", version)
         .and_then(|text| replace_plist_string(&text, "CFBundleShortVersionString", version))
-    else {
-        return;
-    };
+        .context("The app's Info.plist has no recognisable version entries")?;
     // Rewrite in place: same inode, so permissions are kept.
-    let _ = fs::write(plist, text);
+    fs::write(plist, text).context("Cannot write the app's Info.plist")?;
+    ensure!(
+        fs::read_to_string(plist)
+            .ok()
+            .and_then(|text| {
+                let (start, end) = plist_string_span(&text, "CFBundleVersion")?;
+                Some(text[start..end].trim() == version)
+            })
+            .unwrap_or(false),
+        "The staged app does not report the update version"
+    );
+    Ok(())
 }
 
 /// Byte range of the text of the `<string>` that directly follows `<key>{key}</key>`.
@@ -466,7 +494,7 @@ pub fn stage_bundle(
         fs::copy(new_binary, &incoming)?;
         fs::rename(&incoming, &target)?;
         // Before signing, so the signature covers the new version.
-        stamp_version(&stage.join("Contents").join("Info.plist"), version);
+        stamp_version(&stage.join("Contents").join("Info.plist"), version)?;
         sign(&stage).context("Cannot sign the updated app")?;
         verify(&stage).context("The updated app failed signature verification")?;
         Ok(())
@@ -488,6 +516,11 @@ pub trait SwapOps {
     /// any moment leaves a complete app at the destination. Unsupported by default.
     fn exchange(&self, _a: &Path, _b: &Path) -> io::Result<()> {
         Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Writes the recovery mark; a method so tests can make it fail.
+    fn write_mark(&self, path: &Path, contents: &str) -> io::Result<()> {
+        fs::write(path, contents)
     }
 }
 
@@ -561,17 +594,36 @@ pub fn swap_bundle(
     }
     // The old app now sits at `staged`; the new one is live.
     if let Err(error) = verify(bundle).context("The installed update failed verification") {
+        // Persist the recovery mark BEFORE the rollback can fail, so no later install can mistake
+        // the stage for a leftover and delete the only good app. Cleared again if rollback works.
+        let mark_path = parent.join(RECOVERY_MARK_NAME);
+        let marked = ops
+            .write_mark(&mark_path, &staged.display().to_string())
+            .is_ok();
         return match ops.exchange(staged, bundle) {
-            Ok(()) => Err(error.context("Update rolled back; the previous app is unchanged")),
+            Ok(()) => {
+                if marked && fs::remove_file(&mark_path).is_err() {
+                    // A stale mark only blocks installs (fail closed); say so.
+                    return Err(error.context(format!(
+                        "Update rolled back, but {} could not be removed; delete it before retrying",
+                        mark_path.display()
+                    )));
+                }
+                Err(error.context("Update rolled back; the previous app is unchanged"))
+            }
             Err(restore) => {
-                // Best effort: the message below carries the path even if this write fails.
-                let _ = fs::write(
-                    parent.join(RECOVERY_MARK_NAME),
-                    staged.display().to_string(),
-                );
+                let note = if marked {
+                    String::new()
+                } else {
+                    // No on-disk guard: block retries in this process and warn the user.
+                    if let Ok(mut set) = unmarked_recoveries().lock() {
+                        set.push((parent.to_path_buf(), staged.to_path_buf()));
+                    }
+                    "; the recovery mark could not be written, so restore the app before running any installer".to_owned()
+                };
                 Err(error
                     .context(format!(
-                        "Update failed and the previous app could not be restored ({restore}); it is kept at {}",
+                        "Update failed and the previous app could not be restored ({restore}); it is kept at {}{note}",
                         staged.display()
                     ))
                     .context(RecoveryNeeded))
@@ -696,7 +748,7 @@ mod tests {
         fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
         fs::create_dir_all(app.join("Contents/Resources")).unwrap();
         fs::write(app.join("Contents/MacOS").join(BINARY_NAME), b"old").unwrap();
-        fs::write(app.join("Contents/Info.plist"), b"plist").unwrap();
+        fs::write(app.join("Contents/Info.plist"), OLD_PLIST).unwrap();
         fs::write(app.join("Contents/Resources/Regressify.icns"), b"icon").unwrap();
         app
     }
@@ -1019,8 +1071,8 @@ mod tests {
         assert_eq!(staged.parent(), app.parent(), "same volume as the app");
         assert_eq!(*signed.borrow(), vec![staged.clone()]);
         assert_eq!(
-            fs::read(staged.join("Contents/Info.plist")).unwrap(),
-            b"plist"
+            fs::read_to_string(staged.join("Contents/Info.plist")).unwrap(),
+            OLD_PLIST.replace("2.1.0.0", "2.2.2.0")
         );
         assert_eq!(
             fs::read(staged.join("Contents/Resources/Regressify.icns")).unwrap(),
@@ -1032,22 +1084,21 @@ mod tests {
 
     const OLD_PLIST: &str = "<?xml version=\"1.0\"?>\n<plist>\n<dict>\n  <key>CFBundleName</key>\n  <string>Regressify</string>\n  <key>CFBundleVersion</key>\n  <string>2.1.0.0</string>\n  <key>CFBundleShortVersionString</key>\n  <string>2.1.0.0</string>\n  <key>NSHighResolutionCapable</key>\n  <true/>\n</dict>\n</plist>\n";
 
-    fn stage_with_plist(plist: &[u8], version: &str) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
+    fn stage_with_plist(plist: &[u8], version: &str) -> (tempfile::TempDir, Result<PathBuf>) {
         let dir = tempfile::tempdir().unwrap();
         let app = fake_app(dir.path());
         fs::write(app.join("Contents/Info.plist"), plist).unwrap();
         let new_binary = dir.path().join("new");
         fs::write(&new_binary, b"new").unwrap();
-        let staged = stage_bundle(&app, &new_binary, version, &ok_step, &ok_step).unwrap();
-        let out = fs::read(staged.join("Contents/Info.plist")).unwrap();
-        (dir, staged, out)
+        let staged = stage_bundle(&app, &new_binary, version, &ok_step, &ok_step);
+        (dir, staged)
     }
 
     #[test]
     fn staging_stamps_both_versions_and_touches_nothing_else() {
-        let (_dir, _staged, out) = stage_with_plist(OLD_PLIST.as_bytes(), "2.2.2.0");
-        let expected = OLD_PLIST.replace("2.1.0.0", "2.2.2.0");
-        assert_eq!(String::from_utf8(out).unwrap(), expected);
+        let (_dir, staged) = stage_with_plist(OLD_PLIST.as_bytes(), "2.2.2.0");
+        let out = fs::read_to_string(staged.unwrap().join("Contents/Info.plist")).unwrap();
+        assert_eq!(out, OLD_PLIST.replace("2.1.0.0", "2.2.2.0"));
     }
 
     #[cfg(unix)]
@@ -1075,21 +1126,17 @@ mod tests {
     }
 
     #[test]
-    fn a_plist_missing_a_key_is_left_unchanged() {
+    fn staging_aborts_when_the_version_cannot_be_stamped() {
         let only_one = OLD_PLIST.replace(
             "  <key>CFBundleShortVersionString</key>\n  <string>2.1.0.0</string>\n",
             "",
         );
-        let (_dir, _staged, out) = stage_with_plist(only_one.as_bytes(), "2.2.2.0");
-        assert_eq!(String::from_utf8(out).unwrap(), only_one);
-    }
-
-    #[test]
-    fn an_unrecognisable_plist_is_left_alone_and_the_install_still_succeeds() {
-        let (_dir, _staged, out) = stage_with_plist(b"plist", "2.2.2.0");
-        assert_eq!(out, b"plist");
-        let (_dir, _staged, out) = stage_with_plist(&[0xff, 0xfe, 0x00], "2.2.2.0");
-        assert_eq!(out, [0xff, 0xfe, 0x00]);
+        let unusable: [&[u8]; 3] = [only_one.as_bytes(), b"plist", &[0xff, 0xfe, 0x00]];
+        for plist in unusable {
+            let (dir, staged) = stage_with_plist(plist, "2.2.2.0");
+            assert!(staged.is_err(), "{plist:?}");
+            assert_eq!(stages_in(dir.path()).len(), 0, "the stage is removed");
+        }
     }
 
     #[test]
@@ -1102,8 +1149,13 @@ mod tests {
             "<a>",
             "2,2",
         ] {
-            let (_dir, _staged, out) = stage_with_plist(OLD_PLIST.as_bytes(), bad);
-            assert_eq!(String::from_utf8(out).unwrap(), OLD_PLIST, "{bad:?}");
+            let (dir, staged) = stage_with_plist(OLD_PLIST.as_bytes(), bad);
+            assert!(staged.is_err(), "{bad:?}");
+            assert_eq!(stages_in(dir.path()).len(), 0, "{bad:?}");
+            assert_eq!(
+                fs::read_to_string(dir.path().join(APP_NAME).join("Contents/Info.plist")).unwrap(),
+                OLD_PLIST
+            );
         }
     }
 
@@ -1424,6 +1476,123 @@ mod tests {
         assert!(!staged.exists());
     }
 
+    /// Exchanges once, then fails (the rollback); optionally cannot write the recovery mark.
+    struct FailingRollback {
+        exchanges: Cell<usize>,
+        mark_fails: bool,
+    }
+
+    impl SwapOps for FailingRollback {
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            fs::rename(from, to)
+        }
+        fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+            self.exchanges.set(self.exchanges.get() + 1);
+            if self.exchanges.get() > 1 {
+                return Err(io::Error::other("disk gone"));
+            }
+            let scratch = a.with_extension("scratch");
+            fs::rename(a, &scratch)?;
+            fs::rename(b, a)?;
+            fs::rename(&scratch, b)
+        }
+        fn write_mark(&self, path: &Path, contents: &str) -> io::Result<()> {
+            if self.mark_fails {
+                return Err(io::Error::other("volume error"));
+            }
+            fs::write(path, contents)
+        }
+    }
+
+    #[test]
+    fn a_failed_rollback_with_an_unwritable_mark_still_blocks_a_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let ops = FailingRollback {
+            exchanges: Cell::new(0),
+            mark_fails: true,
+        };
+        let reject = |_: &Path| -> Result<()> { bail!("bad signature") };
+        let error = swap_bundle(&app, &staged, &ops, &reject).unwrap_err();
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("recovery mark could not be written"),
+            "{text}"
+        );
+        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+
+        // Retry: the only good copy must survive even though no mark is on disk.
+        let lock = InstallLock::acquire(&app).unwrap();
+        let error = recover_interrupted(&lock, &app).unwrap_err();
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
+        assert_eq!(binary_of(&staged), b"old", "the only good copy is kept");
+        let cache = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(&[(BINARY_NAME, b"newer")]);
+        let meta = meta_for(&bytes);
+        let open =
+            |_: &str| -> Result<Box<dyn Read>> { Ok(Box::new(io::Cursor::new(bytes.clone()))) };
+        let error = install(
+            &app,
+            cache.path(),
+            "https://example.test/a.zip",
+            &meta,
+            "2.9.0.0",
+            &deps_for(&open, &RealOps),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(
+            error.downcast_ref::<RecoveryNeeded>().is_some(),
+            "{error:#}"
+        );
+        assert_eq!(binary_of(&staged), b"old");
+    }
+
+    #[test]
+    fn an_unreadable_recovery_mark_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        // A directory in the mark's place: it exists but cannot be read as a file.
+        fs::create_dir(dir.path().join(RECOVERY_MARK_NAME)).unwrap();
+        let lock = InstallLock::acquire(&app).unwrap();
+        let error = recover_interrupted(&lock, &app).unwrap_err();
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
+        assert!(
+            staged.exists(),
+            "nothing is deleted while the mark is unknown"
+        );
+    }
+
+    #[test]
+    fn the_mark_is_written_before_the_rollback_and_cleared_when_it_works() {
+        struct Spy(Cell<bool>);
+        impl SwapOps for Spy {
+            fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+                fs::rename(from, to)
+            }
+            fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+                let mark = a.parent().unwrap().join(RECOVERY_MARK_NAME);
+                if mark.exists() {
+                    self.0.set(true);
+                }
+                let scratch = a.with_extension("scratch");
+                fs::rename(a, &scratch)?;
+                fs::rename(b, a)?;
+                fs::rename(&scratch, b)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let spy = Spy(Cell::new(false));
+        let reject = |_: &Path| -> Result<()> { bail!("bad signature") };
+        // Exchange 1 (swap in) sees no mark; exchange 2 (rollback) must see it.
+        swap_bundle(&app, &staged, &spy, &reject).unwrap_err();
+        assert!(spy.0.get(), "mark existed before the rollback exchange");
+        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+        assert_eq!(binary_of(&app), b"old");
+    }
+
     #[test]
     fn an_exchange_swap_never_leaves_the_app_missing_whenever_it_is_killed() {
         // Operation 1 is the exchange, 2 retires the old app to the backup.
@@ -1475,6 +1644,7 @@ mod tests {
     fn installed_version_is_read_from_the_bundle_itself() {
         let dir = tempfile::tempdir().unwrap();
         let app = fake_app(dir.path());
+        fs::write(app.join("Contents/Info.plist"), b"plist").unwrap();
         assert_eq!(installed_version(&app), None, "unrecognisable plist");
         fs::write(app.join("Contents/Info.plist"), OLD_PLIST).unwrap();
         assert_eq!(installed_version(&app).as_deref(), Some("2.1.0.0"));

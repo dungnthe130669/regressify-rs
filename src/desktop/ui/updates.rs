@@ -24,6 +24,9 @@ pub(super) struct UpdatePanel {
     /// Notify-only feed (macOS). Never shares state with the installer flow above.
     notice_feed: Option<UpdateFeed>,
     notice: Option<UpdateNotice>,
+    /// The newest release the user dismissed. Only hides the banner: the dialog keeps offering
+    /// Update now / Copy command for it, since its status points there.
+    dismissed_notice: Option<UpdateNotice>,
     notice_checking: bool,
     notice_startup_pending: bool,
     notice_task: Option<Task<()>>,
@@ -72,6 +75,7 @@ impl Default for UpdatePanel {
             install_on_close: false,
             notice_feed,
             notice: None,
+            dismissed_notice: None,
             notice_checking: false,
             notice_startup_pending: true,
             notice_task: None,
@@ -483,7 +487,7 @@ impl Workbench {
 
     fn dismiss_update_notice(&mut self, version: Version, cx: &mut Context<Self>) {
         self.updates.update(cx, |state, cx| {
-            state.notice = None;
+            state.dismissed_notice = state.notice.take().or(state.dismissed_notice.take());
             state.notice_dismissed = state.notice_dismissed.max(Some(version));
             cx.notify();
         });
@@ -508,7 +512,7 @@ impl Workbench {
     fn start_macos_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.updates.read(cx);
         if self.busy
-            || state.notice.is_none()
+            || (state.notice.is_none() && state.dismissed_notice.is_none())
             || state
                 .install_state()
                 .is_some_and(|s| matches!(s, InstallState::Restart) || s.in_progress())
@@ -659,15 +663,21 @@ impl Workbench {
                             if dismissal_hides(state.notice_dismissed, notice.version) =>
                         {
                             state.notice = None;
+                            state.dismissed_notice = Some(notice);
                             state.notice_message = DISMISSED_MESSAGE.into();
                         }
-                        Ok(NoticeOutcome::Available(notice)) => state.notice = Some(notice),
+                        Ok(NoticeOutcome::Available(notice)) => {
+                            state.dismissed_notice = None;
+                            state.notice = Some(notice);
+                        }
                         Ok(NoticeOutcome::Current) => {
                             state.notice = None;
+                            state.dismissed_notice = None;
                             state.notice_message = "Regressify is up to date".into();
                         }
-                        Ok(NoticeOutcome::Dismissed) => {
+                        Ok(NoticeOutcome::Dismissed(notice)) => {
                             state.notice = None;
+                            state.dismissed_notice = Some(notice);
                             state.notice_message = DISMISSED_MESSAGE.into();
                         }
                         // Silent in the banner; the dialog shows it and the next check retries.
@@ -731,7 +741,9 @@ impl Workbench {
             let install_running = install_state
                 .as_ref()
                 .is_some_and(InstallState::in_progress);
-            let can_install = mac && state.install_bundle.is_some() && state.notice.is_some();
+            // A dismissed notice only hides the banner; the dialog still has its release.
+            let release = state.notice.as_ref().or(state.dismissed_notice.as_ref());
+            let can_install = mac && state.install_bundle.is_some() && release.is_some();
             let offer_install = can_install
                 && !install_running
                 && !matches!(install_state, Some(InstallState::Restart));
@@ -739,7 +751,7 @@ impl Workbench {
             let copy_command = state
                 .notice_feed
                 .as_ref()
-                .zip(state.notice.as_ref())
+                .zip(release)
                 .filter(|_| {
                     state.install_bundle.is_none()
                         || matches!(install_state, Some(InstallState::Failed(_)))

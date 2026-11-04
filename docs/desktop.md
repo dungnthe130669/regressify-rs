@@ -279,7 +279,12 @@ that shows the install command (`curl -fsSL https://<update-origin>/install.sh |
 host taken from the build's update origin) with a **Copy command** button,
 **View release** (opens
 `https://github.com/precise-alloy/regressify-rs/releases/tag/<tag>`), and a dismiss
-button. Dismissing hides that version and older ones; a newer release shows again.
+button. Dismissing hides the banner for that version and older ones; a newer release
+shows again, and the Software updates dialog keeps offering that release's controls.
+The command installs into `/Applications` (or `~/Applications` when that is not
+writable) unless `REGRESSIFY_APP_DIR` is set, so for an app installed elsewhere
+prefix it with `REGRESSIFY_APP_DIR=<folder containing Regressify.app>` or open the
+newly installed copy afterwards.
 Only `version` and `tag` are read (the tag must match the version); installer and
 archive fields are ignored. Failed or malformed checks are silent in the UI, are
 written to diagnostics, and retry after the usual eight hours. The check timestamp,
@@ -308,20 +313,24 @@ folder) only the copy-command flow is offered. Clicking it, and nothing earlier:
    `regressify-desktop`, `LICENSE`, `LICENSING.md`; no paths, absolute names, or symlinks);
 4. copies the installed bundle beside it (`.Regressify.app.update-stage-<random>`),
    replaces only `Contents/MacOS/regressify-desktop`, stamps the new version into
-   `Info.plist`, ad-hoc signs with `/usr/bin/codesign --force --deep --sign -`
+   `Info.plist` (a plist that cannot be stamped and read back aborts the install before
+   anything is swapped), ad-hoc signs with `/usr/bin/codesign --force --deep --sign -`
    and checks `codesign --verify`;
 5. exchanges the staged and installed apps with one atomic `renamex_np(RENAME_SWAP)`, so the
    app path always holds a whole app, then verifies again and exchanges back on failure. The
    old app becomes `Regressify.app.previous` (the single backup; older backups are removed).
    If the volume cannot exchange, the install is refused with nothing changed and the copy
-   command stays the way to update. If a bad update cannot be rolled back, the previous app
-   stays in its stage folder, `.Regressify.app.recovery-needed` records where, the Failed
-   message names the folder, and every later install is refused until you restore the app
-   and delete that file;
+   command stays the way to update. Before a bad update is rolled back, `.Regressify.app.recovery-needed`
+   records where the previous app is kept (removed again if the rollback works). If the rollback
+   itself fails, the previous app stays in its stage folder and the Failed message names it. The
+   in-app updater then refuses further installs and never deletes that folder; if the mark file
+   itself could not be written, it still refuses until Regressify is restarted. `install.sh` does
+   not read the mark, so restore the preserved app (and delete the mark file) before running any
+   installer, in-app or terminal;
 6. shows **Restart**. Restart uses the same unsaved-work guards as quitting (including the
    landing-app editor: Save or Discard continues into the restart, Keep editing cancels it),
    then runs `/usr/bin/open -n <app>` and quits; unsaved work is never discarded silently.
-   The relaunched app starts without a workspace; reopen it from Recent workspaces.
+   The relaunched app starts without a workspace (known limitation); reopen it from Recent workspaces.
 
 The banner shows Downloading n%, Verifying, Installing, Restart, or Failed with the
 reason (the install command is offered again after a failure). The same lock directory

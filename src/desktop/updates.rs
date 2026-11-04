@@ -146,8 +146,9 @@ pub enum NoticeOutcome {
     /// The shared eight-hour interval has not elapsed.
     NotDue,
     Current,
-    /// Newer, but the user dismissed this or a later version.
-    Dismissed,
+    /// Newer, but the user dismissed this or a later version. The release is kept so the
+    /// dialog can still offer its install controls.
+    Dismissed(UpdateNotice),
     Available(UpdateNotice),
 }
 
@@ -390,6 +391,13 @@ struct NoticeState {
     available_version: Option<String>,
     #[serde(default)]
     available_tag: Option<String>,
+    /// Request ordering: each network check takes the next `started_seq` before it sends, and
+    /// only a response newer than `applied_seq` may overwrite the saved release, so a slower,
+    /// earlier request cannot replace a newer one. Dismissals are always merged.
+    #[serde(default)]
+    started_seq: u64,
+    #[serde(default)]
+    applied_seq: u64,
 }
 
 /// Whether a dismissal of `dismissed` hides `version`: that version and every older one.
@@ -462,7 +470,7 @@ impl NoticeState {
         match stored {
             None => NoticeOutcome::NotDue,
             Some(notice) if notice.version <= current => NoticeOutcome::Current,
-            Some(notice) if self.dismisses(notice.version) => NoticeOutcome::Dismissed,
+            Some(notice) if self.dismisses(notice.version) => NoticeOutcome::Dismissed(notice),
             Some(notice) => NoticeOutcome::Available(notice),
         }
     }
@@ -998,11 +1006,32 @@ impl UpdateFeed {
         if !due {
             return Ok(snapshot.reconcile(self, current));
         }
+        // Take a ticket before sending; a later request gets a higher one.
+        let ticket = {
+            let _lock = lock_notice_state(cache);
+            let mut state = NoticeState::load(cache).unwrap_or_default();
+            state.started_seq += 1;
+            // Best effort: without the saved ticket only this process's ordering is lost.
+            let _ = state.save(cache);
+            state.started_seq
+        };
         let result = check();
         // Reload under the lock: a dismissal or a peer's check may have landed while the
         // request was pending, and saving the earlier snapshot would overwrite it.
         let _lock = lock_notice_state(cache);
         let mut state = NoticeState::load(cache).unwrap_or_default();
+        if ticket <= state.applied_seq {
+            // Superseded by a newer request that already finished: keep its release and
+            // timestamp (the dismissal in `state` is already current) and report that.
+            return match result {
+                Ok(_) => Ok(match state.reconcile(self, current) {
+                    NoticeOutcome::NotDue => NoticeOutcome::Current,
+                    outcome => outcome,
+                }),
+                Err(error) => Err(error),
+            };
+        }
+        state.applied_seq = ticket;
         state.last_check_at = Some(now);
         match &result {
             Ok(NoticeCheck::Current) => state.store_available(None),
@@ -1019,7 +1048,7 @@ impl UpdateFeed {
         Ok(match result? {
             NoticeCheck::Current => NoticeOutcome::Current,
             NoticeCheck::Available(notice) if state.dismisses(notice.version) => {
-                NoticeOutcome::Dismissed
+                NoticeOutcome::Dismissed(notice)
             }
             NoticeCheck::Available(notice) => NoticeOutcome::Available(notice),
         })
@@ -3340,7 +3369,7 @@ mod tests {
         UpdateFeed::dismiss_notice("2.2.2".parse().unwrap(), cache.path()).unwrap();
         assert_eq!(
             run(true, 5_000, available()).unwrap(),
-            NoticeOutcome::Dismissed
+            NoticeOutcome::Dismissed(notice("2.2.2.0"))
         );
         assert_eq!(
             run(true, 5_001, Ok(NoticeCheck::Available(notice("2.3.0.0")))).unwrap(),
@@ -3350,7 +3379,7 @@ mod tests {
         UpdateFeed::dismiss_notice("2.0.0".parse().unwrap(), cache.path()).unwrap();
         assert_eq!(
             run(true, 5_002, available()).unwrap(),
-            NoticeOutcome::Dismissed
+            NoticeOutcome::Dismissed(notice("2.2.2.0"))
         );
         // Installer state files are untouched; a corrupt notice file is not fatal.
         assert!(!cache.path().join("state.json").exists());
@@ -3384,7 +3413,7 @@ mod tests {
         let polled = feed
             .check_notice_with(cache.path(), current(), false, true, 1_010, never)
             .unwrap();
-        assert_eq!(polled, NoticeOutcome::Dismissed);
+        assert_eq!(polled, NoticeOutcome::Dismissed(notice("2.2.2.0")));
         // A saved notice that is no longer newer (the app was upgraded) is Current.
         let upgraded: Version = "2.2.2".parse().unwrap();
         let polled = feed
@@ -3414,7 +3443,7 @@ mod tests {
                 Ok(NoticeCheck::Available(notice("2.2.2.0")))
             })
             .unwrap();
-        assert_eq!(outcome, NoticeOutcome::Dismissed);
+        assert_eq!(outcome, NoticeOutcome::Dismissed(notice("2.2.2.0")));
         let state = NoticeState::load(cache.path()).unwrap();
         assert_eq!(state.dismissed_version.as_deref(), Some("2.2.2.0"));
         assert_eq!(state.last_check_at, Some(1_000));
@@ -3424,7 +3453,36 @@ mod tests {
                 Ok(NoticeCheck::Available(notice("2.2.2.0")))
             })
             .unwrap();
-        assert_eq!(again, NoticeOutcome::Dismissed);
+        assert_eq!(again, NoticeOutcome::Dismissed(notice("2.2.2.0")));
+    }
+
+    #[test]
+    fn a_slower_earlier_check_cannot_overwrite_a_newer_one() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let outcome = feed
+            .check_notice_with(cache.path(), current(), true, true, 1_000, || {
+                // A newer check starts and finishes while this older request is in flight.
+                let newer = feed
+                    .check_notice_with(cache.path(), current(), true, true, 2_000, || {
+                        Ok(NoticeCheck::Available(notice("2.3.0.0")))
+                    })
+                    .unwrap();
+                assert_eq!(newer, NoticeOutcome::Available(notice("2.3.0.0")));
+                // The user dismisses the newer release; the late response must keep that too.
+                UpdateFeed::dismiss_notice("2.1.0".parse().unwrap(), cache.path()).unwrap();
+                Ok(NoticeCheck::Available(notice("2.2.2.0")))
+            })
+            .unwrap();
+        assert_eq!(outcome, NoticeOutcome::Available(notice("2.3.0.0")));
+        let state = NoticeState::load(cache.path()).unwrap();
+        assert_eq!(state.available_version.as_deref(), Some("2.3.0.0"));
+        assert_eq!(
+            state.last_check_at,
+            Some(2_000),
+            "the clock does not move back"
+        );
+        assert_eq!(state.dismissed_version.as_deref(), Some("2.1.0.0"));
     }
 
     #[test]
@@ -3480,7 +3538,10 @@ mod tests {
         let attempt =
             feed.check_notice_attempt(cache.path(), current(), false, false, 1_015, never);
         assert!(!attempt.dispatched);
-        assert_eq!(attempt.outcome.unwrap(), NoticeOutcome::Dismissed);
+        assert_eq!(
+            attempt.outcome.unwrap(),
+            NoticeOutcome::Dismissed(notice("2.2.2.0"))
+        );
         // Allowed by the caller but not yet due on disk: still no request.
         let attempt = feed.check_notice_attempt(cache.path(), current(), false, true, 1_020, never);
         assert!(!attempt.dispatched);
