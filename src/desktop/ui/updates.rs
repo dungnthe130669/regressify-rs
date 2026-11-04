@@ -1,8 +1,8 @@
 use super::*;
 use crate::desktop::updates::{
-    CURRENT_VERSION, DownloadControl, NoticeOutcome, PreparedUpdate, Release, RetryScheduled,
-    SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateLease,
-    UpdateNotice, UpdatePlatform,
+    CHECK_INTERVAL, CURRENT_VERSION, DownloadControl, NoticeOutcome, PreparedUpdate, Release,
+    RetryScheduled, SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck,
+    UpdateFeed, UpdateLease, UpdateNotice, UpdatePlatform, Version, dismissal_hides,
 };
 use futures::FutureExt;
 
@@ -26,6 +26,11 @@ pub(super) struct UpdatePanel {
     notice_checking: bool,
     notice_startup_pending: bool,
     notice_task: Option<Task<()>>,
+    /// Newest version dismissed in this window, recorded synchronously so a check already in
+    /// flight (which loaded its state before the dismissal) cannot restore the banner.
+    notice_dismissed: Option<Version>,
+    /// In-memory throttle: holds the interval even when `notice.json` cannot be saved.
+    notice_attempted_at: Option<std::time::Instant>,
 }
 
 impl Default for UpdatePanel {
@@ -59,6 +64,8 @@ impl Default for UpdatePanel {
             notice_checking: false,
             notice_startup_pending: true,
             notice_task: None,
+            notice_dismissed: None,
+            notice_attempted_at: None,
         }
     }
 }
@@ -364,13 +371,10 @@ impl Workbench {
         )
     }
 
-    fn dismiss_update_notice(
-        &mut self,
-        version: crate::desktop::updates::Version,
-        cx: &mut Context<Self>,
-    ) {
+    fn dismiss_update_notice(&mut self, version: Version, cx: &mut Context<Self>) {
         self.updates.update(cx, |state, cx| {
             state.notice = None;
+            state.notice_dismissed = state.notice_dismissed.max(Some(version));
             cx.notify();
         });
         // Persist off the UI thread; a failed write only means the notice may return next check.
@@ -404,6 +408,10 @@ impl Workbench {
             return;
         };
         let startup = state.notice_startup_pending;
+        let network_allowed = startup
+            || state
+                .notice_attempted_at
+                .is_none_or(|at| at.elapsed() >= CHECK_INTERVAL);
         let Some(cache) = self.update_cache_dir() else {
             return;
         };
@@ -413,15 +421,24 @@ impl Workbench {
         });
         let task = cx.background_executor().spawn(async move {
             let current = CURRENT_VERSION.parse()?;
-            feed.check_notice_shared(current, &cache, startup)
+            feed.check_notice_shared(current, &cache, startup, network_allowed)
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
             let _ = view.update_in(cx, |this, _, cx| {
                 this.updates.update(cx, |state, cx| {
                     state.notice_checking = false;
+                    if !matches!(result, Ok(NoticeOutcome::NotDue)) {
+                        state.notice_attempted_at = Some(std::time::Instant::now());
+                    }
                     match result {
                         Ok(NoticeOutcome::NotDue) => {}
+                        // A stale result must not restore a banner dismissed meanwhile.
+                        Ok(NoticeOutcome::Available(notice))
+                            if dismissal_hides(state.notice_dismissed, notice.version) =>
+                        {
+                            state.notice = None
+                        }
                         Ok(NoticeOutcome::Available(notice)) => state.notice = Some(notice),
                         Ok(NoticeOutcome::Current | NoticeOutcome::Dismissed) => {
                             state.notice = None
