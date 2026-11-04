@@ -1219,10 +1219,18 @@ impl Workbench {
             let released = workspace
                 .as_ref()
                 .and_then(|_| self.workspace_instance.take());
+            // Unsaved-work guards already passed, so freeze editing and new operations for the
+            // whole handoff: an edit made while `open` waits would be dropped by `cx.quit()`.
+            // Cleared again if the launch fails.
+            self.busy = true;
             self.status = "Restarting...".into();
             cx.notify();
             // `/usr/bin/open` can stall in LaunchServices: wait for it off the UI thread.
             let task = cx.background_executor().spawn(async move {
+                // Release the instance lock and activation listener before `open`: a replacement
+                // that opens the workspace early must find it unowned, not activate this window
+                // and exit (which would leave both instances gone once this one quits).
+                drop(released);
                 // Absolute path, argument vector, no shell; `-n` opens a fresh instance.
                 let mut command = std::process::Command::new("/usr/bin/open");
                 command.arg("-n").arg(&app);
@@ -1234,7 +1242,6 @@ impl Workbench {
                     return (true, None);
                 }
                 // Launch failed: this window keeps running, so reclaim the workspace.
-                drop(released);
                 let reclaimed = match (&workspace, directory) {
                     (Some(root), Ok(directory)) => match DesktopInstance::open(&directory, root) {
                         Ok(OpenInstance::Owned(instance)) => Some(instance),
@@ -1248,6 +1255,9 @@ impl Workbench {
                 let (launched, reclaimed) = task.await;
                 let _ = view.update(cx, |this, cx| {
                     this.updates.update(cx, |state, _| state.restarting = false);
+                    if !launched {
+                        this.busy = false;
+                    }
                     if launched {
                         cx.quit();
                         return;
