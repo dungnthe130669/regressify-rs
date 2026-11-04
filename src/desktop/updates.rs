@@ -143,6 +143,34 @@ struct NoticeState {
     last_check_at: Option<u64>,
     #[serde(default)]
     dismissed_version: Option<String>,
+    /// Last release announced by any instance, so a window whose check is not due still
+    /// learns about it. Revalidated through `parse_notice_manifest` on every read.
+    #[serde(default)]
+    available_version: Option<String>,
+    #[serde(default)]
+    available_tag: Option<String>,
+}
+
+/// Whether a dismissal of `dismissed` hides `version`: that version and every older one.
+pub fn dismissal_hides(dismissed: Option<Version>, version: Version) -> bool {
+    dismissed.is_some_and(|dismissed| version <= dismissed)
+}
+
+/// Serializes read-modify-write cycles on `notice.json` across instances. Atomic file
+/// replacement alone still loses an update when two writers start from the same snapshot.
+/// Held only for the short load/merge/save, never across the network request. `None` when
+/// the lock file cannot be opened; the state cannot be saved then either.
+fn lock_notice_state(cache: &Path) -> Option<fs::File> {
+    fs::create_dir_all(cache).ok()?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(cache.join("notice.lock"))
+        .ok()?;
+    lock.lock().ok()?;
+    Some(lock)
 }
 
 impl NoticeState {
@@ -167,10 +195,35 @@ impl NoticeState {
     }
 
     fn dismisses(&self, version: Version) -> bool {
-        self.dismissed_version
+        dismissal_hides(
+            self.dismissed_version
+                .as_deref()
+                .and_then(|saved| saved.parse::<Version>().ok()),
+            version,
+        )
+    }
+
+    fn store_available(&mut self, notice: Option<&UpdateNotice>) {
+        self.available_version = notice.map(|notice| notice.version.to_string());
+        self.available_tag = notice.map(|notice| notice.tag.clone());
+    }
+
+    /// Outcome implied by what a peer already saved, without any request.
+    fn reconcile(&self, feed: &UpdateFeed, current: Version) -> NoticeOutcome {
+        let stored = self
+            .available_version
             .as_deref()
-            .and_then(|saved| saved.parse::<Version>().ok())
-            .is_some_and(|dismissed| version <= dismissed)
+            .zip(self.available_tag.as_deref())
+            .and_then(|(version, tag)| {
+                feed.parse_notice_manifest(&format!("version={version}\ntag={tag}\n"))
+                    .ok()
+            });
+        match stored {
+            None => NoticeOutcome::NotDue,
+            Some(notice) if notice.version <= current => NoticeOutcome::Current,
+            Some(notice) if self.dismisses(notice.version) => NoticeOutcome::Dismissed,
+            Some(notice) => NoticeOutcome::Available(notice),
+        }
     }
 }
 
@@ -642,37 +695,66 @@ impl UpdateFeed {
 
     /// Scheduled notice check. Startup bypasses only the eight-hour deadline. The timestamp is
     /// refreshed after every attempt, failures included, so a broken feed is retried at the
-    /// normal interval rather than on every poll. No coordinator lock: nothing is downloaded,
-    /// so a duplicate request from a peer instance is harmless.
+    /// normal interval rather than on every poll. When the check is not due (or
+    /// `network_allowed` is false, the caller's in-memory throttle for an unwritable cache)
+    /// the saved notice from a peer is reconciled instead. No coordinator lock: nothing is
+    /// downloaded, so a duplicate request from a peer instance is harmless.
     pub fn check_notice_shared(
         &self,
         current: Version,
         cache: &Path,
         startup: bool,
+        network_allowed: bool,
     ) -> Result<NoticeOutcome> {
-        self.check_notice_with(cache, startup, unix_timestamp(), || {
-            self.check_notice(current)
-        })
+        self.check_notice_with(
+            cache,
+            current,
+            startup,
+            network_allowed,
+            unix_timestamp(),
+            || self.check_notice(current),
+        )
     }
 
     fn check_notice_with(
         &self,
         cache: &Path,
+        current: Version,
         startup: bool,
+        network_allowed: bool,
         now: u64,
         check: impl FnOnce() -> Result<NoticeCheck>,
     ) -> Result<NoticeOutcome> {
-        let mut state = NoticeState::load(cache).unwrap_or_default();
-        let due = startup
-            || state.last_check_at.is_none_or(|checked| {
-                now < checked || now.saturating_sub(checked) >= CHECK_INTERVAL.as_secs()
-            });
+        let snapshot = {
+            let _lock = lock_notice_state(cache);
+            NoticeState::load(cache).unwrap_or_default()
+        };
+        let due = network_allowed
+            && (startup
+                || snapshot.last_check_at.is_none_or(|checked| {
+                    now < checked || now.saturating_sub(checked) >= CHECK_INTERVAL.as_secs()
+                }));
         if !due {
-            return Ok(NoticeOutcome::NotDue);
+            return Ok(snapshot.reconcile(self, current));
         }
         let result = check();
+        // Reload under the lock: a dismissal or a peer's check may have landed while the
+        // request was pending, and saving the earlier snapshot would overwrite it.
+        let _lock = lock_notice_state(cache);
+        let mut state = NoticeState::load(cache).unwrap_or_default();
         state.last_check_at = Some(now);
-        state.save(cache)?;
+        match &result {
+            Ok(NoticeCheck::Current) => state.store_available(None),
+            Ok(NoticeCheck::Available(notice)) => state.store_available(Some(notice)),
+            Err(_) => {}
+        }
+        // The timestamp is only a throttle: a failed save must not hide the check outcome.
+        if let Err(error) = state.save(cache) {
+            crate::diagnostics::startup::warning(
+                crate::diagnostics::record::SafeValue::Desktop,
+                &error,
+            );
+        }
         Ok(match result? {
             NoticeCheck::Current => NoticeOutcome::Current,
             NoticeCheck::Available(notice) if state.dismisses(notice.version) => {
@@ -684,6 +766,7 @@ impl UpdateFeed {
 
     /// Hides this and every older notice; a newer release shows again.
     pub fn dismiss_notice(version: Version, cache: &Path) -> Result<()> {
+        let _lock = lock_notice_state(cache);
         let mut state = NoticeState::load(cache).unwrap_or_default();
         if !state.dismisses(version) {
             state.dismissed_version = Some(version.to_string());
@@ -1899,7 +1982,7 @@ mod tests {
     use super::{
         CheckMode, DownloadControl, DownloadPhase, ManifestFields, NoticeCheck, NoticeOutcome,
         NoticeState, PreparedUpdate, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateNotice,
-        UpdatePlatform, UpdateState, Version, cached_installer, installer_name,
+        UpdatePlatform, UpdateState, Version, cached_installer, dismissal_hides, installer_name,
         installer_redirect_policy, is_allowed_installer_redirect, lock_cache, verify_payload,
     };
     use reqwest::StatusCode;
@@ -2488,6 +2571,10 @@ mod tests {
         UpdateFeed::for_origin(Some("https://regressify.eshn.dev"), UpdatePlatform::MacOs).unwrap()
     }
 
+    fn current() -> Version {
+        "2.0.0".parse().unwrap()
+    }
+
     fn notice(version: &str) -> UpdateNotice {
         let tag = version.rsplit_once('.').map_or(version, |(short, _)| short);
         macos_feed()
@@ -2611,7 +2698,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let feed = macos_feed();
         let run = |startup, now, result: Result<NoticeCheck, ()>| {
-            feed.check_notice_with(cache.path(), startup, now, || {
+            feed.check_notice_with(cache.path(), current(), startup, true, now, || {
                 result.map_err(|()| anyhow::anyhow!("offline"))
             })
         };
@@ -2621,14 +2708,17 @@ mod tests {
             run(false, 1_000, available()).unwrap(),
             NoticeOutcome::Available(notice("2.2.2.0"))
         );
-        // Not due inside eight hours; the feed is not even consulted.
+        // Not due inside eight hours: the feed is not consulted, the saved notice is shown.
         assert_eq!(
             run(false, 1_000 + 3_600, Err(())).unwrap(),
-            NoticeOutcome::NotDue
+            NoticeOutcome::Available(notice("2.2.2.0"))
         );
         // Startup bypasses the deadline; failures are errors but still reschedule.
         assert!(run(true, 2_000, Err(())).is_err());
-        assert_eq!(run(false, 2_001, Err(())).unwrap(), NoticeOutcome::NotDue);
+        assert_eq!(
+            run(false, 2_001, Err(())).unwrap(),
+            NoticeOutcome::Available(notice("2.2.2.0"))
+        );
         // Due again after eight hours, and after a clock rollback.
         let after = 2_000 + super::CHECK_INTERVAL.as_secs();
         assert_eq!(
@@ -2660,6 +2750,109 @@ mod tests {
             run(true, 6_000, available()).unwrap(),
             NoticeOutcome::Available(notice("2.2.2.0"))
         );
+    }
+
+    #[test]
+    fn notice_found_by_one_window_reaches_a_window_that_is_not_due() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let never = || -> Result<NoticeCheck, anyhow::Error> { panic!("peer must not request") };
+        // Window A's due check finds a release and saves it.
+        let found = feed
+            .check_notice_with(cache.path(), current(), true, true, 1_000, || {
+                Ok(NoticeCheck::Available(notice("2.2.2.0")))
+            })
+            .unwrap();
+        assert_eq!(found, NoticeOutcome::Available(notice("2.2.2.0")));
+        // Window B polls inside the shared interval: no request, but it learns the release.
+        let polled = feed
+            .check_notice_with(cache.path(), current(), false, true, 1_005, never)
+            .unwrap();
+        assert_eq!(polled, NoticeOutcome::Available(notice("2.2.2.0")));
+        // Window A dismisses; window B's next poll hides it.
+        UpdateFeed::dismiss_notice("2.2.2".parse().unwrap(), cache.path()).unwrap();
+        let polled = feed
+            .check_notice_with(cache.path(), current(), false, true, 1_010, never)
+            .unwrap();
+        assert_eq!(polled, NoticeOutcome::Dismissed);
+        // A saved notice that is no longer newer (the app was upgraded) is Current.
+        let upgraded: Version = "2.2.2".parse().unwrap();
+        let polled = feed
+            .check_notice_with(cache.path(), upgraded, false, true, 1_015, never)
+            .unwrap();
+        assert_eq!(polled, NoticeOutcome::Current);
+        // A tampered saved notice is revalidated and ignored.
+        fs::write(
+            cache.path().join("notice.json"),
+            br#"{"last_check_at":1000,"available_version":"2.2.2.0","available_tag":"v9.9.9"}"#,
+        )
+        .unwrap();
+        let polled = feed
+            .check_notice_with(cache.path(), current(), false, true, 1_020, never)
+            .unwrap();
+        assert_eq!(polled, NoticeOutcome::NotDue);
+    }
+
+    #[test]
+    fn dismissal_during_a_pending_check_is_not_overwritten() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let outcome = feed
+            .check_notice_with(cache.path(), current(), true, true, 1_000, || {
+                // The user dismisses in another window while the request is in flight.
+                UpdateFeed::dismiss_notice("2.2.2".parse().unwrap(), cache.path()).unwrap();
+                Ok(NoticeCheck::Available(notice("2.2.2.0")))
+            })
+            .unwrap();
+        assert_eq!(outcome, NoticeOutcome::Dismissed);
+        let state = NoticeState::load(cache.path()).unwrap();
+        assert_eq!(state.dismissed_version.as_deref(), Some("2.2.2.0"));
+        assert_eq!(state.last_check_at, Some(1_000));
+        // The dismissal survives the next check as well.
+        let again = feed
+            .check_notice_with(cache.path(), current(), true, true, 2_000, || {
+                Ok(NoticeCheck::Available(notice("2.2.2.0")))
+            })
+            .unwrap();
+        assert_eq!(again, NoticeOutcome::Dismissed);
+    }
+
+    #[test]
+    fn failed_state_save_still_reports_the_check_and_the_throttle_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        // A regular file where the cache directory should be: nothing can be saved.
+        let cache = dir.path().join("updates");
+        fs::write(&cache, b"not a directory").unwrap();
+        let feed = macos_feed();
+        let outcome = feed
+            .check_notice_with(&cache, current(), true, true, 1_000, || {
+                Ok(NoticeCheck::Available(notice("2.2.2.0")))
+            })
+            .unwrap();
+        assert_eq!(outcome, NoticeOutcome::Available(notice("2.2.2.0")));
+        // A failing check still surfaces its own error rather than the save error.
+        let error = feed
+            .check_notice_with(&cache, current(), true, true, 1_001, || {
+                Err(anyhow::anyhow!("offline"))
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "offline");
+        // Nothing was persisted, so the caller's in-memory throttle must stop the request.
+        let held = feed
+            .check_notice_with(&cache, current(), false, false, 1_002, || {
+                panic!("throttled caller must not request")
+            })
+            .unwrap();
+        assert_eq!(held, NoticeOutcome::NotDue);
+    }
+
+    #[test]
+    fn dismissal_rule_hides_that_version_and_older() {
+        let version = |text: &str| text.parse::<Version>().unwrap();
+        assert!(!dismissal_hides(None, version("2.2.2")));
+        assert!(dismissal_hides(Some(version("2.2.2")), version("2.2.2")));
+        assert!(dismissal_hides(Some(version("2.2.2")), version("2.0.0")));
+        assert!(!dismissal_hides(Some(version("2.2.2")), version("2.3.0")));
     }
 
     #[test]
