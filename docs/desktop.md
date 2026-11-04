@@ -196,6 +196,22 @@ use. An outer process lock covers the entire check/preparation cycle, in additio
 to the existing lock around cache writes. Idle windows keep their ready banners
 visible during automatic polls and continue to check for newer releases.
 
+### macOS update notice (notify only)
+
+Official macOS builds (Intel and Apple silicon) check the same release feed at
+startup and then every eight hours, but never download or install anything. When
+the feed's `version` is newer, a banner reads "Regressify <version> is available"
+with **Copy install command** (`curl -fsSL https://<update-origin>/install.sh | sh`,
+host taken from the build's update origin), **View release** (opens
+`https://github.com/precise-alloy/regressify-rs/releases/tag/<tag>`), and a dismiss
+button. Dismissing hides that version and older ones; a newer release shows again.
+Only `version` and `tag` are read (the tag must match the version); installer and
+archive fields are ignored. Failed or malformed checks are silent in the UI, are
+written to diagnostics, and retry after the usual eight hours. The check timestamp
+and dismissal live in `updates/notice.json`, separate from the Windows installer
+state. Linux builds have no update check. macOS behavior is unverified on real
+hardware.
+
 If SHA-256 verification fails, the invalid payload is discarded and downloaded
 again, with at most three retries after the initial attempt (four attempts total).
 Retries use exponential backoff: wait 2 hours after the first failure, 4 hours after

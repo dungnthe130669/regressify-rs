@@ -21,6 +21,8 @@ description: 'Use when changing desktop update feeds, manifest/version validatio
 1. Poll shared state every five seconds off the UI thread while windows stay open. Keep the startup check pending while a peer owns the updater; consume it once an attempt completes, including failed checks. Reuse and verify the cached installer in each instance before showing its banner; preserve ready banners during idle polls and keep checking for newer releases. Stop the watcher when its window closes.
 1. Preserve explicit pause globally with a deferred preparation deadline, but let owner shutdown hand partial work to a peer. Keep checksum backoff separate. Startup checks bypass only the feed deadline, never pause or checksum retry limits; only manual checks reset those limits after acquiring ownership. Clear expired local retry timers when a peer owns the cycle to avoid spinning. Mixed old builds that do not use the coordinator cannot provide shared-check guarantees.
 
+1. macOS is notify-only: `UpdateFeed::for_origin` takes an injected `UpdatePlatform`, and `parse_notice_manifest` validates only `version` and the matching `tag`. Never route macOS through `Release`, `PreparedUpdate`, or the lease/cache flow. State is `updates/notice.json` only; the notice banner lives in [UpdatePanel](../../../src/desktop/ui/updates.rs). Windows parsing must stay unchanged.
+
 ## Checks
 
 ```sh
