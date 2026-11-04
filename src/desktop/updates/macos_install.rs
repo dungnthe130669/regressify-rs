@@ -387,11 +387,51 @@ fn remove_own(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Rewrites the `<string>` after `CFBundleVersion` and `CFBundleShortVersionString` to `version`, as
+/// `install.sh` writes them, so the updated app reports what it is. Text-level and best effort: an
+/// invalid version, a missing key, or anything that is not recognisably a plist leaves the file
+/// untouched, and no other byte changes.
+fn stamp_version(plist: &Path, version: &str) {
+    if version.is_empty()
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(plist) else {
+        return;
+    };
+    let Some(text) = replace_plist_string(&text, "CFBundleVersion", version)
+        .and_then(|text| replace_plist_string(&text, "CFBundleShortVersionString", version))
+    else {
+        return;
+    };
+    // Rewrite in place: same inode, so permissions are kept.
+    let _ = fs::write(plist, text);
+}
+
+/// Replaces the text of the `<string>` that directly follows `<key>{key}</key>`; `None` if absent.
+fn replace_plist_string(text: &str, key: &str, value: &str) -> Option<String> {
+    let marker = format!("<key>{key}</key>");
+    let after_key = text.find(&marker)? + marker.len();
+    let rest = &text[after_key..];
+    let open = rest.find("<string>")?;
+    if !rest[..open].trim().is_empty() {
+        return None;
+    }
+    let start = after_key + open + "<string>".len();
+    let end = start + text[start..].find("</string>")?;
+    Some(format!("{}{value}{}", &text[..start], &text[end..]))
+}
+
 /// Builds the replacement bundle in a staging directory beside `bundle` (same volume, so the
-/// later rename is atomic): a copy of the installed bundle with only the binary replaced.
+/// later rename is atomic): a copy of the installed bundle with the binary replaced and the
+/// Info.plist versions stamped to `version`.
 pub fn stage_bundle(
     bundle: &Path,
     new_binary: &Path,
+    version: &str,
     sign: &dyn Fn(&Path) -> Result<()>,
     verify: &dyn Fn(&Path) -> Result<()>,
 ) -> Result<PathBuf> {
@@ -417,6 +457,8 @@ pub fn stage_bundle(
         let incoming = stage.join("Contents").join("MacOS").join(".incoming");
         fs::copy(new_binary, &incoming)?;
         fs::rename(&incoming, &target)?;
+        // Before signing, so the signature covers the new version.
+        stamp_version(&stage.join("Contents").join("Info.plist"), version);
         sign(&stage).context("Cannot sign the updated app")?;
         verify(&stage).context("The updated app failed signature verification")?;
         Ok(())
@@ -558,6 +600,7 @@ pub fn install(
     cache: &Path,
     url: &str,
     meta: &ArchiveMeta,
+    version: &str,
     deps: &Deps,
     progress: &mut dyn FnMut(Phase),
 ) -> Result<()> {
@@ -588,7 +631,7 @@ pub fn install(
     fs::remove_file(&binary_path)?;
     extract_binary(archive.path(), &binary_path)?;
     progress(Phase::Installing);
-    let staged = stage_bundle(bundle, &binary_path, deps.sign, deps.verify);
+    let staged = stage_bundle(bundle, &binary_path, version, deps.sign, deps.verify);
     let _ = fs::remove_file(&binary_path);
     let staged = staged?;
     if let Err(error) = swap_bundle(bundle, &staged, deps.ops, deps.verify) {
@@ -934,7 +977,7 @@ mod tests {
             assert_eq!(binary_of(path), b"new");
             Ok(())
         };
-        let staged = stage_bundle(&app, &new_binary, &sign, &ok_step).unwrap();
+        let staged = stage_bundle(&app, &new_binary, "2.2.2.0", &sign, &ok_step).unwrap();
         assert_eq!(staged.parent(), app.parent(), "same volume as the app");
         assert_eq!(*signed.borrow(), vec![staged.clone()]);
         assert_eq!(
@@ -949,6 +992,106 @@ mod tests {
         assert_eq!(binary_of(&app), b"old", "the installed app is untouched");
     }
 
+    const OLD_PLIST: &str = "<?xml version=\"1.0\"?>\n<plist>\n<dict>\n  <key>CFBundleName</key>\n  <string>Regressify</string>\n  <key>CFBundleVersion</key>\n  <string>2.1.0.0</string>\n  <key>CFBundleShortVersionString</key>\n  <string>2.1.0.0</string>\n  <key>NSHighResolutionCapable</key>\n  <true/>\n</dict>\n</plist>\n";
+
+    fn stage_with_plist(plist: &[u8], version: &str) -> (tempfile::TempDir, PathBuf, Vec<u8>) {
+        let dir = tempfile::tempdir().unwrap();
+        let app = fake_app(dir.path());
+        fs::write(app.join("Contents/Info.plist"), plist).unwrap();
+        let new_binary = dir.path().join("new");
+        fs::write(&new_binary, b"new").unwrap();
+        let staged = stage_bundle(&app, &new_binary, version, &ok_step, &ok_step).unwrap();
+        let out = fs::read(staged.join("Contents/Info.plist")).unwrap();
+        (dir, staged, out)
+    }
+
+    #[test]
+    fn staging_stamps_both_versions_and_touches_nothing_else() {
+        let (_dir, _staged, out) = stage_with_plist(OLD_PLIST.as_bytes(), "2.2.2.0");
+        let expected = OLD_PLIST.replace("2.1.0.0", "2.2.2.0");
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
+    }
+
+    #[test]
+    fn the_plist_is_stamped_before_signing_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let app = fake_app(dir.path());
+        let plist = app.join("Contents/Info.plist");
+        fs::write(&plist, OLD_PLIST).unwrap();
+        fs::set_permissions(&plist, fs::Permissions::from_mode(0o640)).unwrap();
+        let new_binary = dir.path().join("new");
+        fs::write(&new_binary, b"new").unwrap();
+        let sign = |path: &Path| {
+            let text = fs::read_to_string(path.join("Contents/Info.plist")).unwrap();
+            assert!(text.contains("<string>2.2.2.0</string>") && !text.contains("2.1.0.0"));
+            Ok(())
+        };
+        let staged = stage_bundle(&app, &new_binary, "2.2.2.0", &sign, &ok_step).unwrap();
+        let mode = fs::metadata(staged.join("Contents/Info.plist"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o640);
+    }
+
+    #[test]
+    fn a_plist_missing_a_key_is_left_unchanged() {
+        let only_one = OLD_PLIST.replace(
+            "  <key>CFBundleShortVersionString</key>\n  <string>2.1.0.0</string>\n",
+            "",
+        );
+        let (_dir, _staged, out) = stage_with_plist(only_one.as_bytes(), "2.2.2.0");
+        assert_eq!(String::from_utf8(out).unwrap(), only_one);
+    }
+
+    #[test]
+    fn an_unrecognisable_plist_is_left_alone_and_the_install_still_succeeds() {
+        let (_dir, _staged, out) = stage_with_plist(b"plist", "2.2.2.0");
+        assert_eq!(out, b"plist");
+        let (_dir, _staged, out) = stage_with_plist(&[0xff, 0xfe, 0x00], "2.2.2.0");
+        assert_eq!(out, [0xff, 0xfe, 0x00]);
+    }
+
+    #[test]
+    fn a_hostile_version_is_never_written_into_the_plist() {
+        for bad in [
+            "",
+            "2.2</string><key>x</key>",
+            "2.2.2.0 ",
+            "v2.2",
+            "<a>",
+            "2,2",
+        ] {
+            let (_dir, _staged, out) = stage_with_plist(OLD_PLIST.as_bytes(), bad);
+            assert_eq!(String::from_utf8(out).unwrap(), OLD_PLIST, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn install_stamps_the_version_it_was_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = fake_app(dir.path());
+        fs::write(app.join("Contents/Info.plist"), OLD_PLIST).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let bytes = zip_bytes(&[(BINARY_NAME, b"new-binary")]);
+        let meta = meta_for(&bytes);
+        let open =
+            |_: &str| -> Result<Box<dyn Read>> { Ok(Box::new(io::Cursor::new(bytes.clone()))) };
+        install(
+            &app,
+            cache.path(),
+            "https://example.test/a.zip",
+            &meta,
+            "2.3.4.0",
+            &deps_for(&open, &RealOps),
+            &mut |_| {},
+        )
+        .unwrap();
+        let text = fs::read_to_string(app.join("Contents/Info.plist")).unwrap();
+        assert_eq!(text, OLD_PLIST.replace("2.1.0.0", "2.3.4.0"));
+    }
+
     #[test]
     fn staging_failures_clean_up_and_leave_the_app_alone() {
         let dir = tempfile::tempdir().unwrap();
@@ -956,15 +1099,24 @@ mod tests {
         let new_binary = dir.path().join("new");
         fs::write(&new_binary, b"new").unwrap();
         let fail = |_: &Path| -> Result<()> { bail!("boom") };
-        assert!(stage_bundle(&app, &new_binary, &fail, &ok_step).is_err());
-        assert!(stage_bundle(&app, &new_binary, &ok_step, &fail).is_err());
-        assert!(stage_bundle(&app, &dir.path().join("absent"), &ok_step, &ok_step).is_err());
+        assert!(stage_bundle(&app, &new_binary, "2.2.2.0", &fail, &ok_step).is_err());
+        assert!(stage_bundle(&app, &new_binary, "2.2.2.0", &ok_step, &fail).is_err());
+        assert!(
+            stage_bundle(
+                &app,
+                &dir.path().join("absent"),
+                "2.2.2.0",
+                &ok_step,
+                &ok_step
+            )
+            .is_err()
+        );
         assert!(stages_in(dir.path()).is_empty());
         assert_eq!(binary_of(&app), b"old");
         // A stage left by another process is never touched by a new install.
         let foreign = dir.path().join(format!("{STAGE_PREFIX}foreign"));
         fs::create_dir_all(foreign.join("junk")).unwrap();
-        let staged = stage_bundle(&app, &new_binary, &ok_step, &ok_step).unwrap();
+        let staged = stage_bundle(&app, &new_binary, "2.2.2.0", &ok_step, &ok_step).unwrap();
         assert!(foreign.join("junk").exists());
         assert_ne!(staged, foreign);
         // A bundle with an unexpected layout or a link inside is refused.
@@ -972,11 +1124,11 @@ mod tests {
         fs::create_dir_all(&odd).unwrap();
         let odd = odd.join(APP_NAME);
         fs::create_dir_all(&odd).unwrap();
-        assert!(stage_bundle(&odd, &new_binary, &ok_step, &ok_step).is_err());
+        assert!(stage_bundle(&odd, &new_binary, "2.2.2.0", &ok_step, &ok_step).is_err());
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink("/etc/hosts", app.join("Contents/link")).unwrap();
-            assert!(stage_bundle(&app, &new_binary, &ok_step, &ok_step).is_err());
+            assert!(stage_bundle(&app, &new_binary, "2.2.2.0", &ok_step, &ok_step).is_err());
         }
     }
 
@@ -1259,12 +1411,12 @@ mod tests {
         fs::write(&new_binary, b"new").unwrap();
         // A stages and is "signing" when B (another cache, same bundle) is stopped by the lock.
         let a = InstallLock::acquire(&app).unwrap();
-        let staged_a = stage_bundle(&app, &new_binary, &ok_step, &ok_step).unwrap();
+        let staged_a = stage_bundle(&app, &new_binary, "2.2.2.0", &ok_step, &ok_step).unwrap();
         assert!(InstallLock::acquire(&app).is_err());
         assert!(staged_a.exists());
         // Even a stage made without the lock gets its own name, and B failing removes only B's.
         let fail = |_: &Path| -> Result<()> { bail!("boom") };
-        assert!(stage_bundle(&app, &new_binary, &ok_step, &fail).is_err());
+        assert!(stage_bundle(&app, &new_binary, "2.2.2.0", &ok_step, &fail).is_err());
         assert_eq!(
             binary_of(&staged_a),
             b"new",
@@ -1275,7 +1427,7 @@ mod tests {
         drop(a);
         // B can now proceed from the fresh state.
         let b = InstallLock::acquire(&app).unwrap();
-        let staged_b = stage_bundle(&app, &new_binary, &ok_step, &ok_step).unwrap();
+        let staged_b = stage_bundle(&app, &new_binary, "2.2.2.0", &ok_step, &ok_step).unwrap();
         assert_ne!(staged_a, staged_b);
         drop(b);
     }
@@ -1321,6 +1473,7 @@ mod tests {
             cache.path(),
             "https://example.test/a.zip",
             &meta,
+            "2.2.2.0",
             &deps_for(&open, &RealOps),
             &mut |phase| phases.push(phase),
         )
@@ -1355,6 +1508,7 @@ mod tests {
                 cache.path(),
                 url,
                 meta,
+                "2.2.2.0",
                 &deps_for(&open, &RealOps),
                 &mut |_| {},
             );
@@ -1393,12 +1547,34 @@ mod tests {
             verify: &ok_step,
             ops: &RealOps,
         };
-        assert!(install(&app, cache.path(), https, &good, &deps, &mut |_| {}).is_err());
+        assert!(
+            install(
+                &app,
+                cache.path(),
+                https,
+                &good,
+                "2.2.2.0",
+                &deps,
+                &mut |_| {}
+            )
+            .is_err()
+        );
         assert_eq!(binary_of(&app), b"old");
         assert!(stages_in(dir.path()).is_empty());
         // Open failure (offline) changes nothing either.
         let offline = |_: &str| -> Result<Box<dyn Read>> { bail!("offline") };
         let deps = deps_for(&offline, &RealOps);
-        assert!(install(&app, cache.path(), https, &good, &deps, &mut |_| {}).is_err());
+        assert!(
+            install(
+                &app,
+                cache.path(),
+                https,
+                &good,
+                "2.2.2.0",
+                &deps,
+                &mut |_| {}
+            )
+            .is_err()
+        );
     }
 }

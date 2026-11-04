@@ -245,13 +245,23 @@ pub fn perform_install(
     handle: &InstallHandle,
 ) -> Result<()> {
     use macos_install::Phase;
-    let result = macos_install::install(bundle, cache, &plan.url, &plan.meta, deps, &mut |phase| {
-        handle.set(match phase {
-            Phase::Downloading { received, total } => InstallState::Downloading { received, total },
-            Phase::Verifying => InstallState::Verifying,
-            Phase::Installing => InstallState::Installing,
-        })
-    });
+    let result = macos_install::install(
+        bundle,
+        cache,
+        &plan.url,
+        &plan.meta,
+        &plan.version.to_string(),
+        deps,
+        &mut |phase| {
+            handle.set(match phase {
+                Phase::Downloading { received, total } => {
+                    InstallState::Downloading { received, total }
+                }
+                Phase::Verifying => InstallState::Verifying,
+                Phase::Installing => InstallState::Installing,
+            })
+        },
+    );
     match &result {
         Ok(()) => handle.set(InstallState::Restart),
         Err(error) => handle.set(InstallState::Failed(failure_reason(error))),
