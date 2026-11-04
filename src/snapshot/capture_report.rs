@@ -17,6 +17,7 @@ use super::site::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum GridThumbnailMode {
+    #[cfg_attr(not(test), allow(dead_code))]
     None,
     TopCrop,
     DiffCrop,
