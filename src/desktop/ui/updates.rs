@@ -574,8 +574,27 @@ impl Workbench {
             cx.notify();
             return;
         }
+        // Same landing-editor guard as native close; after save/discard it quits, and the
+        // user relaunches the already-installed app.
+        if self.guard_landing_close(window, cx) {
+            return;
+        }
         window.close_dialog(cx);
         self.guard(files::Pending::Update, window, cx);
+    }
+
+    /// True while a macOS install owns the app bundle; quitting then could kill it mid-swap.
+    pub(super) fn install_blocks_quit(&mut self, cx: &mut Context<Self>) -> bool {
+        let running = self
+            .updates
+            .read(cx)
+            .install_state()
+            .is_some_and(|state| state.in_progress());
+        if running {
+            self.status = "An update is installing; close again when it finishes".into();
+            cx.notify();
+        }
+        running
     }
 
     fn update_cache_dir(&self) -> Option<std::path::PathBuf> {
@@ -1142,6 +1161,9 @@ impl Workbench {
     }
 
     pub(super) fn quit_or_install(&mut self, cx: &mut Context<Self>) {
+        if self.install_blocks_quit(cx) {
+            return;
+        }
         // macOS: the new app is already in place; relaunch it, then quit this instance.
         if self.updates.read(cx).install_on_close
             && let Some(app) = self.updates.read(cx).mac_restart_app()

@@ -3346,7 +3346,9 @@ pub fn launch(instance: Option<DesktopInstance>) {
                             let weak = view.downgrade();
                             window.on_window_should_close(cx, move |window, cx| {
                                 weak.update(cx, |this, cx| {
-                                    if this.busy {
+                                    if this.install_blocks_quit(cx) {
+                                        false
+                                    } else if this.busy {
                                         if this.git.read(cx).active() {
                                             this.git
                                                 .update(cx, |panel, cx| panel.cancel_operation(cx));
