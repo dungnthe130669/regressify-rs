@@ -13,6 +13,8 @@ use reqwest::{StatusCode, Url, blocking::Client, redirect::Policy};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod macos_install;
+
 pub const CURRENT_VERSION: &str = match option_env!("REGRESSIFY_DESKTOP_VERSION") {
     Some(version) => version,
     None => env!("CARGO_PKG_VERSION"),
@@ -68,6 +70,18 @@ impl fmt::Display for Version {
             "{}.{}.{}.{}",
             self.0[0], self.0[1], self.0[2], self.0[3]
         )
+    }
+}
+
+impl Version {
+    /// Display form for macOS notices: `2.2.2.0` reads as `2.2.2`. Display only; parsing and
+    /// ordering still use all four components.
+    pub fn display_short(&self) -> String {
+        if self.0[3] == 0 {
+            format!("{}.{}.{}", self.0[0], self.0[1], self.0[2])
+        } else {
+            self.to_string()
+        }
     }
 }
 
@@ -144,6 +158,175 @@ pub struct NoticeAttempt {
     /// in-memory throttle only on this, never on cached or not-due polls.
     pub dispatched: bool,
     pub outcome: Result<NoticeOutcome>,
+}
+
+/// What "Update now" will download: built from a fresh manifest, never stored.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstallPlan {
+    pub version: Version,
+    url: String,
+    meta: macos_install::ArchiveMeta,
+}
+
+/// Progress of an in-app macOS install, shared between the worker thread and the UI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstallState {
+    Downloading {
+        received: u64,
+        total: u64,
+    },
+    Verifying,
+    Installing,
+    /// The new app is in place; relaunching is the only step left.
+    Restart,
+    Failed(String),
+}
+
+impl InstallState {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Downloading { received, total } => {
+                format!(
+                    "Downloading {}%",
+                    (received * 100).checked_div(*total).unwrap_or(0).min(100)
+                )
+            }
+            Self::Verifying => "Verifying".into(),
+            Self::Installing => "Installing".into(),
+            Self::Restart => "Installed. Restart Regressify to finish updating.".into(),
+            Self::Failed(reason) => format!("Failed: {reason}. The current app was not changed."),
+        }
+    }
+
+    pub fn in_progress(&self) -> bool {
+        matches!(
+            self,
+            Self::Downloading { .. } | Self::Verifying | Self::Installing
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstallHandle(std::sync::Arc<std::sync::Mutex<InstallState>>);
+
+impl InstallHandle {
+    pub fn new() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            InstallState::Downloading {
+                received: 0,
+                total: 1,
+            },
+        )))
+    }
+
+    pub fn get(&self) -> InstallState {
+        self.0
+            .lock()
+            .map_or_else(|error| error.into_inner().clone(), |state| state.clone())
+    }
+
+    fn set(&self, state: InstallState) {
+        *self.0.lock().unwrap_or_else(|error| error.into_inner()) = state;
+    }
+}
+
+impl Default for InstallHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Runs the install and publishes progress; the final state is always `Restart` or `Failed`.
+pub fn perform_install(
+    bundle: &Path,
+    cache: &Path,
+    plan: &InstallPlan,
+    deps: &macos_install::Deps,
+    handle: &InstallHandle,
+) -> Result<()> {
+    use macos_install::Phase;
+    let result = macos_install::install(bundle, cache, &plan.url, &plan.meta, deps, &mut |phase| {
+        handle.set(match phase {
+            Phase::Downloading { received, total } => InstallState::Downloading { received, total },
+            Phase::Verifying => InstallState::Verifying,
+            Phase::Installing => InstallState::Installing,
+        })
+    });
+    match &result {
+        Ok(()) => handle.set(InstallState::Restart),
+        Err(error) => handle.set(InstallState::Failed(format!("{error:#}"))),
+    }
+    result
+}
+
+/// The whole click-to-installed flow with the real downloader and `codesign`. Blocking:
+/// call it off the UI thread. Holds the install lock so two windows cannot race.
+pub fn install_macos_update(
+    feed: &UpdateFeed,
+    bundle: &Path,
+    cache: &Path,
+    current: Version,
+    handle: &InstallHandle,
+) -> Result<()> {
+    let run = || -> Result<()> {
+        let _lock = macos_install::InstallLock::acquire(cache)?;
+        let plan = feed.macos_install_plan(current)?;
+        let deps = macos_install::Deps {
+            open: &open_archive,
+            sign: &|path| run_codesign(&["--force", "--deep", "--sign", "-"], path),
+            verify: &|path| run_codesign(&["--verify", "--deep", "--strict"], path),
+            ops: &macos_install::RealOps,
+        };
+        perform_install(bundle, cache, &plan, &deps, handle)
+    };
+    let result = run();
+    if let Err(error) = &result {
+        // `perform_install` already published its own failure; this covers earlier steps.
+        if !matches!(handle.get(), InstallState::Failed(_)) {
+            handle.set(InstallState::Failed(format!("{error:#}")));
+        }
+    }
+    result
+}
+
+/// HTTPS-only archive download. Redirects follow the same GitHub-only allowlist as the
+/// Windows installer; size and hash are enforced by the caller on the received bytes.
+fn open_archive(url: &str) -> Result<Box<dyn Read>> {
+    let response = Client::builder()
+        .https_only(true)
+        .redirect(installer_redirect_policy())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(DOWNLOAD_TIMEOUT)
+        .user_agent(concat!("Regressify-Desktop/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("Cannot create the update client")?
+        .get(url)
+        .send()
+        .context("Cannot reach the update download")?;
+    ensure!(
+        response.status().is_success(),
+        "Update download returned HTTP {}",
+        response.status()
+    );
+    Ok(Box::new(response))
+}
+
+/// Absolute `codesign` path and an argument vector: no shell, no PATH lookup.
+fn run_codesign(args: &[&str], path: &Path) -> Result<()> {
+    let output = std::process::Command::new("/usr/bin/codesign")
+        .args(args)
+        .arg(path)
+        .output()
+        .context("Cannot run /usr/bin/codesign")?;
+    ensure!(
+        output.status.success(),
+        "codesign failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+            .chars()
+            .take(300)
+            .collect::<String>()
+    );
+    Ok(())
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -790,6 +973,49 @@ impl UpdateFeed {
                 NoticeOutcome::Dismissed
             }
             NoticeCheck::Available(notice) => NoticeOutcome::Available(notice),
+        })
+    }
+
+    /// Archive download plan for this Mac from a fresh manifest, fetched only after the user
+    /// clicks "Update now". Same host rules as the notice check; no other host is contacted.
+    pub fn macos_install_plan(&self, current: Version) -> Result<InstallPlan> {
+        ensure!(
+            self.platform == UpdatePlatform::MacOs,
+            "Update install is only available on macOS"
+        );
+        let response = client(Duration::from_secs(30))?
+            .get(self.manifest_url.clone())
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
+            .send()
+            .context("Cannot reach the update service")?;
+        ensure!(
+            response.status().is_success(),
+            "Update service returned HTTP {}",
+            response.status()
+        );
+        let mut text = String::new();
+        response
+            .take(MAX_MANIFEST_SIZE + 1)
+            .read_to_string(&mut text)?;
+        self.parse_install_plan(&text, current, macos_install::current_archive_name())
+    }
+
+    /// Pure half of `macos_install_plan`: the manifest must announce a newer release and list
+    /// the archive for this architecture. The URL is built only from the validated tag.
+    fn parse_install_plan(
+        &self,
+        text: &str,
+        current: Version,
+        archive: Option<&str>,
+    ) -> Result<InstallPlan> {
+        let notice = self.parse_notice_manifest(text)?;
+        ensure!(notice.version > current, "No newer release is available");
+        let archive = archive.context("This Mac's architecture has no desktop build")?;
+        let meta = macos_install::parse_archive_meta(text, archive)?;
+        Ok(InstallPlan {
+            version: notice.version,
+            url: format!("{RELEASE_DOWNLOAD_PREFIX}{}/{archive}", notice.tag),
+            meta,
         })
     }
 
@@ -2609,6 +2835,111 @@ mod tests {
         macos_feed()
             .parse_notice_manifest(&format!("version={version}\ntag=v{tag}\n"))
             .unwrap()
+    }
+
+    #[test]
+    fn display_version_drops_a_zero_fourth_component_only() {
+        let show = |text: &str| text.parse::<Version>().unwrap().display_short();
+        assert_eq!(show("2.2.2.0"), "2.2.2");
+        assert_eq!(show("2.2.2"), "2.2.2");
+        assert_eq!(show("2.2.2.1"), "2.2.2.1");
+        assert_eq!(show("2.0.0.0"), "2.0.0");
+        // Comparison is unchanged.
+        assert!("2.2.2.0".parse::<Version>().unwrap() < "2.2.2.1".parse().unwrap());
+    }
+
+    #[test]
+    fn install_plan_comes_from_the_validated_tag_and_this_archive() {
+        let feed = macos_feed();
+        let arm = Some("regressify-desktop-aarch64-apple-darwin.zip");
+        let plan = feed
+            .parse_install_plan(LIVE_MANIFEST, current(), arm)
+            .unwrap();
+        assert_eq!(plan.version, "2.2.2".parse::<Version>().unwrap());
+        assert_eq!(
+            plan.url,
+            "https://github.com/precise-alloy/regressify-rs/releases/download/v2.2.2/regressify-desktop-aarch64-apple-darwin.zip"
+        );
+        assert_eq!(plan.meta.size, 10);
+        let intel = Some("regressify-desktop-x86_64-apple-darwin.zip");
+        assert_eq!(
+            feed.parse_install_plan(LIVE_MANIFEST, current(), intel)
+                .unwrap()
+                .meta
+                .size,
+            11
+        );
+        // Not newer, unknown architecture, missing archive, and a bad tag all refuse.
+        let same = "2.2.2.0".parse().unwrap();
+        assert!(feed.parse_install_plan(LIVE_MANIFEST, same, arm).is_err());
+        assert!(
+            feed.parse_install_plan(LIVE_MANIFEST, current(), None)
+                .is_err()
+        );
+        let without = LIVE_MANIFEST.replace("archive.regressify-desktop-aarch64", "archive.x");
+        assert!(feed.parse_install_plan(&without, current(), arm).is_err());
+        let traversal = LIVE_MANIFEST.replace("tag=v2.2.2", "tag=v2.2.2/../x");
+        assert!(feed.parse_install_plan(&traversal, current(), arm).is_err());
+        assert!(
+            UpdateFeed::new("https://regressify.eshn.dev")
+                .unwrap()
+                .macos_install_plan(current())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn install_state_messages_and_final_states() {
+        use super::{InstallHandle, InstallState, perform_install};
+        let say = |state: InstallState| state.message();
+        assert_eq!(
+            say(InstallState::Downloading {
+                received: 5,
+                total: 10
+            }),
+            "Downloading 50%"
+        );
+        assert_eq!(
+            say(InstallState::Downloading {
+                received: 0,
+                total: 0
+            }),
+            "Downloading 0%"
+        );
+        assert_eq!(say(InstallState::Verifying), "Verifying");
+        assert_eq!(say(InstallState::Installing), "Installing");
+        assert!(say(InstallState::Restart).contains("Restart"));
+        assert!(say(InstallState::Failed("bad".into())).starts_with("Failed: bad"));
+        assert!(InstallState::Verifying.in_progress() && !InstallState::Restart.in_progress());
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Regressify.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::write(app.join("Contents/MacOS/regressify-desktop"), b"old").unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let plan = macos_feed()
+            .parse_install_plan(
+                LIVE_MANIFEST,
+                current(),
+                Some("regressify-desktop-aarch64-apple-darwin.zip"),
+            )
+            .unwrap();
+        let offline =
+            |_: &str| -> anyhow::Result<Box<dyn std::io::Read>> { anyhow::bail!("offline") };
+        let ok = |_: &std::path::Path| Ok(());
+        let deps = super::macos_install::Deps {
+            open: &offline,
+            sign: &ok,
+            verify: &ok,
+            ops: &super::macos_install::RealOps,
+        };
+        let handle = InstallHandle::new();
+        assert!(perform_install(&app, cache.path(), &plan, &deps, &handle).is_err());
+        assert!(matches!(handle.get(), InstallState::Failed(reason) if reason.contains("offline")));
+        assert_eq!(
+            std::fs::read(app.join("Contents/MacOS/regressify-desktop")).unwrap(),
+            b"old"
+        );
     }
 
     #[test]
