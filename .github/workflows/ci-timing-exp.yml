@@ -23,7 +23,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [baseline, litedebug, nodefender]
+        include:
+          # Sharding experiment: split by libtest filter (substring, repeated --skip is allowed).
+          - variant: ui-tests
+            args: 'desktop::ui::tests::'
+          - variant: ui-other
+            args: 'desktop::ui:: --skip desktop::ui::tests::'
+          - variant: rest
+            args: '--skip desktop::ui::'
+          - variant: ui-tests-t2
+            args: 'desktop::ui::tests:: --test-threads=2'
+          - variant: ui-tests-t8
+            args: 'desktop::ui::tests:: --test-threads=8'
     env:
       # Set for compile AND run so cargo does not rebuild between the two steps.
       RUSTC_BOOTSTRAP: '1'
@@ -33,35 +44,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Cargo rejects an empty CARGO_PROFILE_*_DEBUG, so these are only defined for litedebug.
-      - name: Debug-info overrides (litedebug only)
-        if: matrix.variant == 'litedebug'
+      # All shards use line-tables-only (litedebug measured -19% compile / -10% run).
+      - name: Debug-info overrides
         run: |
           "CARGO_PROFILE_TEST_DEBUG=line-tables-only" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "CARGO_PROFILE_DEV_DEBUG=line-tables-only" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
 
-      - name: Defender exclusions (nodefender only)
-        if: matrix.variant == 'nodefender'
-        continue-on-error: true
-        run: |
-          $paths = @($env:GITHUB_WORKSPACE, (Join-Path $env:GITHUB_WORKSPACE 'target'), (Join-Path $env:USERPROFILE '.cargo'), (Join-Path $env:USERPROFILE '.rustup'))
-          try {
-            Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
-            Write-Host "Add-MpPreference succeeded"
-          } catch {
-            Write-Host "Add-MpPreference FAILED: $_"
-          }
-          try {
-            Write-Host "Exclusions now:"
-            (Get-MpPreference -ErrorAction Stop).ExclusionPath | ForEach-Object { Write-Host "  $_" }
-          } catch {
-            Write-Host "Get-MpPreference FAILED: $_"
-          }
-
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: exp-${{ matrix.variant }}
+          shared-key: exp-shards
 
       - name: Runner info
         run: |
@@ -88,7 +80,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
-          cargo test --locked --features gui-tests --all-targets -- -Z unstable-options --report-time 2>&1 | Tee-Object -FilePath test-times.log
+          $a = '${{ matrix.args }}' -split ' '
+          cargo test --locked --features gui-tests --all-targets -- @a -Z unstable-options --report-time 2>&1 | Tee-Object -FilePath test-times.log
           $code = $LASTEXITCODE
           $sw.Stop()
           $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
