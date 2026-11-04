@@ -20,6 +20,8 @@ pub const CURRENT_VERSION: &str = match option_env!("REGRESSIFY_DESKTOP_VERSION"
 const DOWNLOADS_PATH: &str = "downloads";
 const RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/precise-alloy/regressify-rs/releases/download/";
+const RELEASE_TAG_PREFIX: &str = "https://github.com/precise-alloy/regressify-rs/releases/tag/";
+const NOTICE_STATE_NAME: &str = "notice.json";
 const DESKTOP_ARCHIVE_NAME: &str = "regressify-desktop-x86_64-pc-windows-msvc.zip";
 const CLI_ARCHIVE_NAME: &str = "regressify-cli-x86_64-pc-windows-msvc.zip";
 const PREPARED_MANIFEST_NAME: &str = "prepared.txt";
@@ -73,9 +75,121 @@ pub fn installer_name(version: Version) -> String {
     format!("Regressify-Setup-{version}-x64.exe")
 }
 
+/// Platform decision for the update feed, injected so each path is testable on any host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpdatePlatform {
+    /// Full download, verification, and installer launch.
+    WindowsX64,
+    /// Notification only: nothing is downloaded or installed.
+    MacOs,
+    Other,
+}
+
+impl UpdatePlatform {
+    pub const fn current() -> Self {
+        if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+            Self::WindowsX64
+        } else if cfg!(all(
+            target_os = "macos",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )) {
+            Self::MacOs
+        } else {
+            Self::Other
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct UpdateFeed {
     manifest_url: Url,
+    platform: UpdatePlatform,
+}
+
+/// A newer release announced on a notify-only platform. Carries no installer, hash, or
+/// payload data, so no download path can be built from it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpdateNotice {
+    pub version: Version,
+    tag: String,
+}
+
+impl UpdateNotice {
+    /// Release page built only from the validated tag.
+    pub fn release_url(&self) -> String {
+        format!("{RELEASE_TAG_PREFIX}{}", self.tag)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum NoticeCheck {
+    Current,
+    Available(UpdateNotice),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum NoticeOutcome {
+    /// The shared eight-hour interval has not elapsed.
+    NotDue,
+    Current,
+    /// Newer, but the user dismissed this or a later version.
+    Dismissed,
+    Available(UpdateNotice),
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct NoticeState {
+    #[serde(default)]
+    last_check_at: Option<u64>,
+    #[serde(default)]
+    dismissed_version: Option<String>,
+}
+
+impl NoticeState {
+    fn load(cache: &Path) -> Result<Self> {
+        match fs::File::open(cache.join(NOTICE_STATE_NAME)) {
+            Ok(file) => serde_json::from_reader(file.take(MAX_MANIFEST_SIZE))
+                .context("Cannot read saved update notice state"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error).context("Cannot open saved update notice state"),
+        }
+    }
+
+    fn save(&self, cache: &Path) -> Result<()> {
+        fs::create_dir_all(cache)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(cache)?;
+        serde_json::to_writer(&mut temporary, self)?;
+        temporary
+            .persist(cache.join(NOTICE_STATE_NAME))
+            .map_err(|error| error.error)
+            .context("Cannot save update notice state")?;
+        Ok(())
+    }
+
+    fn dismisses(&self, version: Version) -> bool {
+        self.dismissed_version
+            .as_deref()
+            .and_then(|saved| saved.parse::<Version>().ok())
+            .is_some_and(|dismissed| version <= dismissed)
+    }
+}
+
+/// Version encoded in a release tag such as `v2.2.2`; rejects paths and odd component shapes.
+fn tag_version(tag: &str) -> Option<Version> {
+    tag.strip_prefix('v')
+        .filter(|raw| {
+            !raw.contains('/')
+                && matches!(raw.split('.').count(), 3 | 4)
+                && raw.split('.').all(|part| (1..=4).contains(&part.len()))
+        })
+        .and_then(|raw| raw.parse::<Version>().ok())
+}
+
+/// Only the fields a notify-only platform needs; installer metadata is deliberately ignored.
+#[derive(Deserialize)]
+struct NoticeFields {
+    version: String,
+    tag: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -399,6 +513,10 @@ impl UpdateFeed {
 
     /// Feed served by the website at `<origin>/downloads/latest.txt`, for an `https://host` origin.
     pub fn new(origin: &str) -> Result<Self> {
+        Self::for_platform(origin, UpdatePlatform::WindowsX64)
+    }
+
+    fn for_platform(origin: &str, platform: UpdatePlatform) -> Result<Self> {
         let host = origin.strip_prefix("https://").unwrap_or_default();
         ensure!(
             !host.is_empty()
@@ -417,14 +535,160 @@ impl UpdateFeed {
             manifest_url.host_str() == Some(host),
             "Update origin must be an https://host origin without a path"
         );
-        Ok(Self { manifest_url })
+        Ok(Self {
+            manifest_url,
+            platform,
+        })
+    }
+
+    /// Feed for `platform` and a build-time origin; `None` on unsupported platforms.
+    pub fn for_origin(origin: Option<&str>, platform: UpdatePlatform) -> Option<Self> {
+        match platform {
+            UpdatePlatform::WindowsX64 | UpdatePlatform::MacOs => {
+                Self::for_platform(origin?, platform).ok()
+            }
+            UpdatePlatform::Other => None,
+        }
     }
 
     pub fn configured() -> Option<Self> {
-        if !cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-            return None;
+        Self::for_origin(
+            option_env!("REGRESSIFY_UPDATE_ORIGIN"),
+            UpdatePlatform::current(),
+        )
+    }
+
+    pub fn platform(&self) -> UpdatePlatform {
+        self.platform
+    }
+
+    /// Command shown to macOS users; the host comes from the feed origin.
+    pub fn install_command(&self) -> String {
+        format!(
+            "curl -fsSL https://{}/install.sh | sh",
+            self.manifest_url.host_str().unwrap_or_default()
+        )
+    }
+
+    /// Notify-only manifest parsing: validates `version` and `tag` and ignores every
+    /// installer field, so a Windows-shaped manifest never fails a macOS check.
+    pub fn parse_notice_manifest(&self, text: &str) -> Result<UpdateNotice> {
+        ensure!(
+            text.len() as u64 <= MAX_MANIFEST_SIZE,
+            "Update manifest is too large"
+        );
+        let text = text.trim_start_matches('\u{feff}').trim();
+        let fields: NoticeFields = if text.starts_with('{') {
+            serde_json::from_str(text).context("Invalid JSON update manifest")?
+        } else {
+            let mut fields = BTreeMap::new();
+            for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                let (key, value) = line
+                    .split_once('=')
+                    .context("Invalid update manifest line")?;
+                ensure!(
+                    fields.insert(key.trim(), value.trim()).is_none(),
+                    "Duplicate update manifest field: {key}"
+                );
+            }
+            serde_json::from_value(serde_json::to_value(fields)?)
+                .context("Missing required update manifest fields")?
+        };
+        let version: Version = fields.version.parse()?;
+        ensure!(
+            tag_version(&fields.tag) == Some(version),
+            "Mismatched release tag"
+        );
+        Ok(UpdateNotice {
+            version,
+            tag: fields.tag,
+        })
+    }
+
+    pub fn check_notice(&self, current: Version) -> Result<NoticeCheck> {
+        ensure!(
+            self.platform == UpdatePlatform::MacOs,
+            "Update notices are only used on notify-only platforms"
+        );
+        let response = client(Duration::from_secs(30))?
+            .get(self.manifest_url.clone())
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
+            .send()
+            .context("Cannot reach the update service")?;
+        self.notice_response(response.status(), response, current)
+    }
+
+    fn notice_response(
+        &self,
+        status: StatusCode,
+        response: impl Read,
+        current: Version,
+    ) -> Result<NoticeCheck> {
+        if status == StatusCode::NOT_FOUND {
+            return Ok(NoticeCheck::Current);
         }
-        option_env!("REGRESSIFY_UPDATE_ORIGIN").and_then(|origin| Self::new(origin).ok())
+        ensure!(status.is_success(), "Update service returned HTTP {status}");
+        let mut text = String::new();
+        response
+            .take(MAX_MANIFEST_SIZE + 1)
+            .read_to_string(&mut text)?;
+        let notice = self.parse_notice_manifest(&text)?;
+        Ok(if notice.version > current {
+            NoticeCheck::Available(notice)
+        } else {
+            NoticeCheck::Current
+        })
+    }
+
+    /// Scheduled notice check. Startup bypasses only the eight-hour deadline. The timestamp is
+    /// refreshed after every attempt, failures included, so a broken feed is retried at the
+    /// normal interval rather than on every poll. No coordinator lock: nothing is downloaded,
+    /// so a duplicate request from a peer instance is harmless.
+    pub fn check_notice_shared(
+        &self,
+        current: Version,
+        cache: &Path,
+        startup: bool,
+    ) -> Result<NoticeOutcome> {
+        self.check_notice_with(cache, startup, unix_timestamp(), || {
+            self.check_notice(current)
+        })
+    }
+
+    fn check_notice_with(
+        &self,
+        cache: &Path,
+        startup: bool,
+        now: u64,
+        check: impl FnOnce() -> Result<NoticeCheck>,
+    ) -> Result<NoticeOutcome> {
+        let mut state = NoticeState::load(cache).unwrap_or_default();
+        let due = startup
+            || state.last_check_at.is_none_or(|checked| {
+                now < checked || now.saturating_sub(checked) >= CHECK_INTERVAL.as_secs()
+            });
+        if !due {
+            return Ok(NoticeOutcome::NotDue);
+        }
+        let result = check();
+        state.last_check_at = Some(now);
+        state.save(cache)?;
+        Ok(match result? {
+            NoticeCheck::Current => NoticeOutcome::Current,
+            NoticeCheck::Available(notice) if state.dismisses(notice.version) => {
+                NoticeOutcome::Dismissed
+            }
+            NoticeCheck::Available(notice) => NoticeOutcome::Available(notice),
+        })
+    }
+
+    /// Hides this and every older notice; a newer release shows again.
+    pub fn dismiss_notice(version: Version, cache: &Path) -> Result<()> {
+        let mut state = NoticeState::load(cache).unwrap_or_default();
+        if !state.dismisses(version) {
+            state.dismissed_version = Some(version.to_string());
+        }
+        state.save(cache)
     }
     pub fn parse_manifest(&self, text: &str) -> Result<Release> {
         ensure!(
@@ -455,13 +719,7 @@ impl UpdateFeed {
             .installer
             .strip_prefix(RELEASE_DOWNLOAD_PREFIX)
             .and_then(|rest| rest.strip_suffix(&suffix))
-            .and_then(|tag| tag.strip_prefix('v'))
-            .filter(|raw| {
-                !raw.contains('/')
-                    && matches!(raw.split('.').count(), 3 | 4)
-                    && raw.split('.').all(|part| (1..=4).contains(&part.len()))
-            })
-            .and_then(|raw| raw.parse::<Version>().ok())
+            .and_then(tag_version)
             .is_some_and(|tag_version| tag_version == version);
         ensure!(
             valid_tag && installer.as_str() == fields.installer,
@@ -1639,8 +1897,9 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::{
-        CheckMode, DownloadControl, DownloadPhase, ManifestFields, PreparedUpdate, SkippedUpdate,
-        UpdateCheck, UpdateFeed, UpdateState, Version, cached_installer, installer_name,
+        CheckMode, DownloadControl, DownloadPhase, ManifestFields, NoticeCheck, NoticeOutcome,
+        NoticeState, PreparedUpdate, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateNotice,
+        UpdatePlatform, UpdateState, Version, cached_installer, installer_name,
         installer_redirect_policy, is_allowed_installer_redirect, lock_cache, verify_payload,
     };
     use reqwest::StatusCode;
@@ -2221,6 +2480,186 @@ mod tests {
         ] {
             assert!(invalid.parse::<Version>().is_err(), "{invalid}");
         }
+    }
+
+    const LIVE_MANIFEST: &str = "version=2.2.2.0\ntag=v2.2.2\ninstaller=https://github.com/precise-alloy/regressify-rs/releases/download/v2.2.2/Regressify-Setup-2.2.2.0-x64.exe\nsha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nsize=1234\narchive.regressify-desktop-aarch64-apple-darwin.zip=10:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\narchive.regressify-desktop-x86_64-apple-darwin.zip=11:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n";
+
+    fn macos_feed() -> UpdateFeed {
+        UpdateFeed::for_origin(Some("https://regressify.eshn.dev"), UpdatePlatform::MacOs).unwrap()
+    }
+
+    fn notice(version: &str) -> UpdateNotice {
+        let tag = version.rsplit_once('.').map_or(version, |(short, _)| short);
+        macos_feed()
+            .parse_notice_manifest(&format!("version={version}\ntag=v{tag}\n"))
+            .unwrap()
+    }
+
+    #[test]
+    fn platform_gate_selects_feeds_per_platform() {
+        let origin = Some("https://regressify.eshn.dev");
+        // Windows x64 and macOS (either arch maps to MacOs) get a feed; others never do.
+        assert_eq!(
+            UpdateFeed::for_origin(origin, UpdatePlatform::WindowsX64)
+                .unwrap()
+                .platform(),
+            UpdatePlatform::WindowsX64
+        );
+        assert_eq!(
+            UpdateFeed::for_origin(origin, UpdatePlatform::MacOs)
+                .unwrap()
+                .platform(),
+            UpdatePlatform::MacOs
+        );
+        assert!(UpdateFeed::for_origin(origin, UpdatePlatform::Other).is_none());
+        // The compile-time origin is still required, and must be a valid https origin.
+        assert!(UpdateFeed::for_origin(None, UpdatePlatform::MacOs).is_none());
+        assert!(UpdateFeed::for_origin(Some("http://x.dev"), UpdatePlatform::MacOs).is_none());
+        // Unit tests run on Linux, which must stay unconfigured.
+        if cfg!(target_os = "linux") {
+            assert_eq!(UpdatePlatform::current(), UpdatePlatform::Other);
+            assert!(UpdateFeed::configured().is_none());
+        }
+    }
+
+    #[test]
+    fn notice_manifest_accepts_the_live_shape_and_ignores_installer_fields() {
+        let notice = macos_feed().parse_notice_manifest(LIVE_MANIFEST).unwrap();
+        assert_eq!(notice.version, "2.2.2".parse::<Version>().unwrap());
+        assert_eq!(
+            notice.release_url(),
+            "https://github.com/precise-alloy/regressify-rs/releases/tag/v2.2.2"
+        );
+        // Windows validation is unchanged: the same text still parses on the Windows path
+        // only when its installer fields are valid, and a bad installer never fails a notice.
+        let broken = LIVE_MANIFEST.replace("Regressify-Setup-2.2.2.0-x64.exe", "evil.exe");
+        assert!(macos_feed().parse_notice_manifest(&broken).is_ok());
+        assert!(
+            UpdateFeed::new("https://regressify.eshn.dev")
+                .unwrap()
+                .parse_manifest(&broken)
+                .is_err()
+        );
+        let json = r#"{"version":"2.2.2.0","tag":"v2.2.2","extra":1}"#;
+        assert!(macos_feed().parse_notice_manifest(json).is_ok());
+    }
+
+    #[test]
+    fn notice_manifest_rejects_bad_tags_versions_and_shapes() {
+        let feed = macos_feed();
+        for text in [
+            "version=2.2.2.0\ntag=v2.2.3\n",
+            "version=2.2.2.0\ntag=2.2.2\n",
+            "version=2.2.2.0\ntag=v2.2.2/../x\n",
+            "version=2.2.2.0\ntag=v2.2.2\ntag=v2.2.2\n",
+            "version=2.2.2.0\n",
+            "version=latest\ntag=vlatest\n",
+            "version=2.2.2.0\ntag=v2.2\n",
+            "not a manifest",
+            "",
+        ] {
+            assert!(feed.parse_notice_manifest(text).is_err(), "{text:?}");
+        }
+        assert!(feed.parse_notice_manifest(&" ".repeat(20 * 1024)).is_err());
+    }
+
+    #[test]
+    fn notice_responses_compare_versions_and_survive_failures() {
+        let feed = macos_feed();
+        let current: Version = "2.2.2".parse().unwrap();
+        let check =
+            |status, text: &str, current| feed.notice_response(status, text.as_bytes(), current);
+        assert!(matches!(
+            check(StatusCode::OK, LIVE_MANIFEST, "2.2.1".parse().unwrap()),
+            Ok(NoticeCheck::Available(_))
+        ));
+        assert_eq!(
+            check(StatusCode::OK, LIVE_MANIFEST, current).unwrap(),
+            NoticeCheck::Current
+        );
+        assert_eq!(
+            check(StatusCode::OK, LIVE_MANIFEST, "3.0.0".parse().unwrap()).unwrap(),
+            NoticeCheck::Current
+        );
+        assert_eq!(
+            check(StatusCode::NOT_FOUND, "", current).unwrap(),
+            NoticeCheck::Current
+        );
+        assert!(check(StatusCode::BAD_GATEWAY, "", current).is_err());
+        assert!(check(StatusCode::OK, "garbage", current).is_err());
+    }
+
+    #[test]
+    fn notice_check_refuses_other_platforms_and_has_no_installer_data() {
+        let windows = UpdateFeed::new("https://regressify.eshn.dev").unwrap();
+        assert!(windows.check_notice("1.0.0".parse().unwrap()).is_err());
+        // UpdateNotice exposes only version and a release-page URL; it has no installer,
+        // hash, or payload field to download, and PreparedUpdate cannot be built from it.
+        let UpdateNotice { version, tag } = notice("2.2.2.0");
+        assert_eq!(
+            (version.to_string(), tag.as_str()),
+            ("2.2.2.0".into(), "v2.2.2")
+        );
+        assert_eq!(
+            macos_feed().install_command(),
+            "curl -fsSL https://regressify.eshn.dev/install.sh | sh"
+        );
+    }
+
+    #[test]
+    fn notice_schedule_dismissal_and_failures_use_a_separate_state_file() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let run = |startup, now, result: Result<NoticeCheck, ()>| {
+            feed.check_notice_with(cache.path(), startup, now, || {
+                result.map_err(|()| anyhow::anyhow!("offline"))
+            })
+        };
+        let available = || Ok(NoticeCheck::Available(notice("2.2.2.0")));
+        // Newer release shows; the check stamps the shared timestamp.
+        assert_eq!(
+            run(false, 1_000, available()).unwrap(),
+            NoticeOutcome::Available(notice("2.2.2.0"))
+        );
+        // Not due inside eight hours; the feed is not even consulted.
+        assert_eq!(
+            run(false, 1_000 + 3_600, Err(())).unwrap(),
+            NoticeOutcome::NotDue
+        );
+        // Startup bypasses the deadline; failures are errors but still reschedule.
+        assert!(run(true, 2_000, Err(())).is_err());
+        assert_eq!(run(false, 2_001, Err(())).unwrap(), NoticeOutcome::NotDue);
+        // Due again after eight hours, and after a clock rollback.
+        let after = 2_000 + super::CHECK_INTERVAL.as_secs();
+        assert_eq!(
+            run(false, after, Ok(NoticeCheck::Current)).unwrap(),
+            NoticeOutcome::Current
+        );
+        assert!(run(false, 10, Err(())).is_err());
+        // Dismissal hides that version and older, not newer ones.
+        UpdateFeed::dismiss_notice("2.2.2".parse().unwrap(), cache.path()).unwrap();
+        assert_eq!(
+            run(true, 5_000, available()).unwrap(),
+            NoticeOutcome::Dismissed
+        );
+        assert_eq!(
+            run(true, 5_001, Ok(NoticeCheck::Available(notice("2.3.0.0")))).unwrap(),
+            NoticeOutcome::Available(notice("2.3.0.0"))
+        );
+        // Dismissing an older version later never lowers the stored one.
+        UpdateFeed::dismiss_notice("2.0.0".parse().unwrap(), cache.path()).unwrap();
+        assert_eq!(
+            run(true, 5_002, available()).unwrap(),
+            NoticeOutcome::Dismissed
+        );
+        // Installer state files are untouched; a corrupt notice file is not fatal.
+        assert!(!cache.path().join("state.json").exists());
+        fs::write(cache.path().join("notice.json"), b"{not json").unwrap();
+        assert!(NoticeState::load(cache.path()).is_err());
+        assert_eq!(
+            run(true, 6_000, available()).unwrap(),
+            NoticeOutcome::Available(notice("2.2.2.0"))
+        );
     }
 
     #[test]
