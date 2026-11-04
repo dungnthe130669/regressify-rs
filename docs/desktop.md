@@ -196,22 +196,6 @@ use. An outer process lock covers the entire check/preparation cycle, in additio
 to the existing lock around cache writes. Idle windows keep their ready banners
 visible during automatic polls and continue to check for newer releases.
 
-### macOS update notice (notify only)
-
-Official macOS builds (Intel and Apple silicon) check the same release feed at
-startup and then every eight hours, but never download or install anything. When
-the feed's `version` is newer, a banner reads "Regressify <version> is available"
-with **Copy install command** (`curl -fsSL https://<update-origin>/install.sh | sh`,
-host taken from the build's update origin), **View release** (opens
-`https://github.com/precise-alloy/regressify-rs/releases/tag/<tag>`), and a dismiss
-button. Dismissing hides that version and older ones; a newer release shows again.
-Only `version` and `tag` are read (the tag must match the version); installer and
-archive fields are ignored. Failed or malformed checks are silent in the UI, are
-written to diagnostics, and retry after the usual eight hours. The check timestamp
-and dismissal live in `updates/notice.json`, separate from the Windows installer
-state. Linux builds have no update check. macOS behavior is unverified on real
-hardware.
-
 If SHA-256 verification fails, the invalid payload is discarded and downloaded
 again, with at most three retries after the initial attempt (four attempts total).
 Retries use exponential backoff: wait 2 hours after the first failure, 4 hours after
@@ -258,8 +242,9 @@ app launches are blocked during setup. After installation the initiating workspa
 reopens, if one was open. Older installers cannot
 downgrade an installed version. Local preparation removes the network dependency
 from installation, but disk errors, security software, or running app instances
-can still prevent setup from completing. Unconfigured development builds and non-Windows
-builds do not contact the update service.
+can still prevent setup from completing. Unconfigured development builds and Linux builds
+do not contact the update service; macOS builds only check for a notice (see
+[macOS update notice](#macos-update-notice-notify-only)).
 
 The public feed is `https://regressify.eshn.dev/downloads/latest.txt`. It selects
 the site's supported version; binaries remain on GitHub Releases. Official builds
@@ -282,7 +267,26 @@ Musl distributions and Linux ARM64 are not supported by prebuilt releases; the
 installer rejects them before downloading or changing files. Linux desktop still requires compatible
 system GUI libraries. The script requires curl, unzip, and a SHA-256 tool; it
 verifies every selected archive before replacing binaries and does not edit shell
-profiles. Non-Windows in-app updates remain unavailable; rerun the terminal command.
+profiles. Non-Windows in-app updates remain unavailable; rerun the terminal command (macOS shows
+a notice that names it).
+
+### macOS update notice (notify only)
+
+Official macOS builds (Intel and Apple silicon) check the same release feed at
+startup and then every eight hours, but never download or install anything. When
+the feed's `version` is newer, a banner reads "Regressify <version> is available"
+with **Copy install command** (`curl -fsSL https://<update-origin>/install.sh | sh`,
+host taken from the build's update origin), **View release** (opens
+`https://github.com/precise-alloy/regressify-rs/releases/tag/<tag>`), and a dismiss
+button. Dismissing hides that version and older ones; a newer release shows again.
+Only `version` and `tag` are read (the tag must match the version); installer and
+archive fields are ignored. Failed or malformed checks are silent in the UI, are
+written to diagnostics, and retry after the usual eight hours. The check timestamp,
+the last announced release, and the dismissal live in `updates/notice.json`,
+separate from the Windows installer state, and are updated under a lock. Open
+macOS windows share them: a release found by one window appears in the others on
+their next poll, and dismissing in one hides it in the rest. Linux builds have no
+update check. macOS behavior is unverified on real hardware.
 
 ## Git
 
