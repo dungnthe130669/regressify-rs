@@ -284,6 +284,7 @@ impl Workbench {
         let detail =
             "Run the install command in a terminal to update, or review the release notes.";
         let command = feed.install_command();
+        let copy_command = command.clone();
         let release_url = notice.release_url();
         let version = notice.version;
         let colors = update_banner_colors(cx);
@@ -336,13 +337,32 @@ impl Workbench {
                                         .text_color(colors.detail)
                                         .whitespace_normal()
                                         .child(detail),
+                                )
+                                .child(
+                                    // Shown so the banner is self-explanatory; wraps instead of clipping on narrow windows.
+                                    div()
+                                        .id("update-notice-command")
+                                        .test_support()
+                                        .text_xs()
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_color(colors.title)
+                                        .whitespace_normal()
+                                        .child(command),
                                 ),
                         )
-                        .child(design::CopyText::new(
-                            "update-notice-copy",
-                            command,
-                            "Copy install command",
-                        ))
+                        .child(
+                            // `CopyText` is icon-only; the banner needs a visible instruction.
+                            Button::new("update-notice-copy")
+                                .flex_shrink_0()
+                                .icon(gpui_kit::assets::IconName::Copy)
+                                .label("Copy command")
+                                .tooltip("Copy install command")
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_command.clone(),
+                                    ));
+                                }),
+                        )
                         .child(
                             Button::new("update-notice-release")
                                 .flex_shrink_0()

@@ -275,8 +275,9 @@ a notice that names it).
 Official macOS builds (Intel and Apple silicon) check the same release feed at
 startup and then every eight hours, but never download or install anything. When
 the feed's `version` is newer, a banner reads "Regressify <version> is available"
-with **Copy install command** (`curl -fsSL https://<update-origin>/install.sh | sh`,
-host taken from the build's update origin), **View release** (opens
+that shows the install command (`curl -fsSL https://<update-origin>/install.sh | sh`,
+host taken from the build's update origin) with a **Copy command** button,
+**View release** (opens
 `https://github.com/precise-alloy/regressify-rs/releases/tag/<tag>`), and a dismiss
 button. Dismissing hides that version and older ones; a newer release shows again.
 Only `version` and `tag` are read (the tag must match the version); installer and
