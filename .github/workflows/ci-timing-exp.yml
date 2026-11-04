@@ -1,0 +1,133 @@
+name: CI Timing Experiment
+
+# EXPERIMENT (fork only): compares compile/test time of the windows-gui test
+# command across variants and records per-test durations. Not for upstream.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ci-timing-exp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  timing:
+    name: ${{ matrix.variant }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, litedebug, nodefender]
+    env:
+      # Only litedebug sets the debug-info profile overrides.
+      CARGO_PROFILE_TEST_DEBUG: ${{ matrix.variant == 'litedebug' && 'line-tables-only' || '' }}
+      CARGO_PROFILE_DEV_DEBUG: ${{ matrix.variant == 'litedebug' && 'line-tables-only' || '' }}
+      # Set for compile AND run so cargo does not rebuild between the two steps.
+      RUSTC_BOOTSTRAP: '1'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Defender exclusions (nodefender only)
+        if: matrix.variant == 'nodefender'
+        continue-on-error: true
+        run: |
+          $paths = @($env:GITHUB_WORKSPACE, (Join-Path $env:GITHUB_WORKSPACE 'target'), (Join-Path $env:USERPROFILE '.cargo'), (Join-Path $env:USERPROFILE '.rustup'))
+          try {
+            Add-MpPreference -ExclusionPath $paths -ErrorAction Stop
+            Write-Host "Add-MpPreference succeeded"
+          } catch {
+            Write-Host "Add-MpPreference FAILED: $_"
+          }
+          try {
+            Write-Host "Exclusions now:"
+            (Get-MpPreference -ErrorAction Stop).ExclusionPath | ForEach-Object { Write-Host "  $_" }
+          } catch {
+            Write-Host "Get-MpPreference FAILED: $_"
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: exp-${{ matrix.variant }}
+
+      - name: Runner info
+        run: |
+          $cpu = Get-CimInstance Win32_Processor
+          $logical = ($cpu | Measure-Object -Property NumberOfLogicalProcessors -Sum).Sum
+          $mem = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+          $free = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB, 1)
+          $line = "variant=${{ matrix.variant }} logical_cpus=$logical cpu='$($cpu[0].Name)' mem_gb=$mem free_mem_gb=$free"
+          Write-Host $line
+          "RUNNER_INFO=$line" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Compile tests (timed, --no-run)
+        run: |
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          cargo test --locked --features gui-tests --all-targets --no-run
+          $code = $LASTEXITCODE
+          $sw.Stop()
+          $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+          Write-Host "COMPILE_SECONDS=$secs"
+          "COMPILE_SECONDS=$secs" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          exit $code
+
+      - name: Run tests (timed, per-test report)
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          cargo test --locked --features gui-tests --all-targets -- -Z unstable-options --report-time 2>&1 | Tee-Object -FilePath test-times.log
+          $code = $LASTEXITCODE
+          $sw.Stop()
+          $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+          Write-Host "RUN_SECONDS=$secs"
+          "RUN_SECONDS=$secs" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          exit $code
+
+      - name: Summary
+        if: always()
+        run: |
+          $compile = if ($env:COMPILE_SECONDS) { $env:COMPILE_SECONDS } else { 'n/a' }
+          $run = if ($env:RUN_SECONDS) { $env:RUN_SECONDS } else { 'n/a' }
+          $out = @()
+          $out += "## Timing: ${{ matrix.variant }}"
+          $out += ""
+          $out += "- Runner: $env:RUNNER_INFO"
+          $out += "- Total compile seconds (``cargo test --no-run``): **$compile**"
+          $out += "- Total test-run seconds (wall, includes cargo startup): **$run**"
+          $out += ""
+          $out += "### 40 slowest tests"
+          $out += ""
+          if (Test-Path test-times.log) {
+            $rx = '^test (?<name>\S+) \.\.\. ok <?(?<t>\d+(?:\.\d+)?)s>?\s*$'
+            $rows = Get-Content test-times.log | ForEach-Object {
+              if ($_ -match $rx) { [pscustomobject]@{ Name = $Matches['name']; Secs = [double]$Matches['t'] } }
+            }
+            $sum = ($rows | Measure-Object -Property Secs -Sum).Sum
+            $out += "Parsed $(@($rows).Count) passing tests, sum of per-test seconds: $([math]::Round($sum,1))"
+            $out += ""
+            $out += "| Seconds | Test |"
+            $out += "|---:|---|"
+            $rows | Sort-Object Secs -Descending | Select-Object -First 40 | ForEach-Object {
+              $out += ('| {0:N3} | `{1}` |' -f $_.Secs, $_.Name)
+            }
+          } else {
+            $out += "test-times.log not produced (run step did not start)."
+          }
+          $out -join "`n" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload test-times.log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-times-${{ matrix.variant }}
+          path: test-times.log
+          if-no-files-found: warn
