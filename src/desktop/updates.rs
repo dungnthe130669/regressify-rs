@@ -137,7 +137,11 @@ impl UpdateNotice {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum NoticeCheck {
+    /// The feed publishes no release (HTTP 404).
     Current,
+    /// The feed's release is not newer than the checking window. It is still saved: an older
+    /// peer window must learn about it without waiting out another eight-hour interval.
+    Older(UpdateNotice),
     Available(UpdateNotice),
 }
 
@@ -379,7 +383,7 @@ fn run_codesign(args: &[&str], path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct NoticeState {
     #[serde(default)]
     last_check_at: Option<u64>,
@@ -938,7 +942,7 @@ impl UpdateFeed {
         Ok(if notice.version > current {
             NoticeCheck::Available(notice)
         } else {
-            NoticeCheck::Current
+            NoticeCheck::Older(notice)
         })
     }
 
@@ -1010,7 +1014,8 @@ impl UpdateFeed {
         let ticket = {
             let _lock = lock_notice_state(cache);
             let mut state = NoticeState::load(cache).unwrap_or_default();
-            state.started_seq += 1;
+            // Never at or below an applied ticket, even if an earlier ticket save was lost.
+            state.started_seq = state.started_seq.max(state.applied_seq) + 1;
             // Best effort: without the saved ticket only this process's ordering is lost.
             let _ = state.save(cache);
             state.started_seq
@@ -1021,7 +1026,7 @@ impl UpdateFeed {
         let _lock = lock_notice_state(cache);
         let mut state = NoticeState::load(cache).unwrap_or_default();
         if ticket <= state.applied_seq {
-            // Superseded by a newer request that already finished: keep its release and
+            // Superseded by a newer request whose release already landed: keep its release and
             // timestamp (the dismissal in `state` is already current) and report that.
             return match result {
                 Ok(_) => Ok(match state.reconcile(self, current) {
@@ -1031,11 +1036,21 @@ impl UpdateFeed {
                 Err(error) => Err(error),
             };
         }
-        state.applied_seq = ticket;
+        // The ticket may not have been saved (best effort above): never leave
+        // `applied_seq` ahead of `started_seq`.
+        state.started_seq = state.started_seq.max(ticket);
         state.last_check_at = Some(now);
         match &result {
-            Ok(NoticeCheck::Current) => state.store_available(None),
-            Ok(NoticeCheck::Available(notice)) => state.store_available(Some(notice)),
+            Ok(NoticeCheck::Current) => {
+                state.applied_seq = ticket;
+                state.store_available(None);
+            }
+            Ok(NoticeCheck::Available(notice) | NoticeCheck::Older(notice)) => {
+                state.applied_seq = ticket;
+                state.store_available(Some(notice));
+            }
+            // A failure only throttles (`last_check_at`). It carries no release, so it must not
+            // supersede an older request that is still in flight and may yet succeed.
             Err(_) => {}
         }
         // The timestamp is only a throttle: a failed save must not hide the check outcome.
@@ -1046,7 +1061,7 @@ impl UpdateFeed {
             );
         }
         Ok(match result? {
-            NoticeCheck::Current => NoticeOutcome::Current,
+            NoticeCheck::Current | NoticeCheck::Older(_) => NoticeOutcome::Current,
             NoticeCheck::Available(notice) if state.dismisses(notice.version) => {
                 NoticeOutcome::Dismissed(notice)
             }
@@ -3299,14 +3314,14 @@ mod tests {
             check(StatusCode::OK, LIVE_MANIFEST, "2.2.1".parse().unwrap()),
             Ok(NoticeCheck::Available(_))
         ));
-        assert_eq!(
+        assert!(matches!(
             check(StatusCode::OK, LIVE_MANIFEST, current).unwrap(),
-            NoticeCheck::Current
-        );
-        assert_eq!(
+            NoticeCheck::Older(_)
+        ));
+        assert!(matches!(
             check(StatusCode::OK, LIVE_MANIFEST, "3.0.0".parse().unwrap()).unwrap(),
-            NoticeCheck::Current
-        );
+            NoticeCheck::Older(_)
+        ));
         assert_eq!(
             check(StatusCode::NOT_FOUND, "", current).unwrap(),
             NoticeCheck::Current
@@ -3483,6 +3498,88 @@ mod tests {
             "the clock does not move back"
         );
         assert_eq!(state.dismissed_version.as_deref(), Some("2.1.0.0"));
+    }
+
+    #[test]
+    fn a_failed_newer_request_does_not_supersede_a_successful_older_one() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let outcome = feed
+            .check_notice_with(cache.path(), current(), true, true, 1_000, || {
+                // Two startup checks overlap: the newer ticket fails first.
+                let newer =
+                    feed.check_notice_with(cache.path(), current(), true, true, 1_001, || {
+                        Err(anyhow::anyhow!("offline"))
+                    });
+                assert!(newer.is_err());
+                Ok(NoticeCheck::Available(notice("2.2.2.0")))
+            })
+            .unwrap();
+        assert_eq!(
+            outcome,
+            NoticeOutcome::Available(notice("2.2.2.0")),
+            "the confirmed release is not hidden until the next interval"
+        );
+        let state = NoticeState::load(cache.path()).unwrap();
+        assert_eq!(state.available_version.as_deref(), Some("2.2.2.0"));
+        assert_eq!(
+            state.applied_seq, 1,
+            "only the successful ticket is applied"
+        );
+        assert!(state.started_seq >= state.applied_seq);
+    }
+
+    #[test]
+    fn a_lost_ticket_save_cannot_leave_applied_ahead_of_started() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        // State as if an earlier ticket save was lost: applied is ahead of started.
+        fs::write(
+            cache.path().join("notice.json"),
+            br#"{"started_seq":0,"applied_seq":3}"#,
+        )
+        .unwrap();
+        feed.check_notice_with(cache.path(), current(), true, true, 1_000, || {
+            Ok(NoticeCheck::Available(notice("2.2.2.0")))
+        })
+        .unwrap();
+        let state = NoticeState::load(cache.path()).unwrap();
+        assert!(state.started_seq >= state.applied_seq, "{state:?}");
+        // The next check gets a fresh ticket and its response is applied, not discarded.
+        let next = feed
+            .check_notice_with(cache.path(), current(), true, true, 2_000, || {
+                Ok(NoticeCheck::Available(notice("2.3.0.0")))
+            })
+            .unwrap();
+        assert_eq!(next, NoticeOutcome::Available(notice("2.3.0.0")));
+        let state = NoticeState::load(cache.path()).unwrap();
+        assert_eq!(state.available_version.as_deref(), Some("2.3.0.0"));
+        assert_eq!(state.last_check_at, Some(2_000));
+    }
+
+    #[test]
+    fn an_updated_window_keeps_the_release_for_older_peers() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let updated: Version = "2.2.2".parse().unwrap();
+        let older: Version = "2.1.0".parse().unwrap();
+        // The updated window checks first; its feed release is not newer than itself.
+        let outcome = feed
+            .check_notice_with(cache.path(), updated, true, true, 1_000, || {
+                Ok(NoticeCheck::Older(notice("2.2.2.0")))
+            })
+            .unwrap();
+        assert_eq!(outcome, NoticeOutcome::Current);
+        // The older peer is not due, but still learns about the release, per its own version.
+        let never = || -> Result<NoticeCheck, anyhow::Error> { panic!("peer must not request") };
+        let peer = feed
+            .check_notice_with(cache.path(), older, false, true, 1_010, never)
+            .unwrap();
+        assert_eq!(peer, NoticeOutcome::Available(notice("2.2.2.0")));
+        let same = feed
+            .check_notice_with(cache.path(), updated, false, true, 1_010, never)
+            .unwrap();
+        assert_eq!(same, NoticeOutcome::Current);
     }
 
     #[test]

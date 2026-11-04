@@ -283,8 +283,9 @@ button. Dismissing hides the banner for that version and older ones; a newer rel
 shows again, and the Software updates dialog keeps offering that release's controls.
 The command installs into `/Applications` (or `~/Applications` when that is not
 writable) unless `REGRESSIFY_APP_DIR` is set, so for an app installed elsewhere
-prefix it with `REGRESSIFY_APP_DIR=<folder containing Regressify.app>` or open the
-newly installed copy afterwards.
+put `REGRESSIFY_APP_DIR=<folder containing Regressify.app>` on the `sh` side of the
+pipe (`curl ... | REGRESSIFY_APP_DIR=<folder> sh`; a prefix before `curl` reaches only
+`curl`) or open the newly installed copy afterward.
 Only `version` and `tag` are read (the tag must match the version); installer and
 archive fields are ignored. Failed or malformed checks are silent in the UI, are
 written to diagnostics, and retry after the usual eight hours. The check timestamp,
@@ -320,17 +321,23 @@ folder) only the copy-command flow is offered. Clicking it, and nothing earlier:
    app path always holds a whole app, then verifies again and exchanges back on failure. The
    old app becomes `Regressify.app.previous` (the single backup; older backups are removed).
    If the volume cannot exchange, the install is refused with nothing changed and the copy
-   command stays the way to update. Before a bad update is rolled back, `.Regressify.app.recovery-needed`
-   records where the previous app is kept (removed again if the rollback works). If the rollback
-   itself fails, the previous app stays in its stage folder and the Failed message names it. The
-   in-app updater then refuses further installs and never deletes that folder; if the mark file
-   itself could not be written, it still refuses until Regressify is restarted. `install.sh` does
-   not read the mark, so restore the preserved app (and delete the mark file) before running any
+   command stays the way to update. Before the exchange, `.Regressify.app.recovery-needed`
+   records the stage folder and the version the app reported before the swap; it is removed
+   once the update is verified and the old app is kept as the backup, or once a rollback
+   works. If the mark cannot be written, the install is refused with nothing changed. If the
+   rollback itself fails, or the old app cannot be kept as `Regressify.app.previous`, the
+   previous app stays in its stage folder and the Failed message names it. After a kill the
+   mark persists across restarts: when the live app still reports the recorded version the mark
+   is stale (nothing swapped, or the rollback finished) and is cleared; otherwise the updater
+   refuses further installs and never deletes that folder. `install.sh` does not read the
+   mark, so restore the preserved app (and delete the mark file) before running any
    installer, in-app or terminal;
 6. shows **Restart**. Restart uses the same unsaved-work guards as quitting (including the
    landing-app editor: Save or Discard continues into the restart, Keep editing cancels it),
-   then runs `/usr/bin/open -n <app>` and quits; unsaved work is never discarded silently.
-   The relaunched app starts without a workspace (known limitation); reopen it from Recent workspaces.
+   then runs `/usr/bin/open -n <app> --args <workspace>` off the UI thread and quits when it
+   succeeds; unsaved work is never discarded silently. This window releases its workspace
+   ownership just before the launch (the new instance would otherwise only activate this one)
+   and reclaims it if the launch fails.
 
 The banner shows Downloading n%, Verifying, Installing, Restart, or Failed with the
 reason (the install command is offered again after a failure). The same lock directory

@@ -209,38 +209,49 @@ impl std::fmt::Display for RecoveryNeeded {
     }
 }
 
-/// App folders (with the stage that holds the previous app) whose recovery mark could not be
-/// written in this process. The mark is the on-disk guard; this fallback still blocks retries
-/// until the app restarts.
-fn unmarked_recoveries() -> &'static std::sync::Mutex<Vec<(PathBuf, PathBuf)>> {
-    static SET: std::sync::OnceLock<std::sync::Mutex<Vec<(PathBuf, PathBuf)>>> =
-        std::sync::OnceLock::new();
-    SET.get_or_init(Default::default)
+/// Mark contents: the stage path, then the version live in the app BEFORE the swap. The version
+/// lets a later run tell "swap never happened or was rolled back" (the live app still reports it)
+/// from "the live app is the unverified update and the stage holds the previous app".
+fn mark_contents(staged: &Path, previous_version: &str) -> String {
+    format!("{}\n{previous_version}", staged.display())
 }
 
-/// Fails while a previous failed swap left the only good app outside the app path. Fails closed:
-/// a mark that exists but cannot be read still counts as pending; only `NotFound` means none.
-fn ensure_no_recovery_pending(parent: &Path) -> Result<()> {
+/// Fails while a swap may have left the only good app outside the app path. Fails closed: a mark
+/// that exists but cannot be read still counts as pending; only `NotFound` means none. A mark
+/// whose recorded previous version is what the live bundle reports is stale (the swap never
+/// happened, or its rollback finished before the mark could be removed): the good app is at the
+/// app path, so the mark is cleared instead of sending the user to restore a rejected update.
+fn ensure_no_recovery_pending(bundle: &Path) -> Result<()> {
+    let parent = bundle
+        .parent()
+        .context("Application has no parent folder")?;
     let mark = parent.join(RECOVERY_MARK_NAME);
-    let kept = match fs::read_to_string(&mark) {
-        Ok(kept) => Some(kept.trim().to_owned()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            unmarked_recoveries().lock().ok().and_then(|set| {
-                set.iter()
-                    .find(|(app_dir, _)| app_dir == parent)
-                    .map(|(_, kept)| kept.display().to_string())
-            })
-        }
-        Err(_) => Some("(unknown: the recovery mark cannot be read)".to_owned()),
+    let text = match fs::read_to_string(&mark) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => "(unknown: the recovery mark cannot be read)".to_owned(),
     };
-    if let Some(kept) = kept {
-        return Err(anyhow::anyhow!(
-            "A previous update could not restore the app; the previous copy is kept at {kept}. Restore it manually, then delete {}",
-            mark.display()
-        )
-        .context(RecoveryNeeded));
+    let (kept, previous) = text.split_once('\n').unwrap_or((text.as_str(), ""));
+    let previous = previous.trim();
+    if !previous.is_empty()
+        && installed_version(bundle).as_deref() == Some(previous)
+        && fs::remove_file(&mark).is_ok()
+    {
+        return Ok(());
     }
-    Ok(())
+    let kept = kept.trim();
+    let detail = if Path::new(kept).exists() {
+        format!("the previous copy is kept at {kept}")
+    } else {
+        format!(
+            "its recorded previous copy {kept} is gone; if the app runs correctly, just delete the mark"
+        )
+    };
+    Err(anyhow::anyhow!(
+        "A previous update may not have finished; {detail}. Restore it manually if the app is broken, then delete {}",
+        mark.display()
+    )
+    .context(RecoveryNeeded))
 }
 
 /// Removes what a killed install left behind. Needs the lock, so no live install can own the
@@ -251,7 +262,7 @@ pub fn recover_interrupted(_lock: &InstallLock, bundle: &Path) -> Result<()> {
     let parent = bundle
         .parent()
         .context("Application has no parent folder")?;
-    ensure_no_recovery_pending(parent)?;
+    ensure_no_recovery_pending(bundle)?;
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
         if entry
@@ -585,25 +596,30 @@ pub fn swap_bundle(
     let parent = bundle
         .parent()
         .context("Application has no parent folder")?;
-    ensure_no_recovery_pending(parent)?;
+    ensure_no_recovery_pending(bundle)?;
     let backup = parent.join(BACKUP_NAME);
+    // Persist the swap intent BEFORE the exchange: a kill at any later point (even between the
+    // exchange and the rollback bookkeeping) leaves a mark that names the stage, so no later run
+    // deletes a stage that may hold the only previous app. If it cannot be written, nothing has
+    // changed yet and the install is refused.
+    let mark_path = parent.join(RECOVERY_MARK_NAME);
+    let previous_version = installed_version(bundle).unwrap_or_default();
+    ops.write_mark(&mark_path, &mark_contents(staged, &previous_version))
+        .context("Cannot record the swap before replacing the app; nothing was changed")?;
     if let Err(error) = ops.exchange(staged, bundle) {
+        // Nothing moved; a mark we cannot remove is stale and cleared by the next check.
+        let _ = fs::remove_file(&mark_path);
         bail!(
             "This volume cannot swap the app in place ({error}); the in-app install is unavailable here, use the copy command instead"
         );
     }
     // The old app now sits at `staged`; the new one is live.
     if let Err(error) = verify(bundle).context("The installed update failed verification") {
-        // Persist the recovery mark BEFORE the rollback can fail, so no later install can mistake
-        // the stage for a leftover and delete the only good app. Cleared again if rollback works.
-        let mark_path = parent.join(RECOVERY_MARK_NAME);
-        let marked = ops
-            .write_mark(&mark_path, &staged.display().to_string())
-            .is_ok();
         return match ops.exchange(staged, bundle) {
             Ok(()) => {
-                if marked && fs::remove_file(&mark_path).is_err() {
-                    // A stale mark only blocks installs (fail closed); say so.
+                if fs::remove_file(&mark_path).is_err() {
+                    // The mark still names the rejected stage, but the live app reports the
+                    // recorded previous version, so the next check clears it.
                     return Err(error.context(format!(
                         "Update rolled back, but {} could not be removed; delete it before retrying",
                         mark_path.display()
@@ -611,30 +627,30 @@ pub fn swap_bundle(
                 }
                 Err(error.context("Update rolled back; the previous app is unchanged"))
             }
-            Err(restore) => {
-                let note = if marked {
-                    String::new()
-                } else {
-                    // No on-disk guard: block retries in this process and warn the user.
-                    if let Ok(mut set) = unmarked_recoveries().lock() {
-                        set.push((parent.to_path_buf(), staged.to_path_buf()));
-                    }
-                    "; the recovery mark could not be written, so restore the app before running any installer".to_owned()
-                };
-                Err(error
-                    .context(format!(
-                        "Update failed and the previous app could not be restored ({restore}); it is kept at {}{note}",
-                        staged.display()
-                    ))
-                    .context(RecoveryNeeded))
-            }
+            Err(restore) => Err(error
+                .context(format!(
+                    "Update failed and the previous app could not be restored ({restore}); it is kept at {}",
+                    staged.display()
+                ))
+                .context(RecoveryNeeded)),
         };
     }
-    // Only now supersede the older backup, with the old app moving into its place.
+    // Only now supersede the older backup, with the old app moving into its place. If that
+    // fails, `staged` holds the only previous app: keep it and the mark, and report where.
     if remove_own(&backup).is_err() || ops.rename(staged, &backup).is_err() {
-        // No backup this time; the update itself succeeded.
-        let _ = remove_own(staged);
+        return Err(anyhow::anyhow!(
+            "The update is installed, but the previous app could not be kept as {}; it is left at {}",
+            backup.display(),
+            staged.display()
+        )
+        .context(RecoveryNeeded));
     }
+    fs::remove_file(&mark_path).with_context(|| {
+        format!(
+            "The update is installed, but {} could not be removed; delete it before the next update",
+            mark_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -669,11 +685,7 @@ pub fn install(
         url.starts_with("https://"),
         "Update downloads must use HTTPS"
     );
-    ensure_no_recovery_pending(
-        bundle
-            .parent()
-            .context("Application has no parent folder")?,
-    )?;
+    ensure_no_recovery_pending(bundle)?;
     let dir = work_dir(cache)?;
     let archive = tempfile::Builder::new()
         .prefix("download-")
@@ -1255,6 +1267,11 @@ mod tests {
         let staged = dir.join(format!("{STAGE_PREFIX}test"));
         fs::create_dir_all(staged.join("Contents/MacOS")).unwrap();
         fs::write(staged.join("Contents/MacOS").join(BINARY_NAME), b"new").unwrap();
+        fs::write(
+            staged.join("Contents/Info.plist"),
+            OLD_PLIST.replace("2.1.0.0", "2.2.2.0"),
+        )
+        .unwrap();
         (app, staged)
     }
 
@@ -1505,24 +1522,36 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_rollback_with_an_unwritable_mark_still_blocks_a_retry() {
+    fn an_unwritable_mark_refuses_the_swap_before_anything_moves() {
         let dir = tempfile::tempdir().unwrap();
         let (app, staged) = staged_pair(dir.path());
         let ops = FailingRollback {
             exchanges: Cell::new(0),
             mark_fails: true,
         };
+        let error = swap_bundle(&app, &staged, &ops, &ok_step).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("nothing was changed"),
+            "{error:#}"
+        );
+        assert_eq!(ops.exchanges.get(), 0, "no exchange without a mark");
+        assert_eq!(binary_of(&app), b"old");
+        assert_eq!(binary_of(&staged), b"new");
+        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+    }
+
+    #[test]
+    fn a_restart_after_a_failed_rollback_keeps_the_only_previous_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let ops = FailingRollback {
+            exchanges: Cell::new(0),
+            mark_fails: false,
+        };
         let reject = |_: &Path| -> Result<()> { bail!("bad signature") };
         let error = swap_bundle(&app, &staged, &ops, &reject).unwrap_err();
         assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
-        let text = format!("{error:#}");
-        assert!(
-            text.contains("recovery mark could not be written"),
-            "{text}"
-        );
-        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
-
-        // Retry: the only good copy must survive even though no mark is on disk.
+        // A restart keeps no in-process state: only the on-disk mark guards the stage.
         let lock = InstallLock::acquire(&app).unwrap();
         let error = recover_interrupted(&lock, &app).unwrap_err();
         assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
@@ -1550,6 +1579,79 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_mark_after_a_finished_rollback_is_cleared_not_followed() {
+        // Killed after the rollback exchange but before the mark was removed: the good app is
+        // live and the mark names the rejected update's stage.
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        fs::write(
+            dir.path().join(RECOVERY_MARK_NAME),
+            mark_contents(&staged, "2.1.0.0"),
+        )
+        .unwrap();
+        let lock = InstallLock::acquire(&app).unwrap();
+        recover_interrupted(&lock, &app).unwrap();
+        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+        assert!(stages_in(dir.path()).is_empty());
+        assert_eq!(binary_of(&app), b"old");
+    }
+
+    #[test]
+    fn a_kill_between_the_exchange_and_the_bookkeeping_keeps_the_previous_app() {
+        // The exchange completed (the update is live, unverified) and the process died: the
+        // mark written before the exchange must keep the stage, which holds the old app.
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let ops = Counting {
+            calls: Cell::new(0),
+            die_at: 2,
+            exchange: true,
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = swap_bundle(&app, &staged, &ops, &ok_step);
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(binary_of(&app), b"new");
+        let lock = InstallLock::acquire(&app).unwrap();
+        let error = recover_interrupted(&lock, &app).unwrap_err();
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
+        assert!(format!("{error:#}").contains(&staged.display().to_string()));
+        assert_eq!(binary_of(&staged), b"old", "the previous app survives");
+    }
+
+    #[test]
+    fn a_failed_backup_retirement_keeps_the_previous_app_and_reports_it() {
+        struct NoRename;
+        impl SwapOps for NoRename {
+            fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {
+                Err(io::Error::other("rename refused"))
+            }
+            fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+                let scratch = a.with_extension("scratch");
+                fs::rename(a, &scratch)?;
+                fs::rename(b, a)?;
+                fs::rename(&scratch, b)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        fs::create_dir_all(dir.path().join(BACKUP_NAME).join("older")).unwrap();
+        let error = swap_bundle(&app, &staged, &NoRename, &ok_step).unwrap_err();
+        assert!(error.downcast_ref::<RecoveryNeeded>().is_some());
+        assert!(format!("{error:#}").contains(&staged.display().to_string()));
+        assert_eq!(binary_of(&app), b"new");
+        assert_eq!(
+            binary_of(&staged),
+            b"old",
+            "the previous app is not deleted"
+        );
+        // install() must not clean it up either, and later runs stay blocked.
+        let lock = InstallLock::acquire(&app).unwrap();
+        assert!(recover_interrupted(&lock, &app).is_err());
+        assert_eq!(binary_of(&staged), b"old");
+    }
+
+    #[test]
     fn an_unreadable_recovery_mark_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         let (app, staged) = staged_pair(dir.path());
@@ -1565,8 +1667,8 @@ mod tests {
     }
 
     #[test]
-    fn the_mark_is_written_before_the_rollback_and_cleared_when_it_works() {
-        struct Spy(Cell<bool>);
+    fn the_mark_is_written_before_the_exchange_and_cleared_when_the_rollback_works() {
+        struct Spy(Cell<usize>);
         impl SwapOps for Spy {
             fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
                 fs::rename(from, to)
@@ -1574,7 +1676,7 @@ mod tests {
             fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
                 let mark = a.parent().unwrap().join(RECOVERY_MARK_NAME);
                 if mark.exists() {
-                    self.0.set(true);
+                    self.0.set(self.0.get() + 1);
                 }
                 let scratch = a.with_extension("scratch");
                 fs::rename(a, &scratch)?;
@@ -1584,11 +1686,11 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let (app, staged) = staged_pair(dir.path());
-        let spy = Spy(Cell::new(false));
+        let spy = Spy(Cell::new(0));
         let reject = |_: &Path| -> Result<()> { bail!("bad signature") };
-        // Exchange 1 (swap in) sees no mark; exchange 2 (rollback) must see it.
+        // The mark exists before the swap-in exchange and the rollback exchange alike.
         swap_bundle(&app, &staged, &spy, &reject).unwrap_err();
-        assert!(spy.0.get(), "mark existed before the rollback exchange");
+        assert_eq!(spy.0.get(), 2, "mark existed before both exchanges");
         assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
         assert_eq!(binary_of(&app), b"old");
     }
@@ -1605,9 +1707,16 @@ mod tests {
             );
             assert_eq!(installed == b"new", die_at == 2, "die_at {die_at}");
             let lock = InstallLock::acquire(&app).unwrap();
-            recover_interrupted(&lock, &app).unwrap();
+            if die_at == 1 {
+                // Nothing moved: the mark is stale and the unused stage is cleaned.
+                recover_interrupted(&lock, &app).unwrap();
+                assert!(stages_in(dir.path()).is_empty());
+            } else {
+                // The unverified update is live: the stage (old app) is kept, not cleaned.
+                assert!(recover_interrupted(&lock, &app).is_err());
+                assert_eq!(stages_in(dir.path()).len(), 1);
+            }
             assert_eq!(binary_of(&app), installed);
-            assert!(stages_in(dir.path()).is_empty());
         }
     }
 

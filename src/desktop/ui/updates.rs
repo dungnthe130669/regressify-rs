@@ -21,6 +21,8 @@ pub(super) struct UpdatePanel {
     startup_check_pending: bool,
     lease: Option<UpdateLease>,
     pub(super) install_on_close: bool,
+    /// A macOS relaunch is in flight (off the UI thread); a second Restart must not start another.
+    restarting: bool,
     /// Notify-only feed (macOS). Never shares state with the installer flow above.
     notice_feed: Option<UpdateFeed>,
     notice: Option<UpdateNotice>,
@@ -73,6 +75,7 @@ impl Default for UpdatePanel {
             startup_check_pending: true,
             lease: None,
             install_on_close: false,
+            restarting: false,
             notice_feed,
             notice: None,
             dismissed_notice: None,
@@ -94,11 +97,17 @@ impl UpdatePanel {
         if let Some(install) = &self.install {
             return install.get().message();
         }
-        if let Some(notice) = &self.notice {
-            return format!("Regressify {} is available", notice.version.display_short());
-        }
+        // Check progress and errors show even while a release notice is retained.
         if self.notice_checking {
             return "Checking for updates...".into();
+        }
+        if let Some(notice) = &self.notice {
+            let available = format!("Regressify {} is available", notice.version.display_short());
+            return if self.notice_message.starts_with(CHECK_FAILED_PREFIX) {
+                format!("{available}. {}", self.notice_message)
+            } else {
+                available
+            };
         }
         self.notice_message.clone()
     }
@@ -222,6 +231,8 @@ fn update_banner_colors(cx: &App) -> UpdateBannerColors {
     }
 }
 
+/// Prefix of the dialog message after a failed notice check (also tells `mac_status` to append it).
+const CHECK_FAILED_PREFIX: &str = "Update check failed: ";
 const DISMISSED_MESSAGE: &str = "A newer version is available, but its notice was dismissed. Use the install command or the release page.";
 
 impl Workbench {
@@ -488,6 +499,7 @@ impl Workbench {
     fn dismiss_update_notice(&mut self, version: Version, cx: &mut Context<Self>) {
         self.updates.update(cx, |state, cx| {
             state.dismissed_notice = state.notice.take().or(state.dismissed_notice.take());
+            state.notice_message = DISMISSED_MESSAGE.into();
             state.notice_dismissed = state.notice_dismissed.max(Some(version));
             cx.notify();
         });
@@ -669,6 +681,8 @@ impl Workbench {
                         Ok(NoticeOutcome::Available(notice)) => {
                             state.dismissed_notice = None;
                             state.notice = Some(notice);
+                            // A successful check clears an earlier failure message.
+                            state.notice_message.clear();
                         }
                         Ok(NoticeOutcome::Current) => {
                             state.notice = None;
@@ -682,7 +696,7 @@ impl Workbench {
                         }
                         // Silent in the banner; the dialog shows it and the next check retries.
                         Err(error) => {
-                            state.notice_message = format!("Update check failed: {error:#}");
+                            state.notice_message = format!("{CHECK_FAILED_PREFIX}{error:#}");
                             crate::diagnostics::startup::warning(
                                 crate::diagnostics::record::SafeValue::Desktop,
                                 &error,
@@ -1181,19 +1195,71 @@ impl Workbench {
         if self.updates.read(cx).install_on_close
             && let Some(app) = self.updates.read(cx).mac_restart_app()
         {
-            self.updates
-                .update(cx, |state, _| state.install_on_close = false);
-            // Absolute path, argument vector, no shell; `-n` opens a fresh instance.
-            let launched = std::process::Command::new("/usr/bin/open")
-                .arg("-n")
-                .arg(&app)
-                .status();
-            if !launched.as_ref().is_ok_and(|status| status.success()) {
-                self.status = "Cannot restart the updated app; open Regressify manually".into();
-                cx.notify();
+            self.updates.update(cx, |state, _| {
+                state.install_on_close = false;
+            });
+            if self.updates.read(cx).restarting {
                 return;
             }
-            cx.quit();
+            self.updates.update(cx, |state, _| state.restarting = true);
+            // Hand the workspace over: the new instance only opens it once this window no
+            // longer owns it (otherwise it would merely activate this one), so release the
+            // ownership first and take it back if the launch fails.
+            let workspace = self
+                .session
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.root.clone());
+            let directory = self
+                .preferences_path
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(Preferences::path)
+                .map(|path| path.with_file_name("instances"));
+            let released = workspace
+                .as_ref()
+                .and_then(|_| self.workspace_instance.take());
+            self.status = "Restarting...".into();
+            cx.notify();
+            // `/usr/bin/open` can stall in LaunchServices: wait for it off the UI thread.
+            let task = cx.background_executor().spawn(async move {
+                // Absolute path, argument vector, no shell; `-n` opens a fresh instance.
+                let mut command = std::process::Command::new("/usr/bin/open");
+                command.arg("-n").arg(&app);
+                if let Some(workspace) = &workspace {
+                    command.arg("--args").arg(workspace);
+                }
+                let launched = command.status();
+                if launched.as_ref().is_ok_and(|status| status.success()) {
+                    return (true, None);
+                }
+                // Launch failed: this window keeps running, so reclaim the workspace.
+                drop(released);
+                let reclaimed = match (&workspace, directory) {
+                    (Some(root), Ok(directory)) => match DesktopInstance::open(&directory, root) {
+                        Ok(OpenInstance::Owned(instance)) => Some(instance),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                (false, reclaimed)
+            });
+            cx.spawn(async move |view, cx| {
+                let (launched, reclaimed) = task.await;
+                let _ = view.update(cx, |this, cx| {
+                    this.updates.update(cx, |state, _| state.restarting = false);
+                    if launched {
+                        cx.quit();
+                        return;
+                    }
+                    if reclaimed.is_some() {
+                        this.workspace_instance = reclaimed;
+                    }
+                    this.status = "Cannot restart the updated app; open Regressify manually".into();
+                    cx.notify();
+                });
+            })
+            .detach();
             return;
         }
         if self.updates.read(cx).install_on_close {
