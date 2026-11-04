@@ -25,16 +25,14 @@ jobs:
       matrix:
         include:
           # Sharding experiment: split by libtest filter (substring, repeated --skip is allowed).
-          - variant: ui-tests
-            args: 'desktop::ui::tests::'
+          - variant: ui-half-a
+            args: 'desktop::ui::tests::s desktop::ui::tests::n desktop::ui::tests::w'
+          - variant: ui-half-b
+            args: 'desktop::ui::tests:: --skip desktop::ui::tests::s --skip desktop::ui::tests::n --skip desktop::ui::tests::w'
           - variant: ui-other
             args: 'desktop::ui:: --skip desktop::ui::tests::'
           - variant: rest
             args: '--skip desktop::ui::'
-          - variant: ui-tests-t2
-            args: 'desktop::ui::tests:: --test-threads=2'
-          - variant: ui-tests-t8
-            args: 'desktop::ui::tests:: --test-threads=8'
     env:
       # Set for compile AND run so cargo does not rebuild between the two steps.
       RUSTC_BOOTSTRAP: '1'
