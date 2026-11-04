@@ -137,6 +137,15 @@ pub enum NoticeOutcome {
     Available(UpdateNotice),
 }
 
+/// Result of one scheduled notice check, plus whether a feed request was actually sent.
+#[derive(Debug)]
+pub struct NoticeAttempt {
+    /// True once the feed request was dispatched, even if it then failed. Callers advance their
+    /// in-memory throttle only on this, never on cached or not-due polls.
+    pub dispatched: bool,
+    pub outcome: Result<NoticeOutcome>,
+}
+
 #[derive(Default, Deserialize, Serialize)]
 struct NoticeState {
     #[serde(default)]
@@ -705,8 +714,8 @@ impl UpdateFeed {
         cache: &Path,
         startup: bool,
         network_allowed: bool,
-    ) -> Result<NoticeOutcome> {
-        self.check_notice_with(
+    ) -> NoticeAttempt {
+        self.check_notice_attempt(
             cache,
             current,
             startup,
@@ -714,6 +723,26 @@ impl UpdateFeed {
             unix_timestamp(),
             || self.check_notice(current),
         )
+    }
+
+    fn check_notice_attempt(
+        &self,
+        cache: &Path,
+        current: Version,
+        startup: bool,
+        network_allowed: bool,
+        now: u64,
+        check: impl FnOnce() -> Result<NoticeCheck>,
+    ) -> NoticeAttempt {
+        let dispatched = std::cell::Cell::new(false);
+        let outcome = self.check_notice_with(cache, current, startup, network_allowed, now, || {
+            dispatched.set(true);
+            check()
+        });
+        NoticeAttempt {
+            dispatched: dispatched.get(),
+            outcome,
+        }
     }
 
     fn check_notice_with(
@@ -2844,6 +2873,54 @@ mod tests {
             })
             .unwrap();
         assert_eq!(held, NoticeOutcome::NotDue);
+    }
+
+    #[test]
+    fn only_a_dispatched_request_counts_as_an_attempt() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let never = || panic!("must not request");
+        let attempt = feed.check_notice_attempt(cache.path(), current(), true, true, 1_000, || {
+            Ok(NoticeCheck::Available(notice("2.2.2.0")))
+        });
+        assert!(attempt.dispatched);
+        // Cached polls (throttle closed) report the saved notice but never an attempt, so the
+        // caller's throttle is not refreshed and can reopen at its deadline.
+        for now in [1_005, 1_010] {
+            let attempt =
+                feed.check_notice_attempt(cache.path(), current(), false, false, now, never);
+            assert!(!attempt.dispatched);
+            assert_eq!(
+                attempt.outcome.unwrap(),
+                NoticeOutcome::Available(notice("2.2.2.0"))
+            );
+        }
+        UpdateFeed::dismiss_notice("2.2.2".parse().unwrap(), cache.path()).unwrap();
+        let attempt =
+            feed.check_notice_attempt(cache.path(), current(), false, false, 1_015, never);
+        assert!(!attempt.dispatched);
+        assert_eq!(attempt.outcome.unwrap(), NoticeOutcome::Dismissed);
+        // Allowed by the caller but not yet due on disk: still no request.
+        let attempt = feed.check_notice_attempt(cache.path(), current(), false, true, 1_020, never);
+        assert!(!attempt.dispatched);
+        // Past the deadline the request goes out again and finds a newer release.
+        let later = 1_000 + super::CHECK_INTERVAL.as_secs();
+        let attempt =
+            feed.check_notice_attempt(cache.path(), current(), false, true, later, || {
+                Ok(NoticeCheck::Available(notice("2.3.0.0")))
+            });
+        assert!(attempt.dispatched);
+        assert_eq!(
+            attempt.outcome.unwrap(),
+            NoticeOutcome::Available(notice("2.3.0.0"))
+        );
+        // A failed request still counts as an attempt (the 5 s retry loop stays throttled).
+        let attempt =
+            feed.check_notice_attempt(cache.path(), current(), true, true, later + 1, || {
+                Err(anyhow::anyhow!("offline"))
+            });
+        assert!(attempt.dispatched);
+        assert!(attempt.outcome.is_err());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use super::*;
 use crate::desktop::updates::{
-    CHECK_INTERVAL, CURRENT_VERSION, DownloadControl, NoticeOutcome, PreparedUpdate, Release,
-    RetryScheduled, SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck,
+    CHECK_INTERVAL, CURRENT_VERSION, DownloadControl, NoticeAttempt, NoticeOutcome, PreparedUpdate,
+    Release, RetryScheduled, SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck,
     UpdateFeed, UpdateLease, UpdateNotice, UpdatePlatform, Version, dismissal_hides,
 };
 use futures::FutureExt;
@@ -420,15 +420,25 @@ impl Workbench {
             state.notice_startup_pending = false;
         });
         let task = cx.background_executor().spawn(async move {
-            let current = CURRENT_VERSION.parse()?;
-            feed.check_notice_shared(current, &cache, startup, network_allowed)
+            match CURRENT_VERSION.parse() {
+                Ok(current) => feed.check_notice_shared(current, &cache, startup, network_allowed),
+                Err(error) => NoticeAttempt {
+                    dispatched: false,
+                    outcome: Err(error.into()),
+                },
+            }
         });
         cx.spawn_in(window, async move |view, cx| {
-            let result = task.await;
+            let NoticeAttempt {
+                dispatched,
+                outcome: result,
+            } = task.await;
             let _ = view.update_in(cx, |this, _, cx| {
                 this.updates.update(cx, |state, cx| {
                     state.notice_checking = false;
-                    if !matches!(result, Ok(NoticeOutcome::NotDue)) {
+                    // Only a sent request (failures included) restarts the throttle; cached polls
+                    // must not, or the deadline never arrives.
+                    if dispatched {
                         state.notice_attempted_at = Some(std::time::Instant::now());
                     }
                     match result {
