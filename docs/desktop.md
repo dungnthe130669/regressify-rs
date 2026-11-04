@@ -244,7 +244,7 @@ downgrade an installed version. Local preparation removes the network dependency
 from installation, but disk errors, security software, or running app instances
 can still prevent setup from completing. Unconfigured development builds and Linux builds
 do not contact the update service; macOS builds only check for a notice (see
-[macOS update notice](#macos-update-notice-notify-only)).
+[macOS update notice](#macos-update-notice-and-opt-in-install)).
 
 The public feed is `https://regressify.eshn.dev/downloads/latest.txt`. It selects
 the site's supported version; binaries remain on GitHub Releases. Official builds
@@ -267,13 +267,13 @@ Musl distributions and Linux ARM64 are not supported by prebuilt releases; the
 installer rejects them before downloading or changing files. Linux desktop still requires compatible
 system GUI libraries. The script requires curl, unzip, and a SHA-256 tool; it
 verifies every selected archive before replacing binaries and does not edit shell
-profiles. Non-Windows in-app updates remain unavailable; rerun the terminal command (macOS shows
-a notice that names it).
+profiles. Linux in-app updates remain unavailable; rerun the terminal command. macOS shows a notice
+and can install in place (see below).
 
-### macOS update notice (notify only)
+### macOS update notice and opt-in install
 
 Official macOS builds (Intel and Apple silicon) check the same release feed at
-startup and then every eight hours, but never download or install anything. When
+startup and then every eight hours. Checking never downloads or installs anything. When
 the feed's `version` is newer, a banner reads "Regressify <version> is available"
 that shows the install command (`curl -fsSL https://<update-origin>/install.sh | sh`,
 host taken from the build's update origin) with a **Copy command** button,
@@ -287,7 +287,40 @@ the last announced release, and the dismissal live in `updates/notice.json`,
 separate from the Windows installer state, and are updated under a lock. Open
 macOS windows share them: a release found by one window appears in the others on
 their next poll, and dismissing in one hides it in the rest. Linux builds have no
-update check. macOS behavior is unverified on real hardware.
+update check. Versions are shown without a trailing `.0` (`2.2.2.0` reads `2.2.2`).
+The **Software updates** dialog uses the same state: running version, status (up to
+date, available, checking, or the error), an enabled **Check for updates** that forces
+the notice check (skipping only the eight-hour deadline), and the same **Update now**
+or **Copy command** controls as the banner. Linux builds have no update check.
+
+**Update now** appears only when the running binary is inside a `Regressify.app`
+whose folder the user can write to; otherwise (bare binary, `cargo run`, read-only
+folder) only the copy-command flow is offered. Clicking it, and nothing earlier:
+
+1. fetches a fresh manifest and picks `archive.regressify-desktop-<aarch64|x86_64>-apple-darwin.zip`
+   (size and SHA-256), then downloads
+   `https://github.com/precise-alloy/regressify-rs/releases/download/<tag>/<archive>`
+   over HTTPS with the Windows updater's GitHub-only redirect allowlist, into a private
+   (0700) folder under the user's update cache;
+2. aborts and deletes the download unless it is exactly the announced size (capped at
+   256 MiB) and matches the SHA-256;
+3. extracts only `regressify-desktop` after checking every entry (only
+   `regressify-desktop`, `LICENSE`, `LICENSING.md`; no paths, absolute names, or symlinks);
+4. copies the installed bundle beside it (`.Regressify.app.update-stage`), replaces only
+   `Contents/MacOS/regressify-desktop`, ad-hoc signs with `/usr/bin/codesign --force --deep --sign -`
+   and checks `codesign --verify`;
+5. renames the old app to `Regressify.app.previous` (the single backup; older backups are
+   removed) and the staged app into place, verifying again and rolling back on any failure;
+6. shows **Restart**. Restart uses the same unsaved-work guard as quitting, then runs
+   `/usr/bin/open -n <app>` and quits; unsaved work is never discarded silently.
+
+The banner shows Downloading n%, Verifying, Installing, Restart, or Failed with the
+reason (the install command is offered again after a failure). A per-user lock
+(`updates/macos-install/macos-install.lock`) allows one installer at a time. There is no
+shell, script execution, sudo, osascript, background download, or host other than the
+update origin and GitHub releases. `Info.plist` keeps the version it was installed with.
+The install steps are covered by Linux unit tests with injected downloader and signer;
+the macOS UI and real `codesign`/`open` behavior are unverified on real hardware.
 
 ## Git
 
