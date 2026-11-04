@@ -265,10 +265,11 @@ pub fn install_macos_update(
     feed: &UpdateFeed,
     bundle: &Path,
     cache: &Path,
-    current: Version,
+    current: &str,
     handle: &InstallHandle,
 ) -> Result<()> {
     let run = || -> Result<()> {
+        let current: Version = current.parse()?;
         let _lock = macos_install::InstallLock::acquire(cache)?;
         let plan = feed.macos_install_plan(current)?;
         let deps = macos_install::Deps {

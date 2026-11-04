@@ -1,8 +1,9 @@
 use super::*;
 use crate::desktop::updates::{
-    CHECK_INTERVAL, CURRENT_VERSION, DownloadControl, NoticeAttempt, NoticeOutcome, PreparedUpdate,
-    Release, RetryScheduled, SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck,
-    UpdateFeed, UpdateLease, UpdateNotice, UpdatePlatform, Version, dismissal_hides,
+    CHECK_INTERVAL, CURRENT_VERSION, DownloadControl, InstallHandle, InstallState, NoticeAttempt,
+    NoticeOutcome, PreparedUpdate, Release, RetryScheduled, SHARED_POLL_INTERVAL,
+    SharedUpdateCheck, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateLease, UpdateNotice,
+    UpdatePlatform, Version, dismissal_hides, install_macos_update, macos_install,
 };
 use futures::FutureExt;
 
@@ -31,6 +32,13 @@ pub(super) struct UpdatePanel {
     notice_dismissed: Option<Version>,
     /// In-memory throttle: holds the interval even when `notice.json` cannot be saved.
     notice_attempted_at: Option<std::time::Instant>,
+    /// Last check result for the dialog (up to date / failed); the banner stays silent.
+    notice_message: String,
+    /// The running app's `Regressify.app`, set only when its folder is writable. Without it
+    /// macOS keeps the copy-the-command flow and shows no "Update now".
+    install_bundle: Option<std::path::PathBuf>,
+    /// Progress of an in-app install; shared with the worker thread.
+    install: Option<InstallHandle>,
 }
 
 impl Default for UpdatePanel {
@@ -39,6 +47,9 @@ impl Default for UpdatePanel {
         let notice_feed = configured
             .clone()
             .filter(|feed| feed.platform() == UpdatePlatform::MacOs);
+        let install_bundle = notice_feed
+            .as_ref()
+            .and_then(|_| macos_install::installable_bundle());
         // The download/install machinery stays Windows-only.
         let feed = configured.filter(|feed| feed.platform() == UpdatePlatform::WindowsX64);
         Self {
@@ -66,11 +77,39 @@ impl Default for UpdatePanel {
             notice_task: None,
             notice_dismissed: None,
             notice_attempted_at: None,
+            notice_message: "Ready to check for updates".into(),
+            install_bundle,
+            install: None,
         }
     }
 }
 
 impl UpdatePanel {
+    /// Dialog status on macOS, from the same state the banner reads.
+    fn mac_status(&self) -> String {
+        if let Some(install) = &self.install {
+            return install.get().message();
+        }
+        if let Some(notice) = &self.notice {
+            return format!("Regressify {} is available", notice.version.display_short());
+        }
+        if self.notice_checking {
+            return "Checking for updates...".into();
+        }
+        self.notice_message.clone()
+    }
+
+    fn install_state(&self) -> Option<InstallState> {
+        self.install.as_ref().map(InstallHandle::get)
+    }
+
+    /// New app to relaunch once an install finished.
+    fn mac_restart_app(&self) -> Option<std::path::PathBuf> {
+        matches!(self.install_state(), Some(InstallState::Restart))
+            .then(|| self.install_bundle.clone())
+            .flatten()
+    }
+
     fn begin_download(&mut self, release: &Release) -> DownloadControl {
         let control = DownloadControl::new(release);
         self.working = true;
@@ -179,6 +218,8 @@ fn update_banner_colors(cx: &App) -> UpdateBannerColors {
     }
 }
 
+const DISMISSED_MESSAGE: &str = "A newer version is available, but its notice was dismissed. Use the install command or the release page.";
+
 impl Workbench {
     pub(super) fn render_update_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let update = self.updates.read(cx);
@@ -280,9 +321,26 @@ impl Workbench {
         let update = self.updates.read(cx);
         let notice = update.notice.as_ref()?;
         let feed = update.notice_feed.as_ref()?;
-        let title = format!("Regressify {} is available", notice.version);
-        let detail =
-            "Run the install command in a terminal to update, or review the release notes.";
+        let title = format!("Regressify {} is available", notice.version.display_short());
+        let install_state = update.install_state();
+        let can_install = update.install_bundle.is_some();
+        let failed = matches!(install_state, Some(InstallState::Failed(_)));
+        let restart = matches!(install_state, Some(InstallState::Restart));
+        let installing = install_state
+            .as_ref()
+            .is_some_and(InstallState::in_progress);
+        let detail = match &install_state {
+            Some(state) => state.message(),
+            None if can_install => {
+                "Update now downloads, verifies and installs it; you restart when it is done."
+                    .to_owned()
+            }
+            None => "Run the install command in a terminal to update, or review the release notes."
+                .to_owned(),
+        };
+        // Without a replaceable app bundle the command is the only path, and after a failed
+        // install it is the fallback.
+        let show_command = !can_install || failed;
         let command = feed.install_command();
         let copy_command = command.clone();
         let release_url = notice.release_url();
@@ -338,31 +396,61 @@ impl Workbench {
                                         .whitespace_normal()
                                         .child(detail),
                                 )
-                                .child(
-                                    // Shown so the banner is self-explanatory; wraps instead of clipping on narrow windows.
-                                    div()
-                                        .id("update-notice-command")
-                                        .test_support()
-                                        .text_xs()
-                                        .font_family(cx.theme().mono_font_family.clone())
-                                        .text_color(colors.title)
-                                        .whitespace_normal()
-                                        .child(command),
-                                ),
-                        )
-                        .child(
-                            // `CopyText` is icon-only; the banner needs a visible instruction.
-                            Button::new("update-notice-copy")
-                                .flex_shrink_0()
-                                .icon(gpui_kit::assets::IconName::Copy)
-                                .label("Copy command")
-                                .tooltip("Copy install command")
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        copy_command.clone(),
-                                    ));
+                                .when(show_command, |column| {
+                                    column.child(
+                                        // Shown so the banner is self-explanatory; wraps instead of clipping on narrow windows.
+                                        div()
+                                            .id("update-notice-command")
+                                            .test_support()
+                                            .text_xs()
+                                            .font_family(cx.theme().mono_font_family.clone())
+                                            .text_color(colors.title)
+                                            .whitespace_normal()
+                                            .child(command),
+                                    )
                                 }),
                         )
+                        .when(can_install && !installing && !restart, |row| {
+                            row.child(
+                                Button::new("update-notice-install")
+                                    .primary()
+                                    .flex_shrink_0()
+                                    .icon(gpui_kit::assets::IconName::Download)
+                                    .label("Update now")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.start_macos_install(window, cx)
+                                    })),
+                            )
+                        })
+                        .when(restart, |row| {
+                            row.child(
+                                Button::new("update-notice-restart")
+                                    .primary()
+                                    .flex_shrink_0()
+                                    .icon(gpui_kit::assets::IconName::RotateCw)
+                                    .label("Restart")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.request_macos_restart(window, cx)
+                                    })),
+                            )
+                        })
+                        .when(show_command && !installing && !restart, |row| {
+                            row.child(
+                                // `CopyText` is icon-only; the banner needs a visible instruction.
+                                Button::new("update-notice-copy")
+                                    .flex_shrink_0()
+                                    .icon(gpui_kit::assets::IconName::Copy)
+                                    .label("Copy command")
+                                    .tooltip("Copy install command")
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_command.clone(),
+                                        ));
+                                    }),
+                            )
+                        })
                         .child(
                             Button::new("update-notice-release")
                                 .flex_shrink_0()
@@ -375,17 +463,19 @@ impl Workbench {
                                     }
                                 })),
                         )
-                        .child(
-                            Button::new("update-notice-dismiss")
-                                .ghost()
-                                .flex_shrink_0()
-                                .icon(gpui_kit::assets::IconName::X)
-                                .accessibility_label("Dismiss update notice")
-                                .tooltip("Dismiss until a newer version")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.dismiss_update_notice(version, cx)
-                                })),
-                        ),
+                        .when(!installing, |row| {
+                            row.child(
+                                Button::new("update-notice-dismiss")
+                                    .ghost()
+                                    .flex_shrink_0()
+                                    .icon(gpui_kit::assets::IconName::X)
+                                    .accessibility_label("Dismiss update notice")
+                                    .tooltip("Dismiss until a newer version")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.dismiss_update_notice(version, cx)
+                                    })),
+                            )
+                        }),
                 )
                 .into_any_element(),
         )
@@ -413,6 +503,81 @@ impl Workbench {
         cx.notify();
     }
 
+    /// "Update now": download, verify, stage and swap off the UI thread. Nothing runs before
+    /// this click, and the running app is untouched until the final atomic swap.
+    fn start_macos_install(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.updates.read(cx);
+        if self.busy
+            || state.notice.is_none()
+            || state
+                .install_state()
+                .is_some_and(|s| matches!(s, InstallState::Restart) || s.in_progress())
+        {
+            return;
+        }
+        let (Some(feed), Some(bundle), Some(cache)) = (
+            state.notice_feed.clone(),
+            state.install_bundle.clone(),
+            self.update_cache_dir(),
+        ) else {
+            return;
+        };
+        let handle = InstallHandle::new();
+        let worker = handle.clone();
+        self.updates.update(cx, |state, cx| {
+            state.install = Some(handle);
+            cx.notify();
+        });
+        cx.background_executor()
+            .spawn(async move {
+                // The outcome is published through the handle.
+                let _ = install_macos_update(&feed, &bundle, &cache, CURRENT_VERSION, &worker);
+            })
+            .detach();
+        // Re-render while the worker runs; stops once it reaches Restart or Failed.
+        cx.spawn_in(window, async move |view, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                let running = view.update_in(cx, |this, _, cx| {
+                    let running = this
+                        .updates
+                        .read(cx)
+                        .install_state()
+                        .is_some_and(|state| state.in_progress());
+                    this.updates.update(cx, |_, cx| cx.notify());
+                    cx.notify();
+                    running
+                });
+                if !matches!(running, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// "Restart": same unsaved-work guard as quitting, then relaunch from `quit_or_install`.
+    fn request_macos_restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy
+            || self.runs.read(cx).running()
+            || self.updates.read(cx).mac_restart_app().is_none()
+        {
+            return;
+        }
+        if self.session.open.is_some()
+            && let Err(error) = self.flush_drafts(window, cx)
+        {
+            self.status = format!("Cannot restart to update: {error:#}");
+            cx.notify();
+            return;
+        }
+        window.close_dialog(cx);
+        self.guard(files::Pending::Update, window, cx);
+    }
+
     fn update_cache_dir(&self) -> Option<std::path::PathBuf> {
         self.preferences_path
             .as_ref()
@@ -420,6 +585,12 @@ impl Workbench {
     }
 
     fn start_notice_check(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_notice_check(false, window, cx);
+    }
+
+    /// `force` is the dialog's "Check for updates": it skips only the eight-hour deadline,
+    /// like the startup check, and shares the banner's state and request path.
+    fn run_notice_check(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.updates.read(cx);
         if state.notice_checking {
             return;
@@ -427,7 +598,7 @@ impl Workbench {
         let Some(feed) = state.notice_feed.clone() else {
             return;
         };
-        let startup = state.notice_startup_pending;
+        let startup = state.notice_startup_pending || force;
         let network_allowed = startup
             || state
                 .notice_attempted_at
@@ -467,17 +638,26 @@ impl Workbench {
                         Ok(NoticeOutcome::Available(notice))
                             if dismissal_hides(state.notice_dismissed, notice.version) =>
                         {
-                            state.notice = None
+                            state.notice = None;
+                            state.notice_message = DISMISSED_MESSAGE.into();
                         }
                         Ok(NoticeOutcome::Available(notice)) => state.notice = Some(notice),
-                        Ok(NoticeOutcome::Current | NoticeOutcome::Dismissed) => {
-                            state.notice = None
+                        Ok(NoticeOutcome::Current) => {
+                            state.notice = None;
+                            state.notice_message = "Regressify is up to date".into();
                         }
-                        // Silent in the UI; the next scheduled check retries.
-                        Err(error) => crate::diagnostics::startup::warning(
-                            crate::diagnostics::record::SafeValue::Desktop,
-                            &error,
-                        ),
+                        Ok(NoticeOutcome::Dismissed) => {
+                            state.notice = None;
+                            state.notice_message = DISMISSED_MESSAGE.into();
+                        }
+                        // Silent in the banner; the dialog shows it and the next check retries.
+                        Err(error) => {
+                            state.notice_message = format!("Update check failed: {error:#}");
+                            crate::diagnostics::startup::warning(
+                                crate::diagnostics::record::SafeValue::Desktop,
+                                &error,
+                            )
+                        }
                     }
                     cx.notify();
                 });
@@ -520,6 +700,31 @@ impl Workbench {
             let state = updates.read(cx);
             let working = state.working;
             let prepared = state.prepared.is_some();
+            // macOS shows the banner's notice state; Windows keeps its installer state.
+            let mac = state.notice_feed.is_some();
+            let status_text = if mac {
+                state.mac_status()
+            } else {
+                state.message.clone()
+            };
+            let install_state = state.install_state();
+            let install_running = install_state
+                .as_ref()
+                .is_some_and(InstallState::in_progress);
+            let can_install = mac && state.install_bundle.is_some() && state.notice.is_some();
+            let offer_install = can_install
+                && !install_running
+                && !matches!(install_state, Some(InstallState::Restart));
+            let restart = mac && matches!(install_state, Some(InstallState::Restart));
+            let copy_command = state
+                .notice_feed
+                .as_ref()
+                .zip(state.notice.as_ref())
+                .filter(|_| {
+                    state.install_bundle.is_none()
+                        || matches!(install_state, Some(InstallState::Failed(_)))
+                })
+                .map(|(feed, _)| feed.install_command());
             dialog
                 .title("Software updates")
                 .child(format!("Regressify Desktop {CURRENT_VERSION}"))
@@ -527,13 +732,25 @@ impl Workbench {
                     div()
                         .id("update-status")
                         .role(Role::Status)
-                        .aria_label(state.message.clone())
+                        .aria_label(status_text.clone())
                         .test_support()
                         .text_sm()
                         .w_full()
                         .whitespace_normal()
-                        .child(state.message.clone()),
+                        .child(status_text),
                 )
+                .when_some(copy_command.clone(), |dialog, command| {
+                    dialog.child(
+                        div()
+                            .id("update-dialog-command")
+                            .test_support()
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .w_full()
+                            .whitespace_normal()
+                            .child(command),
+                    )
+                })
                 .when_some(state.download.as_ref(), |dialog, control| {
                     let progress = control.progress();
                     dialog.child(
@@ -584,11 +801,58 @@ impl Workbench {
                             Button::new("update-check")
                                 .icon(gpui_kit::assets::IconName::RefreshCw)
                                 .label("Check for updates")
-                                .disabled(state.feed.is_none() || working)
-                                .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                    this.start_update_check(true, window, cx);
-                                })),
+                                .disabled(if mac {
+                                    state.notice_checking || install_running
+                                } else {
+                                    state.feed.is_none() || working
+                                })
+                                .on_click(window.listener_for(
+                                    &view,
+                                    move |this, _, window, cx| {
+                                        if mac {
+                                            this.run_notice_check(true, window, cx);
+                                        } else {
+                                            this.start_update_check(true, window, cx);
+                                        }
+                                    },
+                                )),
                         )
+                        .when(offer_install, |footer| {
+                            footer.child(
+                                Button::new("update-now")
+                                    .primary()
+                                    .icon(gpui_kit::assets::IconName::Download)
+                                    .label("Update now")
+                                    .disabled(install_blocked)
+                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                        this.start_macos_install(window, cx);
+                                    })),
+                            )
+                        })
+                        .when(restart, |footer| {
+                            footer.child(
+                                Button::new("update-restart")
+                                    .primary()
+                                    .icon(gpui_kit::assets::IconName::RotateCw)
+                                    .label("Restart")
+                                    .disabled(install_blocked)
+                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
+                                        this.request_macos_restart(window, cx);
+                                    })),
+                            )
+                        })
+                        .when_some(copy_command, |footer, command| {
+                            footer.child(
+                                Button::new("update-copy-command")
+                                    .icon(gpui_kit::assets::IconName::Copy)
+                                    .label("Copy command")
+                                    .on_click(move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            command.clone(),
+                                        ));
+                                    }),
+                            )
+                        })
                         .when(prepared, |footer| {
                             footer.child(
                                 Button::new("update-install")
@@ -867,7 +1131,8 @@ impl Workbench {
         if self.busy
             || self.unsaved(cx)
             || self.runs.read(cx).running()
-            || self.updates.read(cx).prepared.is_none()
+            || (self.updates.read(cx).prepared.is_none()
+                && self.updates.read(cx).mac_restart_app().is_none())
         {
             return;
         }
@@ -877,6 +1142,25 @@ impl Workbench {
     }
 
     pub(super) fn quit_or_install(&mut self, cx: &mut Context<Self>) {
+        // macOS: the new app is already in place; relaunch it, then quit this instance.
+        if self.updates.read(cx).install_on_close
+            && let Some(app) = self.updates.read(cx).mac_restart_app()
+        {
+            self.updates
+                .update(cx, |state, _| state.install_on_close = false);
+            // Absolute path, argument vector, no shell; `-n` opens a fresh instance.
+            let launched = std::process::Command::new("/usr/bin/open")
+                .arg("-n")
+                .arg(&app)
+                .status();
+            if !launched.as_ref().is_ok_and(|status| status.success()) {
+                self.status = "Cannot restart the updated app; open Regressify manually".into();
+                cx.notify();
+                return;
+            }
+            cx.quit();
+            return;
+        }
         if self.updates.read(cx).install_on_close {
             let workspace = self
                 .session
