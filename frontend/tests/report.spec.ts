@@ -2395,6 +2395,40 @@ test("image viewer zooms to 2500% and pixelates only when magnified", async ({ p
   await expect.poll(rendering).toBe("auto");
 });
 
+test("image viewer follows device pixel ratio changes without zooming", async ({ page }) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png");
+  const world = page.locator(".image-world").first();
+  const image = world.locator("img").first();
+  await expect(image).toBeVisible();
+  const cdp = await page.context().newCDPSession(page);
+  const viewport = page.viewportSize() ?? { width: 1280, height: 720 };
+  // The override alone fires no event, so also resize by 1px like a real display move would.
+  let nudge = 0;
+  const nextWidth = () => {
+    nudge = 1 - nudge;
+    return viewport.width + nudge;
+  };
+  const setRatio = (deviceScaleFactor: number) =>
+    cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: nextWidth(),
+      height: viewport.height,
+      deviceScaleFactor,
+      mobile: false,
+    });
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  await setRatio(1);
+  await expect(world).toHaveAttribute("data-magnified", "false");
+  await expect(image).toHaveCSS("image-rendering", "auto");
+  await setRatio(2);
+  await expect(world).toHaveAttribute("data-magnified", "true");
+  await expect(image).toHaveCSS("image-rendering", "pixelated");
+  await setRatio(1);
+  await expect(world).toHaveAttribute("data-magnified", "false");
+  await expect(image).toHaveCSS("image-rendering", "auto");
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+});
+
 test("image viewer fit, anchored zoom, drag and keyboard controls stay scoped", async ({
   page,
 }, info) => {

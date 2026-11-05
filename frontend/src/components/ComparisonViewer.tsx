@@ -83,6 +83,28 @@ export function imageFitScale(image: Size, viewport: Size, fit: Fit): number {
   );
 }
 
+function useDevicePixelRatio(): number {
+  const [ratio, setRatio] = useState(() =>
+    typeof window === "undefined" ? 1 : window.devicePixelRatio,
+  );
+  useEffect(() => {
+    let query: MediaQueryList;
+    const update = () => {
+      query?.removeEventListener("change", update);
+      setRatio(window.devicePixelRatio);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      query.addEventListener("change", update);
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      query.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+  return ratio;
+}
+
 function useImageSizes(capture: Capture) {
   const [sizes, setSizes] = useState<Record<string, Size>>({});
   useEffect(() => {
@@ -162,6 +184,7 @@ export function ComparisonViewer({
   } | null>(null);
   const [viewport, setViewport] = useState<Size>({ width: 0, height: 0 });
   const [panning, setPanning] = useState(false);
+  const pixelRatio = useDevicePixelRatio();
   const world = useRef<HTMLDivElement>(null);
   const viewer = useRef<HTMLElement>(null);
   const canvas = useRef<HTMLElement>(null);
@@ -865,7 +888,7 @@ export function ComparisonViewer({
                     <div
                       ref={index === 0 ? world : undefined}
                       className="image-world"
-                      data-magnified={scale * window.devicePixelRatio > 1}
+                      data-magnified={scale * pixelRatio > 1}
                       style={{
                         width: size.width,
                         height: size.height,
