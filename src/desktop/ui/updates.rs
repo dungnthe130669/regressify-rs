@@ -8,6 +8,21 @@ use crate::desktop::updates::{
 };
 use futures::FutureExt;
 
+/// Starts the replacement app (app bundle, workspace) and reports whether it launched.
+/// Injected so GUI tests never open a real application.
+pub(super) type Relauncher =
+    std::sync::Arc<dyn Fn(&std::path::Path, Option<&std::path::Path>) -> bool + Send + Sync>;
+
+/// Absolute path, argument vector, no shell; `-n` opens a fresh instance.
+fn open_new_instance(app: &std::path::Path, workspace: Option<&std::path::Path>) -> bool {
+    let mut command = std::process::Command::new("/usr/bin/open");
+    command.arg("-n").arg(app);
+    if let Some(workspace) = workspace {
+        command.arg("--args").arg(workspace);
+    }
+    command.status().is_ok_and(|status| status.success())
+}
+
 pub(super) struct UpdatePanel {
     feed: Option<UpdateFeed>,
     working: bool,
@@ -24,6 +39,7 @@ pub(super) struct UpdatePanel {
     pub(super) install_on_close: bool,
     /// A macOS relaunch is in flight (off the UI thread); a second Restart must not start another.
     restarting: bool,
+    relaunch: Relauncher,
     /// Notify-only feed (macOS). Never shares state with the installer flow above.
     notice_feed: Option<UpdateFeed>,
     notice: Option<UpdateNotice>,
@@ -77,6 +93,7 @@ impl Default for UpdatePanel {
             lease: None,
             install_on_close: false,
             restarting: false,
+            relaunch: std::sync::Arc::new(open_new_instance),
             notice_feed,
             notice: None,
             dismissed_notice: None,
@@ -122,6 +139,83 @@ impl UpdatePanel {
         matches!(self.install_state(), Some(InstallState::Restart))
             .then(|| self.install_bundle.clone())
             .flatten()
+    }
+
+    /// Applies one finished notice check. Split out so tests can feed a result without a request.
+    fn apply_notice_attempt(&mut self, attempt: NoticeAttempt, cx: &mut Context<Self>) {
+        let NoticeAttempt {
+            dispatched,
+            outcome: result,
+        } = attempt;
+        self.notice_checking = false;
+        // Only a sent request (failures included) restarts the throttle; cached polls
+        // must not, or the deadline never arrives.
+        if dispatched {
+            self.notice_attempted_at = Some(std::time::Instant::now());
+        }
+        match result {
+            Ok(NoticeOutcome::NotDue) => {}
+            // A stale result must not restore a banner dismissed meanwhile.
+            Ok(NoticeOutcome::Available(notice))
+                if dismissal_hides(self.notice_dismissed, notice.version) =>
+            {
+                self.notice = None;
+                self.dismissed_notice = Some(notice);
+                self.notice_message = DISMISSED_MESSAGE.into();
+            }
+            Ok(NoticeOutcome::Available(notice)) => {
+                self.dismissed_notice = None;
+                self.notice = Some(notice);
+                // Only a cached poll keeps an earlier failure; any other old
+                // message would contradict the available release.
+                self.notice_message =
+                    notice_message_after_success(dispatched, &self.notice_message, "");
+            }
+            Ok(NoticeOutcome::Current) => {
+                self.notice = None;
+                self.dismissed_notice = None;
+                self.notice_message = notice_message_after_success(
+                    dispatched,
+                    &self.notice_message,
+                    "Regressify is up to date",
+                );
+            }
+            Ok(NoticeOutcome::Dismissed(notice)) => {
+                self.notice = None;
+                self.dismissed_notice = Some(notice);
+                self.notice_message = DISMISSED_MESSAGE.into();
+            }
+            // Silent in the banner; the dialog shows it and the next check retries.
+            Err(error) => {
+                self.notice_message = format!("{CHECK_FAILED_PREFIX}{error:#}");
+                crate::diagnostics::startup::warning(
+                    crate::diagnostics::record::SafeValue::Desktop,
+                    &error,
+                )
+            }
+        }
+        cx.notify();
+    }
+
+    /// Seeds a macOS notice (no network, throttled) for GUI tests. With `relaunch` the install
+    /// is finished and the banner offers Restart through that non-launching callback.
+    #[cfg(all(test, feature = "gui-tests"))]
+    pub(super) fn seed_macos(&mut self, relaunch: Option<Relauncher>) {
+        let feed =
+            UpdateFeed::for_origin(Some("https://regressify.eshn.dev"), UpdatePlatform::MacOs)
+                .unwrap();
+        self.notice = Some(
+            feed.parse_notice_manifest("version=9999.9999.9999.9999\ntag=v9999.9999.9999\n")
+                .unwrap(),
+        );
+        self.notice_feed = Some(feed);
+        self.notice_startup_pending = false;
+        self.notice_attempted_at = Some(std::time::Instant::now());
+        if let Some(relaunch) = relaunch {
+            self.install_bundle = Some(std::path::PathBuf::from("/nonexistent/Regressify.app"));
+            self.install = Some(InstallHandle::restarted());
+            self.relaunch = relaunch;
+        }
     }
 
     fn begin_download(&mut self, release: &Release) -> DownloadControl {
@@ -656,61 +750,10 @@ impl Workbench {
             }
         });
         cx.spawn_in(window, async move |view, cx| {
-            let NoticeAttempt {
-                dispatched,
-                outcome: result,
-            } = task.await;
+            let attempt = task.await;
             let _ = view.update_in(cx, |this, _, cx| {
-                this.updates.update(cx, |state, cx| {
-                    state.notice_checking = false;
-                    // Only a sent request (failures included) restarts the throttle; cached polls
-                    // must not, or the deadline never arrives.
-                    if dispatched {
-                        state.notice_attempted_at = Some(std::time::Instant::now());
-                    }
-                    match result {
-                        Ok(NoticeOutcome::NotDue) => {}
-                        // A stale result must not restore a banner dismissed meanwhile.
-                        Ok(NoticeOutcome::Available(notice))
-                            if dismissal_hides(state.notice_dismissed, notice.version) =>
-                        {
-                            state.notice = None;
-                            state.dismissed_notice = Some(notice);
-                            state.notice_message = DISMISSED_MESSAGE.into();
-                        }
-                        Ok(NoticeOutcome::Available(notice)) => {
-                            state.dismissed_notice = None;
-                            state.notice = Some(notice);
-                            // Only a cached poll keeps an earlier failure; any other old
-                            // message would contradict the available release.
-                            state.notice_message =
-                                notice_message_after_success(dispatched, &state.notice_message, "");
-                        }
-                        Ok(NoticeOutcome::Current) => {
-                            state.notice = None;
-                            state.dismissed_notice = None;
-                            state.notice_message = notice_message_after_success(
-                                dispatched,
-                                &state.notice_message,
-                                "Regressify is up to date",
-                            );
-                        }
-                        Ok(NoticeOutcome::Dismissed(notice)) => {
-                            state.notice = None;
-                            state.dismissed_notice = Some(notice);
-                            state.notice_message = DISMISSED_MESSAGE.into();
-                        }
-                        // Silent in the banner; the dialog shows it and the next check retries.
-                        Err(error) => {
-                            state.notice_message = format!("{CHECK_FAILED_PREFIX}{error:#}");
-                            crate::diagnostics::startup::warning(
-                                crate::diagnostics::record::SafeValue::Desktop,
-                                &error,
-                            )
-                        }
-                    }
-                    cx.notify();
-                });
+                this.updates
+                    .update(cx, |state, cx| state.apply_notice_attempt(attempt, cx));
                 cx.notify();
             });
         })
@@ -1232,19 +1275,13 @@ impl Workbench {
             self.status = "Restarting...".into();
             cx.notify();
             // `/usr/bin/open` can stall in LaunchServices: wait for it off the UI thread.
+            let relaunch = self.updates.read(cx).relaunch.clone();
             let task = cx.background_executor().spawn(async move {
                 // Release the instance lock and activation listener before `open`: a replacement
                 // that opens the workspace early must find it unowned, not activate this window
                 // and exit (which would leave both instances gone once this one quits).
                 drop(released);
-                // Absolute path, argument vector, no shell; `-n` opens a fresh instance.
-                let mut command = std::process::Command::new("/usr/bin/open");
-                command.arg("-n").arg(&app);
-                if let Some(workspace) = &workspace {
-                    command.arg("--args").arg(workspace);
-                }
-                let launched = command.status();
-                if launched.as_ref().is_ok_and(|status| status.success()) {
+                if relaunch(&app, workspace.as_deref()) {
                     return (true, None);
                 }
                 // Launch failed: this window keeps running, so reclaim the workspace.
@@ -1338,6 +1375,105 @@ mod tests {
                 .to_string(),
             )
             .unwrap()
+    }
+
+    #[gpui_kit::test]
+    async fn macos_notice_banner_copies_the_install_command(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.updates
+                    .update(cx, |updates, _| updates.seed_macos(None));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.find("update-notice").visible());
+            // No replaceable bundle: the command is the only path and is shown.
+            assert!(window.try_find("update-notice-install").is_none());
+            let command = view
+                .read(cx)
+                .updates
+                .read(cx)
+                .notice_feed
+                .as_ref()
+                .unwrap()
+                .install_command();
+            window.click("update-notice-copy", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(command.as_str())
+            );
+            // Copying neither dismisses the banner nor changes the update state.
+            window.render_frame(cx);
+            assert!(window.find("update-notice").visible());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn macos_notice_banner_dismisses_and_keeps_the_dialog_offer(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.updates
+                    .update(cx, |updates, _| updates.seed_macos(None));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("update-notice-dismiss", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("update-notice").is_none());
+            let updates = view.read(cx).updates.read(cx);
+            assert!(updates.notice.is_none() && updates.dismissed_notice.is_some());
+            assert!(updates.notice_dismissed.is_some());
+            assert_eq!(updates.notice_message, super::DISMISSED_MESSAGE);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn dismissing_during_a_check_keeps_the_banner_hidden_for_that_result(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::desktop::updates::{NoticeAttempt, NoticeOutcome};
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            let notice = view.update(cx, |this, cx| {
+                this.updates.update(cx, |updates, _| {
+                    updates.seed_macos(None);
+                    // A check is in flight; its result is fed in below without any request.
+                    updates.notice_checking = true;
+                    updates.notice.clone().unwrap()
+                })
+            });
+            window.render_frame(cx);
+            window.click("update-notice-dismiss", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("update-notice").is_none());
+            // The in-flight check had loaded its state before the dismissal.
+            view.update(cx, |this, cx| {
+                this.updates.update(cx, |updates, cx| {
+                    updates.apply_notice_attempt(
+                        NoticeAttempt {
+                            dispatched: true,
+                            outcome: Ok(NoticeOutcome::Available(notice)),
+                        },
+                        cx,
+                    )
+                })
+            });
+            window.render_frame(cx);
+            let updates = view.read(cx).updates.read(cx);
+            assert!(!updates.notice_checking);
+            assert!(updates.notice.is_none() && updates.dismissed_notice.is_some());
+            assert_eq!(updates.notice_message, super::DISMISSED_MESSAGE);
+            assert!(window.try_find("update-notice").is_none());
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

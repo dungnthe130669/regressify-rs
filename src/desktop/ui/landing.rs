@@ -594,10 +594,228 @@ impl Workbench {
 
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests {
+    use super::super::updates::Relauncher;
     use super::LandingAction;
     use crate::desktop::landing::LandingSite;
     use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    type Handle = gpui_kit::WindowHandle<gpui_kit::base::Root>;
+    type View = gpui_kit::Entity<super::super::Workbench>;
+
+    /// Opens a macOS "Restart" banner whose relaunch only counts calls and reports failure, so
+    /// no real app is opened and this window keeps running. A dirty landing editor (plus, with
+    /// `document_draft`, an unsaved suite) then has to guard the restart.
+    async fn restart_with_drafts(
+        cx: &mut TestAppContext,
+        document_draft: bool,
+    ) -> (tempfile::TempDir, Handle, View, Arc<AtomicUsize>) {
+        let root = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let relaunch: Relauncher =
+            Arc::new(move |_: &std::path::Path, _: Option<&std::path::Path>| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                false
+            });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            if document_draft {
+                window.click("duplicate-item", cx);
+            }
+            view.update(cx, |this, cx| {
+                this.preferences_path = Some(root.path().join("settings.json"));
+                this.updates
+                    .update(cx, |updates, _| updates.seed_macos(Some(relaunch)));
+                this.landing.update(cx, |state, cx| {
+                    state.catalog_path = Some(root.path().join("landing-apps.json"));
+                    state.set_app(None, window, cx);
+                    state.add_site(
+                        LandingSite {
+                            heading: "Remote".into(),
+                            subheading: String::new(),
+                            url: "https://someone-else.example/".into(),
+                        },
+                        window,
+                        cx,
+                    );
+                });
+                assert!(this.landing.read(cx).dirty(cx));
+            });
+            window.render_frame(cx);
+            window.click("update-notice-restart", cx);
+            window.render_frame(cx);
+            // The restart waits behind the landing guard and carries its own action.
+            assert!(matches!(
+                view.read(cx).landing.read(cx).pending,
+                Some(LandingAction::Restart)
+            ));
+            assert!(!view.read(cx).updates.read(cx).install_on_close);
+        })
+        .unwrap();
+        super::super::tests::settle_dialog(cx, handle).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        (root, handle, view, calls)
+    }
+
+    /// `Pending::Update` ran: only it reaches the relaunch (`Pending::Close` just quits).
+    async fn wait_for_relaunch(cx: &mut TestAppContext, handle: Handle, calls: &Arc<AtomicUsize>) {
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+            calls.load(Ordering::SeqCst) == 1
+        })
+        .await;
+    }
+
+    #[gpui_kit::test]
+    async fn restart_continues_into_the_update_after_saving_the_landing_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (_root, handle, view, calls) = restart_with_drafts(cx, false).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("landing-save-pending", cx);
+        })
+        .unwrap();
+        wait_for_relaunch(cx, handle, &calls).await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            let state = view.read(cx).landing.read(cx);
+            assert!(state.pending.is_none() && !state.dirty(cx) && state.open.is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn restart_continues_into_the_update_after_discarding_the_landing_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (_root, handle, view, calls) = restart_with_drafts(cx, false).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("landing-discard", cx);
+        })
+        .unwrap();
+        wait_for_relaunch(cx, handle, &calls).await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            let state = view.read(cx).landing.read(cx);
+            assert!(state.pending.is_none() && !state.dirty(cx) && state.open.is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn keep_editing_stops_the_restart_and_keeps_the_app_running(cx: &mut TestAppContext) {
+        let (_root, handle, view, calls) = restart_with_drafts(cx, false).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("landing-keep-editing", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(!view.read(cx).updates.read(cx).install_on_close);
+            assert!(!view.read(cx).busy);
+            let state = view.read(cx).landing.read(cx);
+            assert!(state.pending.is_none() && state.dirty(cx));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn restart_with_a_document_draft_and_a_landing_draft_resumes_after_saving_both(
+        cx: &mut TestAppContext,
+    ) {
+        let (_root, handle, view, calls) = restart_with_drafts(cx, true).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("landing-save-pending", cx);
+        })
+        .unwrap();
+        // The landing draft is settled, but the document draft still guards the restart.
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find("guard-save").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(view.read(cx).unsaved(cx));
+            window.click("guard-save", cx);
+        })
+        .unwrap();
+        wait_for_relaunch(cx, handle, &calls).await;
+    }
+
+    #[gpui_kit::test]
+    async fn restart_with_a_document_draft_and_a_landing_draft_resumes_after_discarding_both(
+        cx: &mut TestAppContext,
+    ) {
+        let (_root, handle, _view, calls) = restart_with_drafts(cx, true).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("landing-discard", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find("guard-discard").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            window.click("guard-discard", cx);
+        })
+        .unwrap();
+        wait_for_relaunch(cx, handle, &calls).await;
+    }
+
+    #[gpui_kit::test]
+    async fn cancelling_the_document_guard_leaves_the_restart_stopped(cx: &mut TestAppContext) {
+        let (_root, handle, view, calls) = restart_with_drafts(cx, true).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("landing-discard", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find("guard-cancel").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("guard-cancel", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(view.read(cx).unsaved(cx));
+            assert!(!view.read(cx).updates.read(cx).install_on_close);
+            assert!(!view.read(cx).busy);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn keep_editing_with_a_document_draft_leaves_both_drafts_and_the_app_running(
+        cx: &mut TestAppContext,
+    ) {
+        let (_root, handle, view, calls) = restart_with_drafts(cx, true).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("landing-keep-editing", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert!(view.read(cx).unsaved(cx));
+            assert!(view.read(cx).landing.read(cx).dirty(cx));
+            assert!(!view.read(cx).updates.read(cx).install_on_close);
+            assert!(!view.read(cx).busy);
+        })
+        .unwrap();
+    }
 
     #[gpui_kit::test]
     async fn landing_drafts_guard_close_and_keep_remote_site_order(cx: &mut TestAppContext) {

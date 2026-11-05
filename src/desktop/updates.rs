@@ -230,6 +230,14 @@ impl InstallHandle {
             .map_or_else(|error| error.into_inner().clone(), |state| state.clone())
     }
 
+    /// A finished install waiting for its restart, for GUI tests.
+    #[cfg(all(test, feature = "gui-tests"))]
+    pub fn restarted() -> Self {
+        let handle = Self::new();
+        handle.set(InstallState::Restart);
+        handle
+    }
+
     fn set(&self, state: InstallState) {
         *self.0.lock().unwrap_or_else(|error| error.into_inner()) = state;
     }
