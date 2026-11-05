@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { imageFitScale, nextZoom } from "./ComparisonViewer";
+import { imageFitScale, maxZoom, nextZoom } from "./ComparisonViewer";
 
 describe("image viewer zoom steps", () => {
   test("uses the same image-inspection presets in either direction", () => {
@@ -9,14 +9,20 @@ describe("image viewer zoom steps", () => {
     expect(nextZoom(0.6, false)).toBe(0.5);
     expect(nextZoom(5, true)).toBe(6);
     expect(nextZoom(6, true)).toBe(8);
+    expect(nextZoom(8, true)).toBe(10);
+    expect(nextZoom(12, true)).toBe(16);
+    expect(nextZoom(20, true)).toBe(25);
+    expect(nextZoom(25, false)).toBe(20);
+    expect(nextZoom(10, false)).toBe(8);
   });
 
   test("keeps fitted images below the minimum and clamps at either limit", () => {
     expect(nextZoom(0.1, false)).toBe(0.1);
     expect(nextZoom(0.1, true)).toBe(0.25);
     expect(nextZoom(0.25, false)).toBe(0.25);
-    expect(nextZoom(8, true)).toBe(8);
-    expect(nextZoom(8, false)).toBe(6);
+    expect(maxZoom).toBe(25);
+    expect(nextZoom(25, true)).toBe(25);
+    expect(nextZoom(30, true)).toBe(maxZoom);
   });
 
   test("does not get stuck on rounded fit percentages", () => {

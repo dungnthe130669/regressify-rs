@@ -2378,6 +2378,23 @@ test("image modes, zoom, downloads, and previous/next work", async ({ page, isMo
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
+test("image viewer zooms to 2500% and pixelates only when magnified", async ({ page }) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png");
+  const image = page.locator(".image-world img").first();
+  await expect(image).toBeVisible();
+  const rendering = () => image.evaluate((element) => getComputedStyle(element).imageRendering);
+  const zoomIn = page.getByRole("button", { name: "Zoom in", exact: true });
+  const zoomOut = page.getByRole("button", { name: "Zoom out", exact: true });
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  while (await zoomIn.isEnabled()) await zoomIn.click();
+  await expect(page.getByLabel("Zoom level")).toHaveText("2500%");
+  await expect(zoomIn).toBeDisabled();
+  expect(await rendering()).toBe("pixelated");
+  while (await zoomOut.isEnabled()) await zoomOut.click();
+  await expect(page.getByLabel("Zoom level")).toHaveText("25%");
+  await expect.poll(rendering).toBe("auto");
+});
+
 test("image viewer fit, anchored zoom, drag and keyboard controls stay scoped", async ({
   page,
 }, info) => {
