@@ -3297,6 +3297,7 @@ impl Render for Workbench {
             .font_family(cx.theme().font_family.clone())
             .child(self.render_header(window, cx))
             .children(self.render_update_banner(cx))
+            .children(self.render_update_notice(cx))
             .child(div().flex_1().min_h_0().child(layout))
     }
 }
@@ -3345,7 +3346,9 @@ pub fn launch(instance: Option<DesktopInstance>) {
                             let weak = view.downgrade();
                             window.on_window_should_close(cx, move |window, cx| {
                                 weak.update(cx, |this, cx| {
-                                    if this.busy {
+                                    if this.install_blocks_quit(cx) {
+                                        false
+                                    } else if this.busy {
                                         if this.git.read(cx).active() {
                                             this.git
                                                 .update(cx, |panel, cx| panel.cancel_operation(cx));
