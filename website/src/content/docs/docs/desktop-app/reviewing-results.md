@@ -32,7 +32,7 @@ together. `Ctrl+B` widens the preview.
 | Fit to window    | **Fit to window (0)**                   | `0`      |
 | Fit width        | **Fit width (W)**                       | `W`      |
 | Actual size      | **Actual size (100%)**                  | `1`      |
-| Zoom 25% to 800% | **Zoom in**, **Zoom out**, `Ctrl`+wheel | `+`, `-` |
+| Zoom 25% to 2500% | **Zoom in**, **Zoom out**, `Ctrl`+wheel | `+`, `-` |
 | Pan              | Drag                                    | Arrows   |
 
 Double-click an image to toggle actual size.
