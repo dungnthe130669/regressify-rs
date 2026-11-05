@@ -1543,6 +1543,9 @@ body:has(.settings-dialog[open]) {
   pointer-events: none;
   user-select: none;
 }
+.image-world[data-magnified="true"] img {
+  image-rendering: pixelated;
+}
 .image-world > div {
   flex-shrink: 0;
 }
@@ -1601,7 +1604,7 @@ body:has(.settings-dialog[open]) {
   gap: 4px;
 }
 .zoom-value {
-  width: 56px;
+  width: 64px;
   flex-shrink: 0;
   text-align: center;
   font-size: 13px;

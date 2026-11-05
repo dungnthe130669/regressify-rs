@@ -450,7 +450,7 @@ byte-identical previews from identical input. Full-resolution captures remain
 unchanged for comparison and download. Regenerate and redeploy existing reports
 to get these previews; no new capture run is required.
 The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
-stepped zoom through 800%, fit-width, fit-to-window, actual size, downloads, and
+stepped zoom through 2500%, fit-width, fit-to-window, actual size, downloads, and
 safe links to captured pages. The name, navigation buttons, and viewer controls
 stay outside image overflow. Each image has a bounded viewport with native
 scrollbars when needed. Unmodified wheel/trackpad and touch scroll the hovered

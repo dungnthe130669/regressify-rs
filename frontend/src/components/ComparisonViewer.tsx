@@ -62,11 +62,17 @@ const zoomLevels = [
   5,
   6,
   8,
+  10,
+  12,
+  16,
+  20,
+  25,
 ];
+export const maxZoom = 25;
 
 export function nextZoom(current: number, increase: boolean): number {
   return increase
-    ? (zoomLevels.find((value) => value > current + 0.001) ?? 8)
+    ? (zoomLevels.find((value) => value > current + 0.001) ?? maxZoom)
     : (zoomLevels.findLast((value) => value < current - 0.001) ?? Math.min(current, 0.25));
 }
 
@@ -75,6 +81,28 @@ export function imageFitScale(image: Size, viewport: Size, fit: Fit): number {
     0.001,
     Math.min(1, viewport.width / image.width, fit === "area" ? viewport.height / image.height : 1),
   );
+}
+
+function useDevicePixelRatio(): number {
+  const [ratio, setRatio] = useState(() =>
+    typeof window === "undefined" ? 1 : window.devicePixelRatio,
+  );
+  useEffect(() => {
+    let query: MediaQueryList;
+    const update = () => {
+      query?.removeEventListener("change", update);
+      setRatio(window.devicePixelRatio);
+      query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+      query.addEventListener("change", update);
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => {
+      query.removeEventListener("change", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+  return ratio;
 }
 
 function useImageSizes(capture: Capture) {
@@ -156,6 +184,7 @@ export function ComparisonViewer({
   } | null>(null);
   const [viewport, setViewport] = useState<Size>({ width: 0, height: 0 });
   const [panning, setPanning] = useState(false);
+  const pixelRatio = useDevicePixelRatio();
   const world = useRef<HTMLDivElement>(null);
   const viewer = useRef<HTMLElement>(null);
   const canvas = useRef<HTMLElement>(null);
@@ -393,7 +422,7 @@ export function ComparisonViewer({
     }));
   };
   const setScale = (value: number, point?: { x: number; y: number }) => {
-    const next = Math.max(0.001, Math.min(8, value));
+    const next = Math.max(0.001, Math.min(maxZoom, value));
     if (!Number.isFinite(next) || (fit === "manual" && next === scale)) return;
     let padding: View["padding"];
     anchors.current = [];
@@ -568,7 +597,7 @@ export function ComparisonViewer({
           </output>
           <IconButton
             label="Zoom in"
-            disabled={scale >= 8}
+            disabled={scale >= maxZoom}
             onClick={() => setScale(nextZoom(scale, true))}
           >
             <Plus size={16} />
@@ -859,6 +888,7 @@ export function ComparisonViewer({
                     <div
                       ref={index === 0 ? world : undefined}
                       className="image-world"
+                      data-magnified={scale * pixelRatio > 1}
                       style={{
                         width: size.width,
                         height: size.height,
