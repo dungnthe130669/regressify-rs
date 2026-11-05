@@ -1481,6 +1481,7 @@ mod tests {
             window.render_frame(cx);
             assert!(window.find("update-dialog-command").visible());
             assert!(window.try_find("update-install").is_none());
+            assert!(window.try_find("update-now").is_none());
             assert!(window.find("update-check").visible());
         })
         .unwrap();

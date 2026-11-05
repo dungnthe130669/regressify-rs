@@ -669,10 +669,12 @@ pub fn swap_bundle(
                 // The rollback must be durable before the mark (the only protection that names
                 // the stage) goes: otherwise a power loss could resurrect the rejected update.
                 if let Err(sync) = ops.sync_path(parent) {
-                    return Err(error.context(format!(
-                        "Update rolled back, but the folder could not be flushed ({sync}); {} was kept, delete it before retrying",
-                        mark_path.display()
-                    )));
+                    return Err(error
+                        .context(format!(
+                            "Update rolled back, but the folder could not be flushed ({sync}); {} was kept, delete it before retrying",
+                            mark_path.display()
+                        ))
+                        .context(RecoveryNeeded));
                 }
                 if fs::remove_file(&mark_path).is_err() {
                     // The mark still names the rejected stage, but the live app reports the
@@ -1475,8 +1477,13 @@ mod tests {
             fail_sync_of: None,
         });
         let reject = |_: &Path| -> Result<()> { bail!("rejected") };
-        swap_bundle(&app, &staged, &ops, &reject).unwrap_err();
+        let error = swap_bundle(&app, &staged, &ops, &reject).unwrap_err();
         assert!(dir.path().join(RECOVERY_MARK_NAME).exists());
+        // `RecoveryNeeded` keeps the caller from deleting the stage that holds the only copy.
+        assert!(
+            error.downcast_ref::<RecoveryNeeded>().is_some(),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -1500,7 +1507,7 @@ mod tests {
     fn a_failed_final_flush_does_not_fail_a_finished_install() {
         let dir = tempfile::tempdir().unwrap();
         let (app, staged) = staged_pair(dir.path());
-        struct FailLast(Journal);
+        struct FailLast(Journal, std::cell::Cell<bool>);
         impl SwapOps for FailLast {
             fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
                 self.0.rename(from, to)
@@ -1513,16 +1520,21 @@ mod tests {
                 let done = self.0.events.borrow().iter().any(|e| e == "rename");
                 self.0.sync_path(path)?;
                 if done && mark_gone {
+                    self.1.set(true);
                     return Err(io::Error::other("injected"));
                 }
                 Ok(())
             }
         }
-        let ops = FailLast(Journal {
-            events: Default::default(),
-            fail_sync_of: None,
-        });
+        let ops = FailLast(
+            Journal {
+                events: Default::default(),
+                fail_sync_of: None,
+            },
+            std::cell::Cell::new(false),
+        );
         swap_bundle(&app, &staged, &ops, &ok_step).unwrap();
+        assert!(ops.1.get(), "the final flush failure was injected");
         assert_eq!(binary_of(&app), b"new");
     }
 
