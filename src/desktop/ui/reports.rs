@@ -20,7 +20,7 @@ use gpui_kit::component::slider::{Slider, SliderState};
 
 mod log;
 
-const ZOOM_LEVELS: [f32; 19] = [
+const ZOOM_LEVELS: [f32; 24] = [
     0.25,
     1. / 3.,
     0.5,
@@ -40,6 +40,11 @@ const ZOOM_LEVELS: [f32; 19] = [
     5.,
     6.,
     8.,
+    10.,
+    12.,
+    16.,
+    20.,
+    25.,
 ];
 
 fn next_zoom(current: f32, increase: bool) -> f32 {
@@ -1618,7 +1623,7 @@ impl ResultsPanel {
         let canvas_width = self.preview_canvas_size(index).0 as f32;
         let guides = self.pointer_guides.clone();
         div()
-            .w(px(56.))
+            .w(px(64.))
             .self_stretch()
             .flex_shrink_0()
             // Fitted bounds are only current after the image panes have been laid out.
@@ -3160,7 +3165,21 @@ mod pointer_tests {
         assert_eq!(next_zoom(0.25, false), 0.25);
         assert_eq!(next_zoom(5., true), 6.);
         assert_eq!(next_zoom(6., true), 8.);
-        assert_eq!(next_zoom(8., true), 8.);
+        assert_eq!(next_zoom(8., true), 10.);
+        assert_eq!(next_zoom(10., true), 12.);
+        assert_eq!(next_zoom(12., true), 16.);
+        assert_eq!(next_zoom(16., true), 20.);
+        assert_eq!(next_zoom(20., true), 25.);
+        assert_eq!(next_zoom(25., true), 25.);
+        assert_eq!(next_zoom(25., false), 20.);
+        assert_eq!(next_zoom(9., true), 10.);
+        assert_eq!(next_zoom(9., false), 8.);
+        assert_eq!(next_zoom(30., false), 25.);
+        assert_eq!(ZOOM_LEVELS[ZOOM_LEVELS.len() - 1], 25.);
+        assert_eq!(
+            format!("{:.1}%", ZOOM_LEVELS[ZOOM_LEVELS.len() - 1] * 100.),
+            "2500.0%"
+        );
         assert_eq!(next_zoom(0.1, true), 0.25);
         assert_eq!(next_zoom(0.1, false), 0.1);
         assert_eq!(next_zoom(1.0005, true), 1.1);

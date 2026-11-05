@@ -94,7 +94,7 @@ Verified: 2026-10-21
   scroll/zoom state; placeholder sources cannot enter these modes. Blend Slider
   needs capture-phase focus for native keyboard adjustment. `image_previews_`
   covers all six modes and keys; native Comparison verifies actual blend endpoint
-  pixels in both themes at 1000x640 and 1600x1000. Web/native share 25-800% presets.
+  pixels in both themes at 1000x640 and 1600x1000. Native presets reach 2500%; web still stops at 800%.
 - Side-by-side FitWidth pixel-aligns pane widths through public canvas layout;
   fractional widths previously caused tall-image height drift. GUI one-pixel
   checks and native minimum/compact/large Comparison pass without changing zoom,
