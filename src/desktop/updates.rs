@@ -409,6 +409,21 @@ pub fn dismissal_hides(dismissed: Option<Version>, version: Version) -> bool {
     dismissed.is_some_and(|dismissed| version <= dismissed)
 }
 
+/// Prefix of the dialog message left by a failed update check.
+pub const CHECK_FAILED_PREFIX: &str = "Update check failed: ";
+
+/// Dialog message after a successful notice result. `fresh` is the status to show
+/// (empty for none). Only a cached poll (`dispatched == false`) keeps an
+/// earlier check failure, since it was not a check; any other old message (up to date,
+/// dismissed) would be stale next to the new result and is replaced.
+pub fn notice_message_after_success(dispatched: bool, previous: &str, fresh: &str) -> String {
+    if !dispatched && previous.starts_with(CHECK_FAILED_PREFIX) {
+        previous.to_owned()
+    } else {
+        fresh.to_owned()
+    }
+}
+
 /// Serializes read-modify-write cycles on `notice.json` across instances. Atomic file
 /// replacement alone still loses an update when two writers start from the same snapshot.
 /// Held only for the short load/merge/save, never across the network request. `None` when
@@ -2328,10 +2343,11 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::{
-        CheckMode, DownloadControl, DownloadPhase, ManifestFields, NoticeCheck, NoticeOutcome,
-        NoticeState, PreparedUpdate, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateNotice,
-        UpdatePlatform, UpdateState, Version, cached_installer, dismissal_hides, installer_name,
-        installer_redirect_policy, is_allowed_installer_redirect, lock_cache, verify_payload,
+        CHECK_FAILED_PREFIX, CheckMode, DownloadControl, DownloadPhase, ManifestFields,
+        NoticeCheck, NoticeOutcome, NoticeState, PreparedUpdate, SkippedUpdate, UpdateCheck,
+        UpdateFeed, UpdateNotice, UpdatePlatform, UpdateState, Version, cached_installer,
+        dismissal_hides, installer_name, installer_redirect_policy, is_allowed_installer_redirect,
+        lock_cache, notice_message_after_success, verify_payload,
     };
     use super::{InstallPlan, macos_install};
     use reqwest::StatusCode;
@@ -3660,6 +3676,34 @@ mod tests {
             });
         assert!(attempt.dispatched);
         assert!(attempt.outcome.is_err());
+    }
+
+    #[test]
+    fn cached_results_replace_stale_status_but_keep_failures() {
+        let failed = format!("{CHECK_FAILED_PREFIX}offline");
+        let up_to_date = "Regressify is up to date";
+        // Cached `Current` after another window recorded a rolled-back release: the old
+        // dismissed message must not survive, nor a blank one.
+        assert_eq!(
+            notice_message_after_success(false, "", up_to_date),
+            up_to_date
+        );
+        assert_eq!(
+            notice_message_after_success(false, "A newer version is available", up_to_date),
+            up_to_date
+        );
+        // Cached `Available` must not leave a stale "up to date".
+        assert_eq!(notice_message_after_success(false, up_to_date, ""), "");
+        // A cached poll keeps a failure; a dispatched success clears it.
+        assert_eq!(
+            notice_message_after_success(false, &failed, up_to_date),
+            failed
+        );
+        assert_eq!(
+            notice_message_after_success(true, &failed, up_to_date),
+            up_to_date
+        );
+        assert_eq!(notice_message_after_success(true, &failed, ""), "");
     }
 
     #[test]

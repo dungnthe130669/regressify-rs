@@ -1,9 +1,10 @@
 use super::*;
 use crate::desktop::updates::{
-    CHECK_INTERVAL, CURRENT_VERSION, DownloadControl, InstallHandle, InstallState, NoticeAttempt,
-    NoticeOutcome, PreparedUpdate, Release, RetryScheduled, SHARED_POLL_INTERVAL,
-    SharedUpdateCheck, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateLease, UpdateNotice,
-    UpdatePlatform, Version, dismissal_hides, install_macos_update, macos_install,
+    CHECK_FAILED_PREFIX, CHECK_INTERVAL, CURRENT_VERSION, DownloadControl, InstallHandle,
+    InstallState, NoticeAttempt, NoticeOutcome, PreparedUpdate, Release, RetryScheduled,
+    SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateLease,
+    UpdateNotice, UpdatePlatform, Version, dismissal_hides, install_macos_update, macos_install,
+    notice_message_after_success,
 };
 use futures::FutureExt;
 
@@ -232,7 +233,6 @@ fn update_banner_colors(cx: &App) -> UpdateBannerColors {
 }
 
 /// Prefix of the dialog message after a failed notice check (also tells `mac_status` to append it).
-const CHECK_FAILED_PREFIX: &str = "Update check failed: ";
 const DISMISSED_MESSAGE: &str = "A newer version is available, but its notice was dismissed. Use the install command or the release page.";
 
 impl Workbench {
@@ -681,18 +681,19 @@ impl Workbench {
                         Ok(NoticeOutcome::Available(notice)) => {
                             state.dismissed_notice = None;
                             state.notice = Some(notice);
-                            // A successful check clears an earlier failure message; a cached
-                            // poll was not a check and must not touch it.
-                            if dispatched {
-                                state.notice_message.clear();
-                            }
+                            // Only a cached poll keeps an earlier failure; any other old
+                            // message would contradict the available release.
+                            state.notice_message =
+                                notice_message_after_success(dispatched, &state.notice_message, "");
                         }
                         Ok(NoticeOutcome::Current) => {
                             state.notice = None;
                             state.dismissed_notice = None;
-                            if dispatched {
-                                state.notice_message = "Regressify is up to date".into();
-                            }
+                            state.notice_message = notice_message_after_success(
+                                dispatched,
+                                &state.notice_message,
+                                "Regressify is up to date",
+                            );
                         }
                         Ok(NoticeOutcome::Dismissed(notice)) => {
                             state.notice = None;

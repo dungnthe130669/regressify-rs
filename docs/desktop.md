@@ -288,7 +288,8 @@ put `REGRESSIFY_APP_DIR=<folder containing Regressify.app>` on the `sh` side of 
 pipe (`curl ... | REGRESSIFY_APP_DIR=<folder> sh`; a prefix before `curl` reaches only
 `curl`) or open the newly installed copy afterward.
 Only `version` and `tag` are read (the tag must match the version); installer and
-archive fields are ignored. Failed or malformed checks are silent in the UI, are
+archive fields are ignored. A failed or malformed check leaves the banner unchanged
+and shows its error in the Software updates dialog; it is also
 written to diagnostics, and retry after the usual eight hours. The check timestamp,
 the last announced release, and the dismissal live in `updates/notice.json`,
 separate from the Windows installer state, and are updated under a lock. Open
