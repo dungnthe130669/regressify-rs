@@ -205,7 +205,7 @@ impl UpdatePanel {
             UpdateFeed::for_origin(Some("https://regressify.eshn.dev"), UpdatePlatform::MacOs)
                 .unwrap();
         self.notice = Some(
-            feed.parse_notice_manifest("version=9999.9999.9999.9999\ntag=v9999.9999.9999\n")
+            feed.parse_notice_manifest("version=9999.9999.9999.9999\ntag=v9999.9999.9999.9999\n")
                 .unwrap(),
         );
         self.notice_feed = Some(feed);
