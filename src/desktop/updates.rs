@@ -495,6 +495,9 @@ impl NoticeState {
                     .ok()
             });
         match stored {
+            // A peer's successful check already found no release: that is `Current`, so this
+            // window clears an obsolete banner. Without any applied success it is just unknown.
+            None if self.applied_seq > 0 => NoticeOutcome::Current,
             None => NoticeOutcome::NotDue,
             Some(notice) if notice.version <= current => NoticeOutcome::Current,
             Some(notice) if self.dismisses(notice.version) => NoticeOutcome::Dismissed(notice),
@@ -1039,10 +1042,12 @@ impl UpdateFeed {
             let mut state = NoticeState::load(cache).unwrap_or_default();
             // Never at or below an applied ticket, even if an earlier ticket save was lost.
             state.started_seq = state.started_seq.max(state.applied_seq) + 1;
-            // Best effort: without the saved ticket only this process's ordering is lost.
-            let _ = state.save(cache);
-            state.started_seq
+            // An unsaved ticket can be handed out again to a peer, so its response must never
+            // advance `applied_seq`: it could otherwise discard the peer's newer response.
+            let saved = state.save(cache).is_ok();
+            (state.started_seq, saved)
         };
+        let (ticket, ticket_saved) = ticket;
         let result = check();
         // Reload under the lock: a dismissal or a peer's check may have landed while the
         // request was pending, and saving the earlier snapshot would overwrite it.
@@ -1059,17 +1064,20 @@ impl UpdateFeed {
                 Err(error) => Err(error),
             };
         }
-        // The ticket may not have been saved (best effort above): never leave
-        // `applied_seq` ahead of `started_seq`.
+        // Keep `applied_seq` from ever passing `started_seq`, even if a peer reset the file.
         state.started_seq = state.started_seq.max(ticket);
         state.last_check_at = Some(now);
         match &result {
             Ok(NoticeCheck::Current) => {
-                state.applied_seq = ticket;
+                if ticket_saved {
+                    state.applied_seq = ticket;
+                }
                 state.store_available(None);
             }
             Ok(NoticeCheck::Available(notice) | NoticeCheck::Older(notice)) => {
-                state.applied_seq = ticket;
+                if ticket_saved {
+                    state.applied_seq = ticket;
+                }
                 state.store_available(Some(notice));
             }
             // A failure only throttles (`last_check_at`). It carries no release, so it must not
@@ -3554,31 +3562,77 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_ticket_save_cannot_leave_applied_ahead_of_started() {
+    fn a_failed_ticket_save_cannot_discard_a_newer_peers_response() {
         let cache = tempfile::tempdir().unwrap();
         let feed = macos_feed();
-        // State as if an earlier ticket save was lost: applied is ahead of started.
-        fs::write(
-            cache.path().join("notice.json"),
-            br#"{"started_seq":0,"applied_seq":3}"#,
-        )
-        .unwrap();
+        let state_path = cache.path().join("notice.json");
+        // A directory in the state file's place: loading yields defaults and every save fails,
+        // so window A's ticket cannot be recorded.
+        fs::create_dir(&state_path).unwrap();
+        let (got_tx, got_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Mutex::new(go_rx);
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let a = feed.check_notice_with(cache.path(), current(), true, true, 1_000, || {
+                // Writes recover; window B starts (and records the ticket A could not) and is
+                // still waiting for its response when A's older response arrives.
+                fs::remove_dir(&state_path).unwrap();
+                scope.spawn(|| {
+                    let outcome =
+                        feed.check_notice_with(cache.path(), current(), true, true, 1_001, || {
+                            got_tx.send(()).unwrap();
+                            go_rx.lock().unwrap().recv().unwrap();
+                            Ok(NoticeCheck::Available(notice("2.3.0.0")))
+                        });
+                    result_tx.send(outcome.unwrap()).unwrap();
+                });
+                got_rx.recv().unwrap();
+                Ok(NoticeCheck::Available(notice("2.2.2.0")))
+            });
+            assert!(a.is_ok());
+            go_tx.send(()).unwrap();
+            assert_eq!(
+                result_rx.recv().unwrap(),
+                NoticeOutcome::Available(notice("2.3.0.0"))
+            );
+        });
+        let state = NoticeState::load(cache.path()).unwrap();
+        assert_eq!(
+            state.available_version.as_deref(),
+            Some("2.3.0.0"),
+            "the newer response wins: {state:?}"
+        );
+        assert!(state.started_seq >= state.applied_seq, "{state:?}");
+    }
+
+    #[test]
+    fn a_no_release_result_clears_the_banner_of_a_peer_window() {
+        let cache = tempfile::tempdir().unwrap();
+        let feed = macos_feed();
+        let never = || -> Result<NoticeCheck, anyhow::Error> { panic!("peer must not request") };
+        // Nothing has ever succeeded: an empty state stays unknown, not "current".
+        let unknown = feed
+            .check_notice_with(cache.path(), current(), false, false, 1_000, never)
+            .unwrap();
+        assert_eq!(unknown, NoticeOutcome::NotDue);
         feed.check_notice_with(cache.path(), current(), true, true, 1_000, || {
             Ok(NoticeCheck::Available(notice("2.2.2.0")))
         })
         .unwrap();
-        let state = NoticeState::load(cache.path()).unwrap();
-        assert!(state.started_seq >= state.applied_seq, "{state:?}");
-        // The next check gets a fresh ticket and its response is applied, not discarded.
-        let next = feed
-            .check_notice_with(cache.path(), current(), true, true, 2_000, || {
-                Ok(NoticeCheck::Available(notice("2.3.0.0")))
-            })
+        // Both windows show the release; one then receives "no release" (HTTP 404).
+        feed.check_notice_with(cache.path(), current(), true, true, 2_000, || {
+            Ok(NoticeCheck::Current)
+        })
+        .unwrap();
+        let peer = feed
+            .check_notice_with(cache.path(), current(), false, true, 2_010, never)
             .unwrap();
-        assert_eq!(next, NoticeOutcome::Available(notice("2.3.0.0")));
-        let state = NoticeState::load(cache.path()).unwrap();
-        assert_eq!(state.available_version.as_deref(), Some("2.3.0.0"));
-        assert_eq!(state.last_check_at, Some(2_000));
+        assert_eq!(
+            peer,
+            NoticeOutcome::Current,
+            "the peer drops its stale banner"
+        );
     }
 
     #[test]

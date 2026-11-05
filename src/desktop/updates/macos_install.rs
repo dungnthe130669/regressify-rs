@@ -529,10 +529,38 @@ pub trait SwapOps {
         Err(io::ErrorKind::Unsupported.into())
     }
 
-    /// Writes the recovery mark; a method so tests can make it fail.
-    fn write_mark(&self, path: &Path, contents: &str) -> io::Result<()> {
-        fs::write(path, contents)
+    /// Flushes a file or directory to stable storage. Directories are opened read-only, which
+    /// is enough for `fsync` on Unix. A method so tests can record the order or make it fail.
+    fn sync_path(&self, path: &Path) -> io::Result<()> {
+        File::open(path)?.sync_all()
     }
+
+    /// Writes the recovery mark durably (contents, then its directory entry); a method so tests
+    /// can make it fail.
+    fn write_mark(&self, path: &Path, contents: &str) -> io::Result<()> {
+        let mut file = File::create(path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        match path.parent() {
+            Some(parent) => self.sync_path(parent),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Flushes every file and directory of a staged bundle so the exchange cannot persist a name
+/// pointing at contents that were still only in the page cache.
+fn sync_tree(ops: &dyn SwapOps, root: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            sync_tree(ops, &path)?;
+        } else if entry.file_type()?.is_file() {
+            ops.sync_path(&path)?;
+        }
+    }
+    ops.sync_path(root)
 }
 
 pub struct RealOps;
@@ -606,6 +634,14 @@ pub fn swap_bundle(
     let previous_version = installed_version(bundle).unwrap_or_default();
     ops.write_mark(&mark_path, &mark_contents(staged, &previous_version))
         .context("Cannot record the swap before replacing the app; nothing was changed")?;
+    // Power-loss ordering: mark durable -> staged contents durable -> exchange. Otherwise a
+    // crash could persist the exchange but not the mark or the replacement's contents, and the
+    // missing-mark recovery would delete the stage holding the only complete app.
+    if let Err(error) = sync_tree(ops, staged) {
+        let _ = fs::remove_file(&mark_path);
+        return Err(anyhow::Error::new(error)
+            .context("Cannot flush the staged update to disk; nothing was changed"));
+    }
     if let Err(error) = ops.exchange(staged, bundle) {
         // Nothing moved; a mark we cannot remove is stale and cleared by the next check.
         let _ = fs::remove_file(&mark_path);
@@ -613,7 +649,9 @@ pub fn swap_bundle(
             "This volume cannot swap the app in place ({error}); the in-app install is unavailable here, use the copy command instead"
         );
     }
-    // The old app now sits at `staged`; the new one is live.
+    // The old app now sits at `staged`; the new one is live. Persist the exchange; a failure
+    // here is not fatal (the mark is already durable and the retirement sync below must pass).
+    let _ = ops.sync_path(parent);
     if let Err(error) = verify(bundle).context("The installed update failed verification") {
         return match ops.exchange(staged, bundle) {
             Ok(()) => {
@@ -644,6 +682,16 @@ pub fn swap_bundle(
             staged.display()
         )
         .context(RecoveryNeeded));
+    }
+    // The retirement must be on disk before the mark goes, or a crash could keep the mark gone
+    // while the stage rename is lost; on failure the mark stays, naming the stage.
+    if let Err(error) = ops.sync_path(parent) {
+        return Err(anyhow::Error::new(error)
+            .context(format!(
+                "The update is installed, but the folder could not be flushed; {} was kept, delete it before the next update",
+                mark_path.display()
+            ))
+            .context(RecoveryNeeded));
     }
     // The swap is complete, so the "current app was not changed" wording would be false:
     // flag this as recovery-needed to keep the UI from appending it.
@@ -1277,6 +1325,138 @@ mod tests {
         )
         .unwrap();
         (app, staged)
+    }
+
+    /// Records the durability-relevant order: syncs, the exchange, and the mark's existence.
+    struct Journal {
+        events: std::cell::RefCell<Vec<String>>,
+        fail_sync_of: Option<&'static str>,
+    }
+
+    impl SwapOps for Journal {
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            self.events.borrow_mut().push("rename".into());
+            fs::rename(from, to)
+        }
+
+        fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+            let mark = a.parent().unwrap().join(RECOVERY_MARK_NAME);
+            assert!(mark.exists(), "mark exists before the exchange");
+            self.events.borrow_mut().push("exchange".into());
+            RealOps.exchange(a, b)
+        }
+
+        fn sync_path(&self, path: &Path) -> io::Result<()> {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            self.events.borrow_mut().push(format!("sync:{name}"));
+            if self.fail_sync_of == Some(name.as_str()) {
+                return Err(io::Error::other("injected"));
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_swap_flushes_the_mark_the_stage_and_the_folder_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let journal = Journal {
+            events: Default::default(),
+            fail_sync_of: None,
+        };
+        swap_bundle(&app, &staged, &journal, &ok_step).unwrap();
+        let events = journal.events.borrow();
+        let at = |name: &str| events.iter().position(|event| event == name).unwrap();
+        let folder = format!("sync:{}", dir.path().file_name().unwrap().to_string_lossy());
+        assert!(
+            at(&folder) < at("sync:Info.plist"),
+            "mark folder entry first: {events:?}"
+        );
+        assert!(at("sync:Info.plist") < at("exchange"), "{events:?}");
+        assert!(
+            at(&format!("sync:{BINARY_NAME}")) < at("exchange"),
+            "{events:?}"
+        );
+        let exchange = at("exchange");
+        let after = events.iter().skip(exchange).collect::<Vec<_>>();
+        let retire = after.iter().position(|event| **event == "rename").unwrap();
+        assert!(
+            after[..retire].contains(&&folder),
+            "folder flushed after the exchange: {events:?}"
+        );
+        assert!(
+            after[retire..].contains(&&folder),
+            "folder flushed after retiring the backup: {events:?}"
+        );
+        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+    }
+
+    #[test]
+    fn a_stage_that_cannot_be_flushed_refuses_the_swap_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let journal = Journal {
+            events: Default::default(),
+            fail_sync_of: Some("Info.plist"),
+        };
+        let error = swap_bundle(&app, &staged, &journal, &ok_step).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("nothing was changed"),
+            "{error:#}"
+        );
+        assert!(
+            !journal
+                .events
+                .borrow()
+                .iter()
+                .any(|event| event == "exchange")
+        );
+        assert_eq!(binary_of(&app), b"old");
+        assert!(staged.exists());
+        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_flushed_after_retiring_keeps_the_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let folder: &'static str = Box::leak(
+            dir.path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+                .into_boxed_str(),
+        );
+        let journal = Journal {
+            events: Default::default(),
+            fail_sync_of: Some(folder),
+        };
+        // The folder sync also guards the mark write, so fail only from the exchange on.
+        struct LateFail<'a>(&'a Journal);
+        impl SwapOps for LateFail<'_> {
+            fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+                self.0.rename(from, to)
+            }
+            fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+                self.0.exchange(a, b)
+            }
+            fn sync_path(&self, path: &Path) -> io::Result<()> {
+                if self.0.events.borrow().iter().any(|event| event == "rename") {
+                    return self.0.sync_path(path);
+                }
+                RealOps.sync_path(path)
+            }
+        }
+        let error = swap_bundle(&app, &staged, &LateFail(&journal), &ok_step).unwrap_err();
+        assert!(
+            error.downcast_ref::<RecoveryNeeded>().is_some(),
+            "{error:#}"
+        );
+        assert!(
+            dir.path().join(RECOVERY_MARK_NAME).exists(),
+            "the mark stays until the retirement is durable"
+        );
     }
 
     #[test]

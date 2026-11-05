@@ -1236,6 +1236,32 @@ impl Workbench {
         self.finish_close(cx);
     }
 
+    /// Re-takes the activation receiver of a reclaimed instance (the dropped one closed its
+    /// channel), so a second open of the workspace foregrounds this window again. No window is
+    /// in scope at the restart handoff, so this activates the app rather than one window.
+    fn watch_activation(&mut self, instance: &mut DesktopInstance, cx: &mut Context<Self>) {
+        self.activation_task = instance.activation_events().map(|mut events| {
+            cx.spawn(async move |view, cx| {
+                while events.next().await.is_some() {
+                    if view
+                        .update(cx, |this, cx| {
+                            if this
+                                .workspace_instance
+                                .as_ref()
+                                .is_some_and(DesktopInstance::take_activation)
+                            {
+                                cx.activate(true);
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+        });
+    }
+
     pub(super) fn quit_or_install(&mut self, cx: &mut Context<Self>) {
         if self.install_blocks_quit(cx) {
             return;
@@ -1276,6 +1302,7 @@ impl Workbench {
             cx.notify();
             // `/usr/bin/open` can stall in LaunchServices: wait for it off the UI thread.
             let relaunch = self.updates.read(cx).relaunch.clone();
+            let had_workspace = workspace.is_some();
             let task = cx.background_executor().spawn(async move {
                 // Release the instance lock and activation listener before `open`: a replacement
                 // that opens the workspace early must find it unowned, not activate this window
@@ -1298,15 +1325,25 @@ impl Workbench {
                 let (launched, reclaimed) = task.await;
                 let _ = view.update(cx, |this, cx| {
                     this.updates.update(cx, |state, _| state.restarting = false);
-                    if !launched {
-                        this.busy = false;
-                    }
                     if launched {
                         cx.quit();
                         return;
                     }
-                    if reclaimed.is_some() {
-                        this.workspace_instance = reclaimed;
+                    if let Some(mut instance) = reclaimed {
+                        // The dropped instance closed its activation channel: re-take the
+                        // receiver of the reclaimed one, as the initial open does, so a second
+                        // open of this workspace foregrounds this window again.
+                        this.watch_activation(&mut instance, cx);
+                        this.workspace_instance = Some(instance);
+                        this.busy = false;
+                    } else if had_workspace {
+                        // Another process took the workspace while `open` was failing: keep
+                        // this window frozen so two windows never edit one workspace.
+                        this.status = "This workspace is now open in another Regressify window; close this window".into();
+                        cx.notify();
+                        return;
+                    } else {
+                        this.busy = false;
                     }
                     this.status = "Cannot restart the updated app; open Regressify manually".into();
                     cx.notify();
