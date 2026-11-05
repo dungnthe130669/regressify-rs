@@ -14466,6 +14466,13 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
         3.,
         4.,
         5.,
+        6.,
+        8.,
+        10.,
+        12.,
+        16.,
+        20.,
+        25.,
     ];
     let directory = tempfile::tempdir().unwrap();
     let run = directory
@@ -14712,6 +14719,101 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
         );
         for index in 0_usize..3 {
             assert!(window.find(("image-scroll", index)).visible());
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn image_previews_zoom_reaches_25x_and_anchors_at_the_highest_presets(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::InputEvent as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    let run = directory
+        .path()
+        .join(".regressify/ui-test/bitmaps_test/run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    lodepng::encode32_file(
+        run.join("capture.png"),
+        &[30_u8, 150, 180, 255].repeat(1200 * 1800),
+        1200,
+        1800,
+    )
+    .unwrap();
+    let image = "../bitmaps_test/run-1/capture.png";
+    std::fs::write(
+        run.join("report.json"),
+        serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [{
+            "status": "pass", "pair": {
+                "label": "Zoom fixture", "reference": image, "test": image, "diffImage": image
+            }
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("image-modes").click(0_usize, cx);
+        window.click("actual-size", cx);
+        for label in [
+            "110.0%", "125.0%", "150.0%", "175.0%", "200.0%", "250.0%", "300.0%", "400.0%",
+            "500.0%", "600.0%", "800.0%", "1000.0%", "1200.0%", "1600.0%", "2000.0%", "2500.0%",
+        ] {
+            window.click("zoom-in", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("zoom-value").label(), Some(label));
+        }
+        let content = window.find(("image-content", 0_usize)).bounds();
+        assert!((content.size.width - px(1200. * 25.)).abs() <= px(1.));
+        assert!((content.size.height - px(1800. * 25.)).abs() <= px(1.));
+        window.click("zoom-in", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("zoom-value").label(), Some("2500.0%"));
+        let viewport = window.find(("image-scroll", 0_usize)).bounds();
+        let pointer = viewport.origin
+            + gpui_kit::point(viewport.size.width * 0.4, viewport.size.height * 0.4);
+        for (lines, expected) in [(1., 25.), (-1., 20.), (1., 25.), (-1., 20.), (-1., 16.)] {
+            let before = window.find(("image-content", 0_usize)).bounds();
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position: pointer,
+                    delta: gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., lines)),
+                    modifiers: gpui_kit::Modifiers {
+                        control: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            let after = window.find(("image-content", 0_usize)).bounds();
+            assert!((after.size.width - px(1200. * expected)).abs() <= px(1.));
+            assert_eq!(
+                window.find("zoom-value").label(),
+                Some(format!("{:.1}%", expected * 100.).as_str())
+            );
+            let anchored = after.origin
+                + gpui_kit::point(
+                    (pointer.x - before.origin.x) * (after.size.width / before.size.width),
+                    (pointer.y - before.origin.y) * (after.size.height / before.size.height),
+                );
+            assert!(
+                (anchored.x - pointer.x).abs() <= px(2.) && (anchored.y - pointer.y).abs() <= px(2.),
+                "Zoom must keep the pointer anchored at {expected}: {before:?} -> {after:?}, pointer {pointer:?}"
+            );
         }
     })
     .unwrap();
