@@ -530,9 +530,20 @@ pub trait SwapOps {
     }
 
     /// Flushes a file or directory to stable storage. Directories are opened read-only, which
-    /// is enough for `fsync` on Unix. A method so tests can record the order or make it fail.
+    /// is enough for `fsync` on Unix. Windows cannot open a directory with `File::open` (and a
+    /// read-only handle cannot `FlushFileBuffers`), and the in-app install only runs on macOS,
+    /// so other targets are a documented no-op. A method so tests can record the order or make
+    /// it fail.
     fn sync_path(&self, path: &Path) -> io::Result<()> {
-        File::open(path)?.sync_all()
+        #[cfg(unix)]
+        {
+            File::open(path)?.sync_all()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Ok(())
+        }
     }
 
     /// Writes the recovery mark durably (contents, then its directory entry); a method so tests
@@ -655,6 +666,14 @@ pub fn swap_bundle(
     if let Err(error) = verify(bundle).context("The installed update failed verification") {
         return match ops.exchange(staged, bundle) {
             Ok(()) => {
+                // The rollback must be durable before the mark (the only protection that names
+                // the stage) goes: otherwise a power loss could resurrect the rejected update.
+                if let Err(sync) = ops.sync_path(parent) {
+                    return Err(error.context(format!(
+                        "Update rolled back, but the folder could not be flushed ({sync}); {} was kept, delete it before retrying",
+                        mark_path.display()
+                    )));
+                }
                 if fs::remove_file(&mark_path).is_err() {
                     // The mark still names the rejected stage, but the live app reports the
                     // recorded previous version, so the next check clears it.
@@ -703,6 +722,9 @@ pub fn swap_bundle(
             ))
             .context(RecoveryNeeded));
     }
+    // Best effort: persist the mark's removal so a power loss cannot resurrect a mark that
+    // names a stage which no longer exists. The install is finished either way.
+    let _ = ops.sync_path(parent);
     Ok(())
 }
 
@@ -1349,6 +1371,12 @@ mod tests {
         fn sync_path(&self, path: &Path) -> io::Result<()> {
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             self.events.borrow_mut().push(format!("sync:{name}"));
+            if path.is_dir() {
+                let mark = path.join(RECOVERY_MARK_NAME).exists();
+                self.events
+                    .borrow_mut()
+                    .push(format!("dir-sync mark={mark}"));
+            }
             if self.fail_sync_of == Some(name.as_str()) {
                 return Err(io::Error::other("injected"));
             }
@@ -1389,6 +1417,113 @@ mod tests {
             "folder flushed after retiring the backup: {events:?}"
         );
         assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+    }
+
+    #[test]
+    fn a_rollback_is_flushed_before_the_mark_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let journal = Journal {
+            events: Default::default(),
+            fail_sync_of: None,
+        };
+        let reject = |_: &Path| -> Result<()> { bail!("rejected") };
+        let error = swap_bundle(&app, &staged, &journal, &reject).unwrap_err();
+        assert!(format!("{error:#}").contains("rolled back"), "{error:#}");
+        let events = journal.events.borrow();
+        let second = events
+            .iter()
+            .rposition(|event| event == "exchange")
+            .unwrap();
+        assert!(
+            events[second..].contains(&"dir-sync mark=true".to_string()),
+            "rollback flushed while the mark still protects it: {events:?}"
+        );
+        assert_eq!(binary_of(&app), b"old");
+        assert!(!dir.path().join(RECOVERY_MARK_NAME).exists());
+    }
+
+    #[test]
+    fn a_rollback_that_cannot_be_flushed_keeps_the_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        struct FailAfterRollback(Journal);
+        impl SwapOps for FailAfterRollback {
+            fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+                self.0.rename(from, to)
+            }
+            fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+                self.0.exchange(a, b)
+            }
+            fn sync_path(&self, path: &Path) -> io::Result<()> {
+                let exchanges = self
+                    .0
+                    .events
+                    .borrow()
+                    .iter()
+                    .filter(|event| *event == "exchange")
+                    .count();
+                self.0.sync_path(path)?;
+                if exchanges >= 2 && path.is_dir() {
+                    return Err(io::Error::other("injected"));
+                }
+                Ok(())
+            }
+        }
+        let ops = FailAfterRollback(Journal {
+            events: Default::default(),
+            fail_sync_of: None,
+        });
+        let reject = |_: &Path| -> Result<()> { bail!("rejected") };
+        swap_bundle(&app, &staged, &ops, &reject).unwrap_err();
+        assert!(dir.path().join(RECOVERY_MARK_NAME).exists());
+    }
+
+    #[test]
+    fn completion_flushes_the_folder_after_the_mark_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        let journal = Journal {
+            events: Default::default(),
+            fail_sync_of: None,
+        };
+        swap_bundle(&app, &staged, &journal, &ok_step).unwrap();
+        assert_eq!(
+            journal.events.borrow().last().map(String::as_str),
+            Some("dir-sync mark=false"),
+            "{:?}",
+            journal.events.borrow()
+        );
+    }
+
+    #[test]
+    fn a_failed_final_flush_does_not_fail_a_finished_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staged) = staged_pair(dir.path());
+        struct FailLast(Journal);
+        impl SwapOps for FailLast {
+            fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+                self.0.rename(from, to)
+            }
+            fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+                self.0.exchange(a, b)
+            }
+            fn sync_path(&self, path: &Path) -> io::Result<()> {
+                let mark_gone = path.is_dir() && !path.join(RECOVERY_MARK_NAME).exists();
+                let done = self.0.events.borrow().iter().any(|e| e == "rename");
+                self.0.sync_path(path)?;
+                if done && mark_gone {
+                    return Err(io::Error::other("injected"));
+                }
+                Ok(())
+            }
+        }
+        let ops = FailLast(Journal {
+            events: Default::default(),
+            fail_sync_of: None,
+        });
+        swap_bundle(&app, &staged, &ops, &ok_step).unwrap();
+        assert_eq!(binary_of(&app), b"new");
     }
 
     #[test]

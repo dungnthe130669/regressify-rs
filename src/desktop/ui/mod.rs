@@ -147,6 +147,10 @@ pub struct Workbench {
     tab: usize,
     advanced: bool,
     busy: bool,
+    /// A failed update handoff lost this window's workspace to another process. `busy` stays set
+    /// (no edits or new operations) but, unlike a real operation, this must not block closing:
+    /// nothing can be unsaved because the unsaved-work guards passed before the handoff.
+    workspace_lost: bool,
     status: String,
     diagnostic: Option<String>,
     source_issues: Vec<lsp_types::Diagnostic>,
@@ -507,6 +511,7 @@ impl Workbench {
             tab: 0,
             advanced: false,
             busy: false,
+            workspace_lost: false,
             status,
             diagnostic: None,
             source_issues: Vec::new(),
@@ -3348,6 +3353,8 @@ pub fn launch(instance: Option<DesktopInstance>) {
                                 weak.update(cx, |this, cx| {
                                     if this.install_blocks_quit(cx) {
                                         false
+                                    } else if this.workspace_lost {
+                                        true
                                     } else if this.busy {
                                         if this.git.read(cx).active() {
                                             this.git

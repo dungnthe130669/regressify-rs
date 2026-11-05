@@ -1338,7 +1338,9 @@ impl Workbench {
                         this.busy = false;
                     } else if had_workspace {
                         // Another process took the workspace while `open` was failing: keep
-                        // this window frozen so two windows never edit one workspace.
+                        // this window frozen (still `busy`) so two windows never edit one
+                        // workspace, but closable: `workspace_lost` bypasses the busy close guard.
+                        this.workspace_lost = true;
                         this.status = "This workspace is now open in another Regressify window; close this window".into();
                         cx.notify();
                         return;
@@ -1466,6 +1468,20 @@ mod tests {
             assert!(updates.notice.is_none() && updates.dismissed_notice.is_some());
             assert!(updates.notice_dismissed.is_some());
             assert_eq!(updates.notice_message, super::DISMISSED_MESSAGE);
+        })
+        .unwrap();
+        // The dialog keeps the dismissed release's offer: with no writable app bundle that is
+        // the copyable install command, never an in-app install button.
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_updates(window, cx));
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("update-dialog-command").visible());
+            assert!(window.try_find("update-install").is_none());
+            assert!(window.find("update-check").visible());
         })
         .unwrap();
     }
