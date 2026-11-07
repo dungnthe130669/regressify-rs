@@ -347,6 +347,12 @@ impl Workbench {
         .detach();
     }
 
+    /// What the panels were last told: lets tests prove `sync_modal` ran after `busy` changed.
+    #[cfg(all(test, feature = "gui-tests"))]
+    pub(super) fn modal_busy(&self, cx: &App) -> bool {
+        self.modal.read(cx).busy
+    }
+
     pub(super) fn sync_modal(&self, cx: &mut Context<Self>) {
         let disabled = self.busy || self.runs.read(cx).running();
         self.git
@@ -993,12 +999,10 @@ impl Workbench {
                     .open
                     .as_ref()
                     .map(|open| open.entry.path.clone());
-                this.tab = if this
-                    .session
-                    .open
-                    .as_ref()
-                    .is_some_and(|open| open.document.format == Format::Text)
-                {
+                this.tab = if this.session.open.as_ref().is_some_and(|open| {
+                    open.document.format == Format::Text
+                        || open.entry.kind == DocumentKind::ReplacementProfiles
+                }) {
                     1
                 } else {
                     0
